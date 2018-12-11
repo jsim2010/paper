@@ -1,0 +1,12 @@
+[package]
+name = "paper"
+version = "0.1.0"
+authors = ["Justin Simerly <justinsimerly1992@gmail.com>"]
+
+[dependencies]
+clap = "2.32.0"
+
+# Must specify win32 feature to ensure application does not open new window.
+[dependencies.pancurses]
+version = "0.16"
+features = ["win32"]
