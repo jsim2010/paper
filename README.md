@@ -11,19 +11,19 @@ display mode
 
 - display view through window
 - inputs:
-        * (.)   enter command mode
-        *       move window
+  + (.) enter command mode
+  + move window
 
 command mode
 
 - allow user to enter commands that do not modify a view
 - show command being entered along with suggestions
 - inputs:
-        * (edit)        edit command
-        * (Enter)       execute command
+  + (edit) edit command
+  + (Enter) execute command
 - commands:
-        * see `file`
-        * end
+  + see `file`
+  + end
 
 filter mode
 
@@ -33,4 +33,4 @@ edit mode
 
 - allow user to edit view
 - inputs:
-        * (edit)        edit view
+  + (edit) edit view
