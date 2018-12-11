@@ -37,7 +37,6 @@ impl Paper {
         let command = String::new();
         let mode = Mode::Display;
 
-        window.keypad(true);
         // Prevent curses from outputing keys.
         pancurses::noecho();
 
@@ -50,7 +49,6 @@ impl Paper {
 
     fn process_input(&mut self) -> Result<(), ()> {
         match self.window.getch() {
-            Some(Input::Character('')) => return Err(()),
             Some(Input::Character(c)) => return self.process_char(c),
             _ => (),
         }
@@ -62,6 +60,7 @@ impl Paper {
         match self.mode {
             Mode::Display => {
                 if c == '.' {
+                    self.window.mv(0, 0);
                     self.mode = Mode::Command;
                     self.command.clear();
                 }
@@ -76,8 +75,15 @@ impl Paper {
                         None => (),
                     }
                 } else {
-                    self.command.push(c);
                     self.window.addch(c);
+
+                    if c == '\u{08}' {
+                        self.command.pop();
+                        // Backspace moves cursor back one but does not delete the character.
+                        self.window.delch();
+                    } else {
+                        self.command.push(c);
+                    }
                 }
             },
         }
@@ -90,7 +96,9 @@ impl Paper {
             "see" => {
                 let re = Regex::new(r"see\s*(?P<file>.*)").unwrap();
                 let filename = &re.captures(&self.command).unwrap()["file"];
+
                 self.mode = Mode::Display;
+                self.window.clear();
                 self.window.mv(0, 0);
                 
                 for ch in fs::read_to_string(&filename).unwrap().chars() {
@@ -110,7 +118,7 @@ impl Paper {
                 }
             },
             "end" => return Err(()),
-            _ => return Err(()),
+            _ => (),
         }
 
         Ok(())
