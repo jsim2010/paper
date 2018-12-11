@@ -5,6 +5,7 @@ authors = ["Justin Simerly <justinsimerly1992@gmail.com>"]
 
 [dependencies]
 clap = "2.32.0"
+regex = "1.1.0"
 
 # Must specify win32 feature to ensure application does not open new window.
 [dependencies.pancurses]

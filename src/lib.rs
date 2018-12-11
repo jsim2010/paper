@@ -1,6 +1,8 @@
 extern crate pancurses;
+extern crate regex;
 
 use pancurses::Input;
+use regex::Regex;
 use std::fs;
 
 /// Runs an instance of paper.
@@ -8,11 +10,8 @@ pub fn run() -> Result<(), &'static str> {
     let mut paper = Paper::new();
 
     loop {
-        match paper.window.getch() {
-            Some(Input::Character('')) => break,
-            Some(Input::Character(c)) => paper.process_char(c),
-            Some(_) => continue,
-            None => (),
+        if let Err(()) = paper.process_input() {
+            break;
         }
     }
 
@@ -49,7 +48,17 @@ impl Paper {
         }
     }
 
-    fn process_char(&mut self, c: char) {
+    fn process_input(&mut self) -> Result<(), ()> {
+        match self.window.getch() {
+            Some(Input::Character('')) => return Err(()),
+            Some(Input::Character(c)) => return self.process_char(c),
+            _ => (),
+        }
+        
+        Ok(())
+    }
+
+    fn process_char(&mut self, c: char) -> Result<(), ()> {
         match self.mode {
             Mode::Display => {
                 if c == '.' {
@@ -59,23 +68,12 @@ impl Paper {
             },
             Mode::Command => {
                 if c == '\n' {
-                    self.mode = Mode::Display;
-                    self.window.mv(0, 0);
-                    
-                    for ch in fs::read_to_string(&self.command).unwrap().chars() {
-                        match ch {
-                            '\r' => (),
-                            '\n' => {
-                                if self.window.get_cur_y() + 1 < self.window.get_max_y() {
-                                    self.window.addch('\n');
-                                } else {
-                                    break;
-                                }
-                            },
-                            h => {
-                                self.window.addch(h);
-                            },
-                        }
+                    let re = Regex::new(r"(?P<command>.+?)(?:\s|$)").unwrap();
+                    let cmd = self.command.clone();
+
+                    match re.captures(&cmd) {
+                        Some(caps) => return self.process_command(&caps["command"]),
+                        None => (),
                     }
                 } else {
                     self.command.push(c);
@@ -83,5 +81,38 @@ impl Paper {
                 }
             },
         }
+
+        Ok(())
+    }
+
+    fn process_command(&mut self, command: &str) -> Result<(), ()> {
+        match command {
+            "see" => {
+                let re = Regex::new(r"see\s*(?P<file>.*)").unwrap();
+                let filename = &re.captures(&self.command).unwrap()["file"];
+                self.mode = Mode::Display;
+                self.window.mv(0, 0);
+                
+                for ch in fs::read_to_string(&filename).unwrap().chars() {
+                    match ch {
+                        '\r' => (),
+                        '\n' => {
+                            if self.window.get_cur_y() + 1 < self.window.get_max_y() {
+                                self.window.addch('\n');
+                            } else {
+                                break;
+                            }
+                        },
+                        h => {
+                            self.window.addch(h);
+                        },
+                    }
+                }
+            },
+            "end" => return Err(()),
+            _ => return Err(()),
+        }
+
+        Ok(())
     }
 }

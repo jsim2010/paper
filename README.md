@@ -23,6 +23,7 @@ command mode
         - select and choose command
 - commands:
         - see `file`
+        - end
 
 filter text
 select one or more options to act on
