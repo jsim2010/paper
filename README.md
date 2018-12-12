@@ -12,6 +12,8 @@ display mode
 - display view through window
 - inputs:
   + (.) enter command mode
+  + (j) move window 1/4 window down
+  + (k) move window 1/4 window up
   + move window
 
 command mode

@@ -4,6 +4,7 @@ extern crate regex;
 use pancurses::Input;
 use regex::Regex;
 use std::fs;
+use std::cmp;
 
 /// Runs an instance of paper.
 pub fn run() -> Result<(), &'static str> {
@@ -30,6 +31,7 @@ struct Paper {
     command: String,
     mode: Mode,
     view: String,
+    first_line: usize,
 }
 
 impl Paper {
@@ -38,6 +40,7 @@ impl Paper {
         let command = String::new();
         let mode = Mode::Display;
         let view = String::new();
+        let first_line = 0;
 
         // Prevent curses from outputing keys.
         pancurses::noecho();
@@ -47,6 +50,7 @@ impl Paper {
             command,
             mode,
             view,
+            first_line,
         }
     }
 
@@ -62,10 +66,27 @@ impl Paper {
     fn process_char(&mut self, c: char) -> Result<(), ()> {
         match self.mode {
             Mode::Display => {
-                if c == '.' {
-                    self.window.mv(0, 0);
-                    self.mode = Mode::Command;
-                    self.command.clear();
+                match c {
+                    '.' => {
+                        self.window.mv(0, 0);
+                        self.mode = Mode::Command;
+                        self.command.clear();
+                    },
+                    'j' => {
+                        self.first_line = cmp::min(self.first_line + self.quarter_window_height(), self.view.lines().count() - 1);
+                        self.write_view();
+                    },
+                    'k' => {
+                        let movement = self.quarter_window_height();
+
+                        if self.first_line < movement {
+                            self.first_line = 0;
+                        } else {
+                            self.first_line -= movement;
+                        }
+                        self.write_view();
+                    },
+                    _ => (),
                 }
             },
             Mode::Command => {
@@ -98,33 +119,35 @@ impl Paper {
         match command {
             "see" => {
                 let re = Regex::new(r"see\s*(?P<file>.*)").unwrap();
-                let filename = &re.captures(&self.command).unwrap()["file"];
+                {
+                    let filename = &re.captures(&self.command).unwrap()["file"];
 
-                self.mode = Mode::Display;
-                self.window.clear();
-                self.window.mv(0, 0);
-                self.view = fs::read_to_string(&filename).unwrap();
-                
-                for ch in self.view.chars() {
-                    match ch {
-                        '\r' => (),
-                        '\n' => {
-                            if self.window.get_cur_y() + 1 < self.window.get_max_y() {
-                                self.window.addch('\n');
-                            } else {
-                                break;
-                            }
-                        },
-                        h => {
-                            self.window.addch(h);
-                        },
-                    }
+                    self.mode = Mode::Display;
+                    self.view = fs::read_to_string(&filename).unwrap();
                 }
+                self.first_line = 0;
+                self.write_view();
             },
             "end" => return Err(()),
             _ => (),
         }
 
         Ok(())
+    }
+
+    fn write_view(&mut self) {
+        self.window.clear();
+        self.window.mv(0, 0);
+        let lines: Vec<&str> = self.view.lines().collect();
+        let max = cmp::min((self.window.get_max_y() as usize) + self.first_line, lines.len());
+
+        for line in lines[self.first_line..max].iter() {
+            self.window.addstr(line);
+            self.window.addch('\n');
+        }
+    }
+
+    fn quarter_window_height(&self) -> usize {
+        (self.window.get_max_y() as usize) / 4
     }
 }
