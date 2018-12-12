@@ -6,27 +6,12 @@ use regex::Regex;
 use std::fs;
 use std::cmp;
 
-/// Runs an instance of paper.
-pub fn run() -> Result<(), &'static str> {
-    let mut paper = Paper::new();
-
-    loop {
-        if let Err(()) = paper.process_input() {
-            break;
-        }
-    }
-
-    pancurses::endwin();
-
-    Ok(())
-}
-
 enum Mode {
     Display,
     Command,
 }
 
-struct Paper {
+pub struct Paper {
     window: pancurses::Window,
     command: String,
     mode: Mode,
@@ -35,7 +20,7 @@ struct Paper {
 }
 
 impl Paper {
-    fn new() -> Paper {
+    pub fn new() -> Paper {
         let window = pancurses::initscr();
         let command = String::new();
         let mode = Mode::Display;
@@ -52,6 +37,16 @@ impl Paper {
             view,
             first_line,
         }
+    }
+
+    pub fn run(&mut self) {
+        loop {
+            if let Err(()) = self.process_input() {
+                break;
+            }
+        }
+
+        pancurses::endwin();
     }
 
     fn process_input(&mut self) -> Result<(), ()> {
