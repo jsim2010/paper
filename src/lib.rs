@@ -18,6 +18,7 @@ enum Operation {
     Noop,
     End,
     ChangeToCommand,
+    ChangeToFilter,
     ScrollDown,
     ScrollUp,
     SeeView(String),
@@ -38,10 +39,6 @@ struct DisplayMode {
     view: String,
 }
 
-struct CommandMode {
-    command: String,
-}
-
 impl DisplayMode {
     fn new(view: String) -> DisplayMode {
         DisplayMode { view }
@@ -52,6 +49,7 @@ impl Mode for DisplayMode {
     fn handle_input(&mut self, c: char) -> Operation {
         match c {
             '.' => Operation::ChangeToCommand,
+            '/' => Operation::ChangeToFilter,
             'j' => Operation::ScrollDown,
             'k' => Operation::ScrollUp,
             _ => Operation::Noop,
@@ -61,6 +59,10 @@ impl Mode for DisplayMode {
     fn text(&self) -> &String {
         &self.view
     }
+}
+
+struct CommandMode {
+    command: String,
 }
 
 impl CommandMode {
@@ -110,6 +112,26 @@ impl Mode for CommandMode {
     }
 }
 
+struct FilterMode {
+    text: String
+}
+
+impl FilterMode {
+    fn new() -> FilterMode {
+        FilterMode{text: String::new()}
+    }
+}
+
+impl Mode for FilterMode {
+    fn handle_input(&mut self, c: char) -> Operation {
+        Operation::Noop
+    }
+    
+    fn text(&self) -> &String {
+        &self.text
+    }
+}
+
 impl Paper {
     pub fn new() -> Paper {
         let window = pancurses::initscr();
@@ -144,6 +166,9 @@ impl Paper {
             Operation::ChangeToCommand => {
                 self.window.mv(0, 0);
                 self.mode = Box::new(CommandMode::new());
+            }
+            Operation::ChangeToFilter => {
+                self.mode = Box::new(FilterMode::new());
             }
             Operation::ScrollDown => {
                 self.first_line = cmp::min(
@@ -195,9 +220,12 @@ impl Paper {
         self.window.clear();
         self.window.mv(0, 0);
         let lines: Vec<&str> = self.mode.text().lines().collect();
-        let max = cmp::min(self.window_height() + self.first_line, lines.len());
+        let length = lines.len();
+        let line_length = ((length as f32).log10() as usize) + 2;
+        let max = cmp::min(self.window_height() + self.first_line, length);
 
-        for line in lines[self.first_line..max].iter() {
+        for (index, line) in lines[self.first_line..max].iter().enumerate() {
+            self.window.addstr(format!("{:>width$} ", index + self.first_line + 1, width = line_length));
             self.window.addstr(line);
             self.window.addch('\n');
         }

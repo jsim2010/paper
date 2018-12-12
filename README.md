@@ -11,15 +11,16 @@ display mode
 
 - display view through window
 - inputs:
-  + (.) enter command mode
+  + (.) change to command mode
+  + (/) change to filter mode
   + (j) move window 1/4 window down
   + (k) move window 1/4 window up
   + move window
 
 command mode
 
-- allow user to enter commands that do not modify a view
-- show command being entered along with suggestions
+- allow user to enter commands involving views
+- display command being entered along with suggestions
 - inputs:
   + (edit) edit command
   + (Enter) execute command
@@ -29,9 +30,14 @@ command mode
 
 filter mode
 
+- allow user to select desired text to act upon
+- inputs:
+  + (l) line
+    * (digits) line number
+
 action mode
 
-edit mode
+mark mode
 
 - allow user to edit view
 - inputs:
