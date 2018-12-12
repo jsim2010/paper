@@ -6,15 +6,11 @@ use regex::Regex;
 use std::fs;
 use std::cmp;
 
-enum Mode {
-    Display,
-    Command,
-}
+const BACKSPACE: char = '\u{08}';
 
 pub struct Paper {
     window: pancurses::Window,
-    mode: Box<dyn InputHandler>,
-    view: String,
+    mode: Box<dyn Mode>,
     first_line: usize,
 }
 
@@ -25,28 +21,57 @@ enum Operation {
     ScrollDown,
     ScrollUp,
     SeeView(String),
-    EditCommand(char),
+    DeleteBack,
+    AppendText(char),
 }
 
 enum Notice {
     Quit,
 }
 
-trait InputHandler {
-    fn handle_input(&self, c: char) -> Operation;
-    fn tmp_mode(&self) -> &Mode;
-    fn tmp_set(&mut self, mode: Mode);
-    fn clear_cmd(&mut self);
-    fn pop_cmd(&mut self);
-    fn push_cmd(&mut self, c: char);
+trait Mode {
+    fn handle_input(&mut self, c: char) -> Operation;
+    fn text(&self) -> &String;
 }
 
 struct DisplayMode {
-    tmp_mode: Mode,
-    command: String
+    view: String
+}
+
+struct CommandMode {
+    command: String,
 }
 
 impl DisplayMode {
+    fn new(view: String) -> DisplayMode {
+        DisplayMode {
+            view
+        }
+    }
+}
+
+impl Mode for DisplayMode {
+    fn handle_input(&mut self, c: char) -> Operation {
+        match c {
+            '.' => Operation::ChangeToCommand,
+            'j' => Operation::ScrollDown,
+            'k' => Operation::ScrollUp,
+            _ => Operation::Noop,
+        }
+    }
+
+    fn text(&self) -> &String {
+        &self.view
+    }
+}
+
+impl CommandMode {
+    fn new() -> CommandMode {
+        CommandMode {
+            command: String::new(),
+        }
+    }
+
     fn process_command(&self, command: &str) -> Operation {
         match command {
             "see" => {
@@ -59,61 +84,39 @@ impl DisplayMode {
     }
 }
 
-impl InputHandler for DisplayMode {
-    fn push_cmd(&mut self, c: char) {
-        self.command.push(c);
-    }
-    fn pop_cmd(&mut self) {
-        self.command.pop();
-    }
-    fn clear_cmd(&mut self) {
-        self.command.clear();
-    }
-    fn tmp_set(&mut self, mode: Mode) {
-        self.tmp_mode = mode
-    }
+impl Mode for CommandMode {
+    fn handle_input(&mut self, c: char) -> Operation {
+        match c {
+            '\n' => {
+                let re = Regex::new(r"(?P<command>.+?)(?:\s|$)").unwrap();
+                let cmd = self.command.clone();
 
-    fn tmp_mode(&self) -> &Mode {
-        &self.tmp_mode
-    }
-
-    fn handle_input(&self, c: char) -> Operation {
-        match self.tmp_mode() {
-            Mode::Display => {
-                match c {
-                    '.' => Operation::ChangeToCommand,
-                    'j' => Operation::ScrollDown,
-                    'k' => Operation::ScrollUp,
-                    _ => Operation::Noop,
+                match re.captures(&cmd) {
+                    Some(caps) => return self.process_command(&caps["command"]),
+                    None => Operation::Noop,
                 }
             },
-            Mode::Command => {
-                match c {
-                    '\n' => {
-                        let re = Regex::new(r"(?P<command>.+?)(?:\s|$)").unwrap();
-                        let cmd = self.command.clone();
-
-                        match re.captures(&cmd) {
-                            Some(caps) => return self.process_command(&caps["command"]),
-                            None => Operation::Noop,
-                        }
-                    },
-                    _ => Operation::EditCommand(c),
-                }
+            BACKSPACE => {
+                self.command.pop();
+                Operation::DeleteBack
+            },
+            _ => {
+                self.command.push(c);
+                Operation::AppendText(c)
             },
         }
+    }
+
+    fn text(&self) -> &String {
+        &self.command
     }
 }
 
 impl Paper {
     pub fn new() -> Paper {
         let window = pancurses::initscr();
-        let view = String::new();
         let first_line = 0;
-        let mode = Box::new(DisplayMode{
-            tmp_mode: Mode::Display,
-            command: String::new(),
-        });
+        let mode = Box::new(DisplayMode::new(String::new()));
 
         // Prevent curses from outputing keys.
         pancurses::noecho();
@@ -121,7 +124,6 @@ impl Paper {
         Paper {
             window,
             mode,
-            view,
             first_line,
         }
     }
@@ -143,11 +145,10 @@ impl Paper {
         match op {
             Operation::ChangeToCommand => {
                 self.window.mv(0, 0);
-                self.mode.clear_cmd();
-                self.mode.tmp_set(Mode::Command);
+                self.mode = Box::new(CommandMode::new());
             },
             Operation::ScrollDown => {
-                self.first_line = cmp::min(self.first_line + self.scroll_height(), self.view.lines().count() - 1);
+                self.first_line = cmp::min(self.first_line + self.scroll_height(), self.mode.text().lines().count() - 1);
                 self.write_view();
             },
             Operation::ScrollUp => {
@@ -160,20 +161,18 @@ impl Paper {
                 }
                 self.write_view();
             },
-            Operation::EditCommand(c) => {
-                self.window.addch(c);
+            Operation::DeleteBack => {
+                // Move cursor back one space.
+                self.window.addch(BACKSPACE);
 
-                if c == '\u{08}' {
-                    self.mode.pop_cmd();
-                    // Backspace moves cursor back one but does not delete the character.
-                    self.window.delch();
-                } else {
-                    self.mode.push_cmd(c);
-                }
+                // Delete character at cursor.
+                self.window.delch();
+            },
+            Operation::AppendText(c) => {
+                self.window.addch(c);
             },
             Operation::SeeView(path) => {
-                self.mode.tmp_set(Mode::Display);
-                self.view = fs::read_to_string(&path).unwrap();
+                self.mode = Box::new(DisplayMode::new(fs::read_to_string(&path).unwrap()));
                 self.first_line = 0;
                 self.write_view();
             },
@@ -186,7 +185,7 @@ impl Paper {
         None
     }
 
-    fn process_input(&self) -> Operation {
+    fn process_input(&mut self) -> Operation {
         match self.window.getch() {
             Some(Input::Character(c)) => self.mode.handle_input(c),
             _ => Operation::Noop,
@@ -196,7 +195,7 @@ impl Paper {
     fn write_view(&mut self) {
         self.window.clear();
         self.window.mv(0, 0);
-        let lines: Vec<&str> = self.view.lines().collect();
+        let lines: Vec<&str> = self.mode.text().lines().collect();
         let max = cmp::min(self.window_height() + self.first_line, lines.len());
 
         for line in lines[self.first_line..max].iter() {
