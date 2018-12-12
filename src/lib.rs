@@ -73,11 +73,11 @@ impl Paper {
                         self.command.clear();
                     },
                     'j' => {
-                        self.first_line = cmp::min(self.first_line + self.quarter_window_height(), self.view.lines().count() - 1);
+                        self.first_line = cmp::min(self.first_line + self.scroll_height(), self.view.lines().count() - 1);
                         self.write_view();
                     },
                     'k' => {
-                        let movement = self.quarter_window_height();
+                        let movement = self.scroll_height();
 
                         if self.first_line < movement {
                             self.first_line = 0;
@@ -139,7 +139,7 @@ impl Paper {
         self.window.clear();
         self.window.mv(0, 0);
         let lines: Vec<&str> = self.view.lines().collect();
-        let max = cmp::min((self.window.get_max_y() as usize) + self.first_line, lines.len());
+        let max = cmp::min(self.window_height() + self.first_line, lines.len());
 
         for line in lines[self.first_line..max].iter() {
             self.window.addstr(line);
@@ -147,7 +147,11 @@ impl Paper {
         }
     }
 
-    fn quarter_window_height(&self) -> usize {
-        (self.window.get_max_y() as usize) / 4
+    fn window_height(&self) -> usize {
+        self.window.get_max_y() as usize
+    }
+
+    fn scroll_height(&self) -> usize {
+        self.window_height() / 4
     }
 }
