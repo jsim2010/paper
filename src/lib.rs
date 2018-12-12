@@ -13,8 +13,7 @@ enum Mode {
 
 pub struct Paper {
     window: pancurses::Window,
-    command: String,
-    mode: Mode,
+    mode: Box<dyn InputHandler>,
     view: String,
     first_line: usize,
 }
@@ -33,95 +32,53 @@ enum Notice {
     Quit,
 }
 
-impl Paper {
-    pub fn new() -> Paper {
-        let window = pancurses::initscr();
-        let command = String::new();
-        let mode = Mode::Display;
-        let view = String::new();
-        let first_line = 0;
+trait InputHandler {
+    fn handle_input(&self, c: char) -> Operation;
+    fn tmp_mode(&self) -> &Mode;
+    fn tmp_set(&mut self, mode: Mode);
+    fn clear_cmd(&mut self);
+    fn pop_cmd(&mut self);
+    fn push_cmd(&mut self, c: char);
+}
 
-        // Prevent curses from outputing keys.
-        pancurses::noecho();
+struct DisplayMode {
+    tmp_mode: Mode,
+    command: String
+}
 
-        Paper {
-            window,
-            command,
-            mode,
-            view,
-            first_line,
-        }
-    }
-
-    pub fn run(&mut self) {
-        loop {
-            let operation = self.process_input();
-
-            match self.operate(operation) {
-                Some(Notice::Quit) => break,
-                None => (),
-            }
-        }
-
-        pancurses::endwin();
-    }
-
-    fn operate(&mut self, op: Operation) -> Option<Notice> {
-        match op {
-            Operation::ChangeToCommand => {
-                self.window.mv(0, 0);
-                self.command.clear();
-                self.mode = Mode::Command;
+impl DisplayMode {
+    fn process_command(&self, command: &str) -> Operation {
+        match command {
+            "see" => {
+                let re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
+                Operation::SeeView(re.captures(&self.command).unwrap()["path"].to_string())
             },
-            Operation::ScrollDown => {
-                self.first_line = cmp::min(self.first_line + self.scroll_height(), self.view.lines().count() - 1);
-                self.write_view();
-            },
-            Operation::ScrollUp => {
-                let movement = self.scroll_height();
-
-                if self.first_line < movement {
-                    self.first_line = 0;
-                } else {
-                    self.first_line -= movement;
-                }
-                self.write_view();
-            },
-            Operation::EditCommand(c) => {
-                self.window.addch(c);
-
-                if c == '\u{08}' {
-                    self.command.pop();
-                    // Backspace moves cursor back one but does not delete the character.
-                    self.window.delch();
-                } else {
-                    self.command.push(c);
-                }
-            },
-            Operation::SeeView(path) => {
-                self.mode = Mode::Display;
-                self.view = fs::read_to_string(&path).unwrap();
-                self.first_line = 0;
-                self.write_view();
-            },
-            Operation::End => {
-                return Some(Notice::Quit)
-            },
-            Operation::Noop => (),
-        }
-
-        None
-    }
-
-    fn process_input(&self) -> Operation {
-        match self.window.getch() {
-            Some(Input::Character(c)) => self.process_char(c),
+            "end" => Operation::End,
             _ => Operation::Noop,
         }
     }
+}
 
-    fn process_char(&self, c: char) -> Operation {
-        match self.mode {
+impl InputHandler for DisplayMode {
+    fn push_cmd(&mut self, c: char) {
+        self.command.push(c);
+    }
+    fn pop_cmd(&mut self) {
+        self.command.pop();
+    }
+    fn clear_cmd(&mut self) {
+        self.command.clear();
+    }
+    fn tmp_set(&mut self, mode: Mode) {
+        self.tmp_mode = mode
+    }
+
+    fn tmp_mode(&self) -> &Mode {
+        &self.tmp_mode
+    }
+
+    fn handle_input(&self, c: char) -> Operation {
+        match self.tmp_mode() {
             Mode::Display => {
                 match c {
                     '.' => Operation::ChangeToCommand,
@@ -146,14 +103,92 @@ impl Paper {
             },
         }
     }
+}
 
-    fn process_command(&self, command: &str) -> Operation {
-        match command {
-            "see" => {
-                let re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
-                Operation::SeeView(re.captures(&self.command).unwrap()["path"].to_string())
+impl Paper {
+    pub fn new() -> Paper {
+        let window = pancurses::initscr();
+        let view = String::new();
+        let first_line = 0;
+        let mode = Box::new(DisplayMode{
+            tmp_mode: Mode::Display,
+            command: String::new(),
+        });
+
+        // Prevent curses from outputing keys.
+        pancurses::noecho();
+
+        Paper {
+            window,
+            mode,
+            view,
+            first_line,
+        }
+    }
+
+    pub fn run(&mut self) {
+        loop {
+            let operation = self.process_input();
+
+            match self.operate(operation) {
+                Some(Notice::Quit) => break,
+                None => (),
+            }
+        }
+
+        pancurses::endwin();
+    }
+
+    fn operate(&mut self, op: Operation) -> Option<Notice> {
+        match op {
+            Operation::ChangeToCommand => {
+                self.window.mv(0, 0);
+                self.mode.clear_cmd();
+                self.mode.tmp_set(Mode::Command);
             },
-            "end" => Operation::End,
+            Operation::ScrollDown => {
+                self.first_line = cmp::min(self.first_line + self.scroll_height(), self.view.lines().count() - 1);
+                self.write_view();
+            },
+            Operation::ScrollUp => {
+                let movement = self.scroll_height();
+
+                if self.first_line < movement {
+                    self.first_line = 0;
+                } else {
+                    self.first_line -= movement;
+                }
+                self.write_view();
+            },
+            Operation::EditCommand(c) => {
+                self.window.addch(c);
+
+                if c == '\u{08}' {
+                    self.mode.pop_cmd();
+                    // Backspace moves cursor back one but does not delete the character.
+                    self.window.delch();
+                } else {
+                    self.mode.push_cmd(c);
+                }
+            },
+            Operation::SeeView(path) => {
+                self.mode.tmp_set(Mode::Display);
+                self.view = fs::read_to_string(&path).unwrap();
+                self.first_line = 0;
+                self.write_view();
+            },
+            Operation::End => {
+                return Some(Notice::Quit)
+            },
+            Operation::Noop => (),
+        }
+
+        None
+    }
+
+    fn process_input(&self) -> Operation {
+        match self.window.getch() {
+            Some(Input::Character(c)) => self.mode.handle_input(c),
             _ => Operation::Noop,
         }
     }
