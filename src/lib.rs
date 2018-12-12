@@ -29,6 +29,7 @@ struct Paper {
     window: pancurses::Window,
     command: String,
     mode: Mode,
+    view: String,
 }
 
 impl Paper {
@@ -36,6 +37,7 @@ impl Paper {
         let window = pancurses::initscr();
         let command = String::new();
         let mode = Mode::Display;
+        let view = String::new();
 
         // Prevent curses from outputing keys.
         pancurses::noecho();
@@ -44,6 +46,7 @@ impl Paper {
             window,
             command,
             mode,
+            view,
         }
     }
 
@@ -100,8 +103,9 @@ impl Paper {
                 self.mode = Mode::Display;
                 self.window.clear();
                 self.window.mv(0, 0);
+                self.view = fs::read_to_string(&filename).unwrap();
                 
-                for ch in fs::read_to_string(&filename).unwrap().chars() {
+                for ch in self.view.chars() {
                     match ch {
                         '\r' => (),
                         '\n' => {
