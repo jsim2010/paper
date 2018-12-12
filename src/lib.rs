@@ -3,8 +3,8 @@ extern crate regex;
 
 use pancurses::Input;
 use regex::Regex;
-use std::fs;
 use std::cmp;
+use std::fs;
 
 const BACKSPACE: char = '\u{08}';
 
@@ -35,7 +35,7 @@ trait Mode {
 }
 
 struct DisplayMode {
-    view: String
+    view: String,
 }
 
 struct CommandMode {
@@ -44,9 +44,7 @@ struct CommandMode {
 
 impl DisplayMode {
     fn new(view: String) -> DisplayMode {
-        DisplayMode {
-            view
-        }
+        DisplayMode { view }
     }
 }
 
@@ -77,7 +75,7 @@ impl CommandMode {
             "see" => {
                 let re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
                 Operation::SeeView(re.captures(&self.command).unwrap()["path"].to_string())
-            },
+            }
             "end" => Operation::End,
             _ => Operation::Noop,
         }
@@ -95,15 +93,15 @@ impl Mode for CommandMode {
                     Some(caps) => return self.process_command(&caps["command"]),
                     None => Operation::Noop,
                 }
-            },
+            }
             BACKSPACE => {
                 self.command.pop();
                 Operation::DeleteBack
-            },
+            }
             _ => {
                 self.command.push(c);
                 Operation::AppendText(c)
-            },
+            }
         }
     }
 
@@ -146,11 +144,14 @@ impl Paper {
             Operation::ChangeToCommand => {
                 self.window.mv(0, 0);
                 self.mode = Box::new(CommandMode::new());
-            },
+            }
             Operation::ScrollDown => {
-                self.first_line = cmp::min(self.first_line + self.scroll_height(), self.mode.text().lines().count() - 1);
+                self.first_line = cmp::min(
+                    self.first_line + self.scroll_height(),
+                    self.mode.text().lines().count() - 1,
+                );
                 self.write_view();
-            },
+            }
             Operation::ScrollUp => {
                 let movement = self.scroll_height();
 
@@ -160,25 +161,23 @@ impl Paper {
                     self.first_line -= movement;
                 }
                 self.write_view();
-            },
+            }
             Operation::DeleteBack => {
                 // Move cursor back one space.
                 self.window.addch(BACKSPACE);
 
                 // Delete character at cursor.
                 self.window.delch();
-            },
+            }
             Operation::AppendText(c) => {
                 self.window.addch(c);
-            },
+            }
             Operation::SeeView(path) => {
                 self.mode = Box::new(DisplayMode::new(fs::read_to_string(&path).unwrap()));
                 self.first_line = 0;
                 self.write_view();
-            },
-            Operation::End => {
-                return Some(Notice::Quit)
-            },
+            }
+            Operation::End => return Some(Notice::Quit),
             Operation::Noop => (),
         }
 
