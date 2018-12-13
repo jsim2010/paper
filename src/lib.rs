@@ -17,15 +17,18 @@ pub struct Paper {
 enum Operation {
     Noop,
     End,
+    ReturnToDisplay,
     ChangeToDisplay,
     ChangeToCommand,
     ChangeToLineFilter,
+    ChangeToAction,
     ScrollDown,
     ScrollUp,
     SeeView(String),
     DeleteBack,
     AppendText(char),
     FilterLines(String),
+    InsertAbove,
 }
 
 enum Notice {
@@ -102,7 +105,7 @@ impl Mode for CommandMode {
                 self.command.pop();
                 Operation::DeleteBack
             }
-            '' => Operation::ChangeToDisplay,
+            '' => Operation::ReturnToDisplay,
             _ => {
                 self.command.push(c);
                 Operation::AppendText(c)
@@ -138,13 +141,64 @@ impl Mode for LineFilterMode {
                 self.text.pop();
                 Operation::FilterLines(self.text.clone())
             }
-            '' => Operation::ChangeToDisplay,
+            '\n' => Operation::ChangeToAction,
+            '' => Operation::ReturnToDisplay,
             _ => Operation::Noop,
         }
     }
 
     fn text(&self) -> &String {
         &self.text
+    }
+}
+
+struct ActionMode {
+    text: String,
+}
+
+impl ActionMode {
+    fn new() -> ActionMode {
+        ActionMode {
+            text: String::new(),
+        }
+    }
+}
+
+impl Mode for ActionMode {
+    fn handle_input(&mut self, c: char)  -> Operation {
+        match c {
+            'I' => Operation::InsertAbove,
+            _ => Operation::Noop,
+        }
+    }
+
+    fn text(&self) -> &String {
+        &self.text
+    }
+}
+
+struct EditMode {
+    view: String,
+}
+
+impl EditMode {
+    fn new(view: String) -> EditMode {
+        EditMode {
+            view,
+        }
+    }
+}
+
+impl Mode for EditMode {
+    fn handle_input(&mut self, c:char) -> Operation {
+        match c {
+            '' => Operation::ChangeToDisplay,
+            _ => Operation::Noop,
+        }
+    }
+
+    fn text(&self) -> &String {
+        &self.view
     }
 }
 
@@ -184,8 +238,14 @@ impl Paper {
 
     fn operate(&mut self, op: Operation) -> Option<Notice> {
         match op {
+            Operation::ReturnToDisplay => {
+                self.modes.truncate(1);
+                self.write_view();
+            }
             Operation::ChangeToDisplay => {
                 self.modes.truncate(1);
+                let view = self.modes.pop().unwrap().text().to_string();
+                self.modes.push(Box::new(DisplayMode::new(view)));
                 self.write_view();
             }
             Operation::ChangeToCommand => {
@@ -194,6 +254,9 @@ impl Paper {
             }
             Operation::ChangeToLineFilter => {
                 self.modes.push(Box::new(LineFilterMode::new()));
+            }
+            Operation::ChangeToAction => {
+                self.modes.push(Box::new(ActionMode::new()));
             }
             Operation::ScrollDown => {
                 self.first_line = cmp::min(
@@ -243,6 +306,24 @@ impl Paper {
                         self.window.mvchgat(line, 0, -1, pancurses::A_NORMAL, 0);
                     }
                 }
+            }
+            Operation::InsertAbove => {
+                // Remove action mode to get access to filter mode.
+                self.modes.pop();
+
+                let filter = self.modes.pop().unwrap().text().to_string();
+                self.modes.truncate(1);
+                let base_mode = self.modes.pop().unwrap();
+                let mut lines: Vec<&str> = base_mode.text().lines().collect();
+                let target_line = filter.parse::<i32>().map(|i| i - 1).ok();
+
+                match target_line {
+                    Some(line) => lines.insert(line as usize, ""),
+                    None => {},
+                }
+
+                self.modes.push(Box::new(EditMode::new(lines.join("\n"))));
+                self.write_view();
             }
             Operation::End => return Some(Notice::Quit),
             Operation::Noop => (),

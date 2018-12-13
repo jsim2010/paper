@@ -21,8 +21,8 @@ command mode
 - allow user to enter commands involving views
 - display command being entered along with suggestions
 - inputs:
-  + (edit) edit command
   + (Enter) execute command
+  + (edit) edit command
   + (C-C) return to display mode
 - commands:
   + see `file`
@@ -32,6 +32,8 @@ filter modes
 
 - allow user to select desired text to act upon
 - inputs:
+  + (Enter) change to action mode
+  + (Tab) join a new filter
   + (edit) edit filter input
   + (C-C) return to display mode
 - filters:
@@ -39,6 +41,11 @@ filter modes
     * (digits) line number
 
 action mode
+
+- user specifies an action to be taken on the filtered text
+- inputs:
+  + (A) append new line below and start mark mode
+  + (I) insert new line above and start mark mode
 
 mark mode
 
