@@ -10,24 +10,22 @@ const BACKSPACE: char = '\u{08}';
 
 pub struct Paper {
     window: pancurses::Window,
-    modes: Vec<Box<dyn Mode>>,
+    mode: Box<dyn Mode>,
+    view: String,
+    sketch: String,
     first_line: usize,
 }
 
 enum Operation {
     Noop,
-    End,
-    ReturnToDisplay,
     ChangeToDisplay,
     ChangeToCommand,
     ChangeToLineFilter,
     ChangeToAction,
+    ExecuteCommand,
     ScrollDown,
     ScrollUp,
-    SeeView(String),
-    DeleteBack,
-    AppendText(char),
-    FilterLines(String),
+    AppendChar(char),
     InsertAbove,
 }
 
@@ -37,16 +35,15 @@ enum Notice {
 
 trait Mode {
     fn handle_input(&mut self, c: char) -> Operation;
-    fn text(&self) -> &String;
+    fn process_sketch(&self, sketch: &String, window: &mut pancurses::Window);
 }
 
 struct DisplayMode {
-    view: String,
 }
 
 impl DisplayMode {
-    fn new(view: String) -> DisplayMode {
-        DisplayMode { view }
+    fn new() -> DisplayMode {
+        DisplayMode { }
     }
 }
 
@@ -61,71 +58,40 @@ impl Mode for DisplayMode {
         }
     }
 
-    fn text(&self) -> &String {
-        &self.view
+    fn process_sketch(&self, _sketch: &String, _window: &mut pancurses::Window) {
     }
 }
 
 struct CommandMode {
-    command: String,
 }
 
 impl CommandMode {
     fn new() -> CommandMode {
-        CommandMode {
-            command: String::new(),
-        }
-    }
-
-    fn process_command(&self, command: &str) -> Operation {
-        match command {
-            "see" => {
-                let re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
-                Operation::SeeView(re.captures(&self.command).unwrap()["path"].to_string())
-            }
-            "end" => Operation::End,
-            _ => Operation::Noop,
-        }
+        CommandMode { }
     }
 }
 
 impl Mode for CommandMode {
     fn handle_input(&mut self, c: char) -> Operation {
         match c {
-            '\n' => {
-                let re = Regex::new(r"(?P<command>.+?)(?:\s|$)").unwrap();
-                let cmd = self.command.clone();
-
-                match re.captures(&cmd) {
-                    Some(caps) => return self.process_command(&caps["command"]),
-                    None => Operation::Noop,
-                }
-            }
-            BACKSPACE => {
-                self.command.pop();
-                Operation::DeleteBack
-            }
-            '' => Operation::ReturnToDisplay,
-            _ => {
-                self.command.push(c);
-                Operation::AppendText(c)
-            }
+            '\n' => Operation::ExecuteCommand,
+            '' => Operation::ChangeToDisplay,
+            _ => Operation::AppendChar(c),
         }
     }
 
-    fn text(&self) -> &String {
-        &self.command
+    fn process_sketch(&self, _sketch: &String, _window: &mut pancurses::Window) {
     }
 }
 
 struct LineFilterMode {
-    text: String,
+    window_height: usize,
 }
 
 impl LineFilterMode {
-    fn new() -> LineFilterMode {
+    fn new(window_height: usize) -> LineFilterMode {
         LineFilterMode {
-            text: String::new(),
+            window_height,
         }
     }
 }
@@ -133,34 +99,35 @@ impl LineFilterMode {
 impl Mode for LineFilterMode {
     fn handle_input(&mut self, c: char) -> Operation {
         match c {
-            '0'...'9' => {
-                self.text.push(c);
-                Operation::FilterLines(self.text.clone())
-            }
-            BACKSPACE => {
-                self.text.pop();
-                Operation::FilterLines(self.text.clone())
-            }
+            '0'...'9' | BACKSPACE => Operation::AppendChar(c),
             '\n' => Operation::ChangeToAction,
-            '' => Operation::ReturnToDisplay,
+            '' => Operation::ChangeToDisplay,
             _ => Operation::Noop,
         }
     }
 
-    fn text(&self) -> &String {
-        &self.text
+    fn process_sketch(&self, sketch: &String, window: &mut pancurses::Window) {
+        // Subtract 1 to match line index.
+        let target_line = sketch.parse::<i32>().map(|i| i - 1).ok();
+
+        for line in 0..self.window_height {
+            let line = line as i32;
+
+            if Some(line) == target_line {
+                window.mvchgat(line, 0, -1, pancurses::A_NORMAL, 1);
+            } else {
+                window.mvchgat(line, 0, -1, pancurses::A_NORMAL, 0);
+            }
+        }
     }
 }
 
 struct ActionMode {
-    text: String,
 }
 
 impl ActionMode {
     fn new() -> ActionMode {
-        ActionMode {
-            text: String::new(),
-        }
+        ActionMode { }
     }
 }
 
@@ -172,20 +139,16 @@ impl Mode for ActionMode {
         }
     }
 
-    fn text(&self) -> &String {
-        &self.text
+    fn process_sketch(&self, _sketch: &String, _window: &mut pancurses::Window) {
     }
 }
 
 struct EditMode {
-    view: String,
 }
 
 impl EditMode {
-    fn new(view: String) -> EditMode {
-        EditMode {
-            view,
-        }
+    fn new() -> EditMode {
+        EditMode { }
     }
 }
 
@@ -197,8 +160,7 @@ impl Mode for EditMode {
         }
     }
 
-    fn text(&self) -> &String {
-        &self.view
+    fn process_sketch(&self, _sketch: &String, _window: &mut pancurses::Window) {
     }
 }
 
@@ -206,7 +168,6 @@ impl Paper {
     pub fn new() -> Paper {
         let window = pancurses::initscr();
         let first_line = 0;
-        let modes: Vec<Box<(dyn Mode)>> = vec![Box::new(DisplayMode::new(String::new()))];
 
         // Prevent curses from outputing keys.
         pancurses::noecho();
@@ -218,8 +179,10 @@ impl Paper {
 
         Paper {
             window,
-            modes,
+            mode: Box::new(DisplayMode::new()),
             first_line,
+            sketch: String::new(),
+            view: String::new(),
         }
     }
 
@@ -238,30 +201,66 @@ impl Paper {
 
     fn operate(&mut self, op: Operation) -> Option<Notice> {
         match op {
-            Operation::ReturnToDisplay => {
-                self.modes.truncate(1);
-                self.write_view();
+            Operation::ExecuteCommand => {
+                let re = Regex::new(r"(?P<command>.+?)(?:\s|$)").unwrap();
+                let command = self.sketch.clone();
+
+                match re.captures(&command) {
+                    Some(caps) => {
+                        match &caps["command"] {
+                            "see" => {
+                                let see_re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
+                                let path = see_re.captures(&self.sketch).unwrap()["path"].to_string();
+                                self.view = fs::read_to_string(&path).unwrap();
+                                self.mode = Box::new(DisplayMode::new());
+                                self.first_line = 0;
+                                self.write_view();
+                            }
+                            "end" => return Some(Notice::Quit),
+                            _ => {}
+                        }
+                    }
+                    None => {}
+                }
+            }
+            Operation::AppendChar(c) => {
+                self.window.addch(c);
+
+                match c {
+                    BACKSPACE => {
+                        // addch(BACKSPACE) moves cursor back 1, so delete char at cursor.
+                        self.window.delch();
+                        self.sketch.pop();
+                    }
+                    _ => {
+                        self.sketch.push(c);
+                    }
+                }
+
+                self.mode.process_sketch(&self.sketch, &mut self.window);
             }
             Operation::ChangeToDisplay => {
-                self.modes.truncate(1);
-                let view = self.modes.pop().unwrap().text().to_string();
-                self.modes.push(Box::new(DisplayMode::new(view)));
+                self.mode = Box::new(DisplayMode::new());
                 self.write_view();
             }
             Operation::ChangeToCommand => {
                 self.window.mv(0, 0);
-                self.modes.push(Box::new(CommandMode::new()));
+                self.mode = Box::new(CommandMode::new());
+                self.sketch.clear();
             }
             Operation::ChangeToLineFilter => {
-                self.modes.push(Box::new(LineFilterMode::new()));
+                self.sketch.clear();
+                let window_height = self.window_height();
+                self.mode = Box::new(LineFilterMode::new(window_height));
+                self.window.mv(0, 0);
             }
             Operation::ChangeToAction => {
-                self.modes.push(Box::new(ActionMode::new()));
+                self.mode = Box::new(ActionMode::new());
             }
             Operation::ScrollDown => {
                 self.first_line = cmp::min(
                     self.first_line + self.scroll_height(),
-                    self.modes.last().unwrap().text().lines().count() - 1,
+                    self.view.lines().count() - 1,
                 );
                 self.write_view();
             }
@@ -275,46 +274,10 @@ impl Paper {
                 }
                 self.write_view();
             }
-            Operation::DeleteBack => {
-                // Move cursor back one space.
-                self.window.addch(BACKSPACE);
-
-                // Delete character at cursor.
-                self.window.delch();
-            }
-            Operation::AppendText(c) => {
-                self.window.addch(c);
-            }
-            Operation::SeeView(path) => {
-                self.modes.clear();
-                self.modes.push(Box::new(DisplayMode::new(
-                    fs::read_to_string(&path).unwrap(),
-                )));
-                self.first_line = 0;
-                self.write_view();
-            }
-            Operation::FilterLines(lines) => {
-                // Subtract 1 to match line index.
-                let target_line = lines.parse::<i32>().map(|i| i - 1).ok();
-
-                for line in 0..self.window_height() {
-                    let line = line as i32;
-
-                    if Some(line) == target_line {
-                        self.window.mvchgat(line, 0, -1, pancurses::A_NORMAL, 1);
-                    } else {
-                        self.window.mvchgat(line, 0, -1, pancurses::A_NORMAL, 0);
-                    }
-                }
-            }
             Operation::InsertAbove => {
-                // Remove action mode to get access to filter mode.
-                self.modes.pop();
-
-                let filter = self.modes.pop().unwrap().text().to_string();
-                self.modes.truncate(1);
-                let base_mode = self.modes.pop().unwrap();
-                let mut lines: Vec<&str> = base_mode.text().lines().collect();
+                let filter = self.sketch.to_string();
+                let old_view = self.view.clone();
+                let mut lines: Vec<&str> = old_view.lines().collect();
                 let target_line = filter.parse::<i32>().map(|i| i - 1).ok();
 
                 match target_line {
@@ -322,10 +285,10 @@ impl Paper {
                     None => {},
                 }
 
-                self.modes.push(Box::new(EditMode::new(lines.join("\n"))));
+                self.view = lines.join("\n");
+                self.mode = Box::new(EditMode::new());
                 self.write_view();
             }
-            Operation::End => return Some(Notice::Quit),
             Operation::Noop => (),
         }
 
@@ -334,7 +297,7 @@ impl Paper {
 
     fn process_input(&mut self) -> Operation {
         match self.window.getch() {
-            Some(Input::Character(c)) => self.modes.last_mut().unwrap().handle_input(c),
+            Some(Input::Character(c)) => self.mode.handle_input(c),
             _ => Operation::Noop,
         }
     }
@@ -342,7 +305,7 @@ impl Paper {
     fn write_view(&mut self) {
         self.window.clear();
         self.window.mv(0, 0);
-        let lines: Vec<&str> = self.modes.last().unwrap().text().lines().collect();
+        let lines: Vec<&str> = self.view.lines().collect();
         let length = lines.len();
         let line_length = ((length as f32).log10() as usize) + 2;
         let max = cmp::min(self.window_height() + self.first_line, length);
