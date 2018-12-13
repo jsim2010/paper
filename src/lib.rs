@@ -14,6 +14,7 @@ pub struct Paper {
     view: String,
     sketch: String,
     first_line: usize,
+    line_number_length: usize,
 }
 
 enum Operation {
@@ -156,7 +157,7 @@ impl Mode for EditMode {
     fn handle_input(&mut self, c:char) -> Operation {
         match c {
             '' => Operation::ChangeToDisplay,
-            _ => Operation::Noop,
+            _ => Operation::AppendChar(c),
         }
     }
 
@@ -183,6 +184,7 @@ impl Paper {
             first_line,
             sketch: String::new(),
             view: String::new(),
+            line_number_length: 0,
         }
     }
 
@@ -286,8 +288,11 @@ impl Paper {
                 }
 
                 self.view = lines.join("\n");
+                // TODO: Store index of view at which to insert new chars in EditMode.
+                self.sketch = String::from("");
                 self.mode = Box::new(EditMode::new());
                 self.write_view();
+                self.window.mv(target_line.unwrap(), (self.line_number_length as i32) + 1);
             }
             Operation::Noop => (),
         }
@@ -307,14 +312,14 @@ impl Paper {
         self.window.mv(0, 0);
         let lines: Vec<&str> = self.view.lines().collect();
         let length = lines.len();
-        let line_length = ((length as f32).log10() as usize) + 2;
+        self.line_number_length = ((length as f32).log10() as usize) + 2;
         let max = cmp::min(self.window_height() + self.first_line, length);
 
         for (index, line) in lines[self.first_line..max].iter().enumerate() {
             self.window.addstr(format!(
                 "{:>width$} ",
                 index + self.first_line + 1,
-                width = line_length
+                width = self.line_number_length
             ));
             self.window.addstr(line);
             self.window.addch('\n');
