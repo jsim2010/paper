@@ -10,20 +10,22 @@ const BACKSPACE: char = '\u{08}';
 
 pub struct Paper {
     window: pancurses::Window,
-    mode: Box<dyn Mode>,
+    modes: Vec<Box<dyn Mode>>,
     first_line: usize,
 }
 
 enum Operation {
     Noop,
     End,
+    ChangeToDisplay,
     ChangeToCommand,
-    ChangeToFilter,
+    ChangeToLineFilter,
     ScrollDown,
     ScrollUp,
     SeeView(String),
     DeleteBack,
     AppendText(char),
+    FilterLines(String),
 }
 
 enum Notice {
@@ -49,7 +51,7 @@ impl Mode for DisplayMode {
     fn handle_input(&mut self, c: char) -> Operation {
         match c {
             '.' => Operation::ChangeToCommand,
-            '/' => Operation::ChangeToFilter,
+            '#' => Operation::ChangeToLineFilter,
             'j' => Operation::ScrollDown,
             'k' => Operation::ScrollUp,
             _ => Operation::Noop,
@@ -100,6 +102,7 @@ impl Mode for CommandMode {
                 self.command.pop();
                 Operation::DeleteBack
             }
+            '' => Operation::ChangeToDisplay,
             _ => {
                 self.command.push(c);
                 Operation::AppendText(c)
@@ -112,21 +115,34 @@ impl Mode for CommandMode {
     }
 }
 
-struct FilterMode {
-    text: String
+struct LineFilterMode {
+    text: String,
 }
 
-impl FilterMode {
-    fn new() -> FilterMode {
-        FilterMode{text: String::new()}
+impl LineFilterMode {
+    fn new() -> LineFilterMode {
+        LineFilterMode {
+            text: String::new(),
+        }
     }
 }
 
-impl Mode for FilterMode {
+impl Mode for LineFilterMode {
     fn handle_input(&mut self, c: char) -> Operation {
-        Operation::Noop
+        match c {
+            '0'...'9' => {
+                self.text.push(c);
+                Operation::FilterLines(self.text.clone())
+            }
+            BACKSPACE => {
+                self.text.pop();
+                Operation::FilterLines(self.text.clone())
+            }
+            '' => Operation::ChangeToDisplay,
+            _ => Operation::Noop,
+        }
     }
-    
+
     fn text(&self) -> &String {
         &self.text
     }
@@ -136,14 +152,19 @@ impl Paper {
     pub fn new() -> Paper {
         let window = pancurses::initscr();
         let first_line = 0;
-        let mode = Box::new(DisplayMode::new(String::new()));
+        let modes: Vec<Box<(dyn Mode)>> = vec![Box::new(DisplayMode::new(String::new()))];
 
         // Prevent curses from outputing keys.
         pancurses::noecho();
 
+        pancurses::start_color();
+        pancurses::use_default_colors();
+        pancurses::init_pair(0, -1, -1);
+        pancurses::init_pair(1, -1, pancurses::COLOR_BLUE);
+
         Paper {
             window,
-            mode,
+            modes,
             first_line,
         }
     }
@@ -163,17 +184,21 @@ impl Paper {
 
     fn operate(&mut self, op: Operation) -> Option<Notice> {
         match op {
+            Operation::ChangeToDisplay => {
+                self.modes.truncate(1);
+                self.write_view();
+            }
             Operation::ChangeToCommand => {
                 self.window.mv(0, 0);
-                self.mode = Box::new(CommandMode::new());
+                self.modes.push(Box::new(CommandMode::new()));
             }
-            Operation::ChangeToFilter => {
-                self.mode = Box::new(FilterMode::new());
+            Operation::ChangeToLineFilter => {
+                self.modes.push(Box::new(LineFilterMode::new()));
             }
             Operation::ScrollDown => {
                 self.first_line = cmp::min(
                     self.first_line + self.scroll_height(),
-                    self.mode.text().lines().count() - 1,
+                    self.modes.last().unwrap().text().lines().count() - 1,
                 );
                 self.write_view();
             }
@@ -198,9 +223,26 @@ impl Paper {
                 self.window.addch(c);
             }
             Operation::SeeView(path) => {
-                self.mode = Box::new(DisplayMode::new(fs::read_to_string(&path).unwrap()));
+                self.modes.clear();
+                self.modes.push(Box::new(DisplayMode::new(
+                    fs::read_to_string(&path).unwrap(),
+                )));
                 self.first_line = 0;
                 self.write_view();
+            }
+            Operation::FilterLines(lines) => {
+                // Subtract 1 to match line index.
+                let target_line = lines.parse::<i32>().map(|i| i - 1).ok();
+
+                for line in 0..self.window_height() {
+                    let line = line as i32;
+
+                    if Some(line) == target_line {
+                        self.window.mvchgat(line, 0, -1, pancurses::A_NORMAL, 1);
+                    } else {
+                        self.window.mvchgat(line, 0, -1, pancurses::A_NORMAL, 0);
+                    }
+                }
             }
             Operation::End => return Some(Notice::Quit),
             Operation::Noop => (),
@@ -211,7 +253,7 @@ impl Paper {
 
     fn process_input(&mut self) -> Operation {
         match self.window.getch() {
-            Some(Input::Character(c)) => self.mode.handle_input(c),
+            Some(Input::Character(c)) => self.modes.last_mut().unwrap().handle_input(c),
             _ => Operation::Noop,
         }
     }
@@ -219,13 +261,17 @@ impl Paper {
     fn write_view(&mut self) {
         self.window.clear();
         self.window.mv(0, 0);
-        let lines: Vec<&str> = self.mode.text().lines().collect();
+        let lines: Vec<&str> = self.modes.last().unwrap().text().lines().collect();
         let length = lines.len();
         let line_length = ((length as f32).log10() as usize) + 2;
         let max = cmp::min(self.window_height() + self.first_line, length);
 
         for (index, line) in lines[self.first_line..max].iter().enumerate() {
-            self.window.addstr(format!("{:>width$} ", index + self.first_line + 1, width = line_length));
+            self.window.addstr(format!(
+                "{:>width$} ",
+                index + self.first_line + 1,
+                width = line_length
+            ));
             self.window.addstr(line);
             self.window.addch('\n');
         }

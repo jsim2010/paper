@@ -12,10 +12,9 @@ display mode
 - display view through window
 - inputs:
   + (.) change to command mode
-  + (/) change to filter mode
+  + (#) filter by line number
   + (j) move window 1/4 window down
   + (k) move window 1/4 window up
-  + move window
 
 command mode
 
@@ -24,15 +23,19 @@ command mode
 - inputs:
   + (edit) edit command
   + (Enter) execute command
+  + (C-C) return to display mode
 - commands:
   + see `file`
   + end
 
-filter mode
+filter modes
 
 - allow user to select desired text to act upon
 - inputs:
-  + (l) line
+  + (edit) edit filter input
+  + (C-C) return to display mode
+- filters:
+  + line number
     * (digits) line number
 
 action mode
