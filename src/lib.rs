@@ -52,12 +52,11 @@ trait Mode {
     }
 }
 
-struct DisplayMode {
-}
+struct DisplayMode {}
 
 impl DisplayMode {
     fn new() -> DisplayMode {
-        DisplayMode { }
+        DisplayMode {}
     }
 }
 
@@ -77,12 +76,11 @@ impl Mode for DisplayMode {
     }
 }
 
-struct CommandMode {
-}
+struct CommandMode {}
 
 impl CommandMode {
     fn new() -> CommandMode {
-        CommandMode { }
+        CommandMode {}
     }
 }
 
@@ -100,13 +98,11 @@ impl Mode for CommandMode {
     }
 }
 
-struct LineFilterMode {
-}
+struct LineFilterMode {}
 
 impl LineFilterMode {
     fn new() -> LineFilterMode {
-        LineFilterMode {
-        }
+        LineFilterMode {}
     }
 }
 
@@ -126,21 +122,24 @@ impl Mode for LineFilterMode {
 
     fn enhance(&self, sketch: &String) -> Option<Enhancement> {
         // Subtract 1 to match line index.
-        sketch.parse::<i32>().map(|i| i - 1).ok().map(|line| Enhancement::FilterLine(line))
+        sketch
+            .parse::<i32>()
+            .map(|i| i - 1)
+            .ok()
+            .map(|line| Enhancement::FilterLine(line))
     }
 }
 
-struct ActionMode {
-}
+struct ActionMode {}
 
 impl ActionMode {
     fn new() -> ActionMode {
-        ActionMode { }
+        ActionMode {}
     }
 }
 
 impl Mode for ActionMode {
-    fn handle_input(&self, c: char)  -> Vec<Operation> {
+    fn handle_input(&self, c: char) -> Vec<Operation> {
         let mut operations = Vec::new();
 
         match c {
@@ -153,12 +152,11 @@ impl Mode for ActionMode {
     }
 }
 
-struct EditMode {
-}
+struct EditMode {}
 
 impl EditMode {
     fn new() -> EditMode {
-        EditMode { }
+        EditMode {}
     }
 }
 
@@ -250,19 +248,17 @@ impl Paper {
                 let command = self.sketch.clone();
 
                 match re.captures(&command) {
-                    Some(caps) => {
-                        match &caps["command"] {
-                            "see" => {
-                                let see_re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
-                                let path = see_re.captures(&self.sketch).unwrap()["path"].to_string();
-                                self.view = fs::read_to_string(&path).unwrap();
-                                self.first_line = 0;
-                                self.set_mode(ModeType::Display);
-                            }
-                            "end" => return Some(Notice::Quit),
-                            _ => {}
+                    Some(caps) => match &caps["command"] {
+                        "see" => {
+                            let see_re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
+                            let path = see_re.captures(&self.sketch).unwrap()["path"].to_string();
+                            self.view = fs::read_to_string(&path).unwrap();
+                            self.first_line = 0;
+                            self.set_mode(ModeType::Display);
                         }
-                    }
+                        "end" => return Some(Notice::Quit),
+                        _ => {}
+                    },
                     None => {}
                 }
             }
@@ -293,18 +289,16 @@ impl Paper {
                     None => {}
                 }
             }
-            Operation::AddToView(c) => {
-                match c {
-                    BACKSPACE => {
-                        self.index -= 1;
-                        self.view.remove(self.index);
-                    }
-                    _ => {
-                        self.view.insert(self.index, c);
-                        self.index += 1;
-                    }
+            Operation::AddToView(c) => match c {
+                BACKSPACE => {
+                    self.index -= 1;
+                    self.view.remove(self.index);
                 }
-            }
+                _ => {
+                    self.view.insert(self.index, c);
+                    self.index += 1;
+                }
+            },
             Operation::ChangeMode(mode) => {
                 self.set_mode(mode);
             }
@@ -342,7 +336,8 @@ impl Paper {
                 self.index += 1;
                 self.sketch = String::from("");
                 self.set_mode(ModeType::Edit);
-                self.window.mv(target_line as i32, (self.line_number_length as i32) + 1);
+                self.window
+                    .mv(target_line as i32, (self.line_number_length as i32) + 1);
             }
             Operation::AppendBelow => {
                 let filter = self.sketch.to_string();
@@ -359,7 +354,8 @@ impl Paper {
                 self.index += 1;
                 self.sketch = String::from("");
                 self.set_mode(ModeType::Edit);
-                self.window.mv(target_line as i32, (self.line_number_length as i32) + 1);
+                self.window
+                    .mv(target_line as i32, (self.line_number_length as i32) + 1);
             }
         }
 
