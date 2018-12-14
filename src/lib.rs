@@ -6,8 +6,10 @@ use regex::Regex;
 use std::cmp;
 use std::fs;
 
+/// Character that represents Backspace key.
 const BACKSPACE: char = '\u{08}';
 
+/// All data related to paper application.
 pub struct Paper {
     window: pancurses::Window,
     mode: Box<dyn Mode>,
