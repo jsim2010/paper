@@ -23,6 +23,8 @@ pub struct Paper {
 
 struct Filter {
     row: usize,
+    column: usize,
+    length: i32,
 }
 
 enum ModeType {
@@ -146,13 +148,23 @@ impl Mode for FilterMode {
                         .parse::<i32>()
                         .map(|i| i - 1)
                         .ok()
-                        .map(|r| filters.push(Filter{row: (r as usize)}));
+                        .map(|r| filters.push(Filter{
+                            row: (r as usize),
+                            column: 0,
+                            length: -1,
+                        }));
                 }
 
                 if let Some(key) = captures.name("key") {
-                    for (index, line) in view.lines().enumerate() {
-                        if line.contains(key.as_str()) {
-                            filters.push(Filter{row: (index as usize)});
+                    let length = key.as_str().len() as i32;
+
+                    for (row, line) in view.lines().enumerate() {
+                        for (key_index, _) in line.match_indices(key.as_str()) {
+                            filters.push(Filter{
+                                row: (row as usize),
+                                column: key_index,
+                                length,
+                            });
                         }
                     }
                 }
@@ -305,7 +317,7 @@ impl Paper {
                         self.filters = filters;
 
                         for filter in self.filters.iter() {
-                            self.window.mvchgat(filter.row as i32, 0, -1, pancurses::A_NORMAL, 1);
+                            self.window.mvchgat(filter.row as i32, (filter.column + self.line_number_length + 1) as i32, filter.length, pancurses::A_NORMAL, 1);
                         }
 
                         // Move cursor back to the correct location.
