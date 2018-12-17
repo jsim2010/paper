@@ -9,10 +9,16 @@ use std::fs;
 /// Character that represents Backspace key.
 const BACKSPACE: char = '\u{08}';
 
+const DISPLAY_MODE: Mode = Mode::Display {};
+const COMMAND_MODE: Mode = Mode::Command {};
+const FILTER_MODE: Mode = Mode::Filter {};
+const ACTION_MODE: Mode = Mode::Action {};
+const EDIT_MODE: Mode = Mode::Edit {};
+
 /// All data related to paper application.
 pub struct Paper {
     window: pancurses::Window,
-    mode: Box<dyn Mode>,
+    mode: Mode,
     view: String,
     sketch: String,
     first_line: usize,
@@ -27,16 +33,17 @@ struct Filter {
     length: i32,
 }
 
-enum ModeType {
-    Display,
-    Command,
-    Filter,
-    Action,
-    Edit,
+#[derive(PartialEq, Eq)]
+enum Mode {
+    Display {},
+    Command {},
+    Filter {},
+    Action {},
+    Edit {},
 }
 
 enum Operation {
-    ChangeMode(ModeType),
+    ChangeMode(Mode),
     ExecuteCommand,
     ScrollDown,
     ScrollUp,
@@ -54,179 +61,99 @@ enum Notice {
     Quit,
 }
 
-trait Mode {
-    fn handle_input(&self, c: char) -> Vec<Operation>;
-
-    fn enhance(&self, _sketch: &String, _view: &String) -> Option<Enhancement> {
-        None
-    }
-}
-
-struct DisplayMode {}
-
-impl DisplayMode {
-    fn new() -> DisplayMode {
-        DisplayMode {}
-    }
-}
-
-impl Mode for DisplayMode {
+impl Mode {
     fn handle_input(&self, c: char) -> Vec<Operation> {
         let mut operations = Vec::new();
 
-        match c {
-            '.' => operations.push(Operation::ChangeMode(ModeType::Command)),
-            '#' | '/' => {
-                operations.push(Operation::ChangeMode(ModeType::Filter));
-                operations.push(Operation::AddToSketch(c));
-            }
-            'j' => operations.push(Operation::ScrollDown),
-            'k' => operations.push(Operation::ScrollUp),
-            _ => {}
-        }
-
-        operations
-    }
-}
-
-struct CommandMode {}
-
-impl CommandMode {
-    fn new() -> CommandMode {
-        CommandMode {}
-    }
-}
-
-impl Mode for CommandMode {
-    fn handle_input(&self, c: char) -> Vec<Operation> {
-        let mut operations = Vec::new();
-
-        match c {
-            '\n' => {
-                operations.push(Operation::ExecuteCommand);
-                operations.push(Operation::ChangeMode(ModeType::Display));
-            }
-            '' => operations.push(Operation::ChangeMode(ModeType::Display)),
-            _ => operations.push(Operation::AddToSketch(c)),
-        }
-
-        operations
-    }
-}
-
-struct FilterMode {}
-
-impl FilterMode {
-    fn new() -> FilterMode {
-        FilterMode {}
-    }
-}
-
-impl Mode for FilterMode {
-    fn handle_input(&self, c: char) -> Vec<Operation> {
-        let mut operations = Vec::new();
-
-        match c {
-            '\n' => operations.push(Operation::ChangeMode(ModeType::Action)),
-            '' => operations.push(Operation::ChangeMode(ModeType::Display)),
-            _ => operations.push(Operation::AddToSketch(c)),
+        match *self {
+            DISPLAY_MODE => match c {
+                '.' => operations.push(Operation::ChangeMode(COMMAND_MODE)),
+                '#' | '/' => {
+                    operations.push(Operation::ChangeMode(FILTER_MODE));
+                    operations.push(Operation::AddToSketch(c));
+                }
+                'j' => operations.push(Operation::ScrollDown),
+                'k' => operations.push(Operation::ScrollUp),
+                _ => {}
+            },
+            COMMAND_MODE => match c {
+                '\n' => {
+                    operations.push(Operation::ExecuteCommand);
+                    operations.push(Operation::ChangeMode(DISPLAY_MODE));
+                }
+                '' => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                _ => operations.push(Operation::AddToSketch(c)),
+            },
+            FILTER_MODE => match c {
+                '\n' => operations.push(Operation::ChangeMode(ACTION_MODE)),
+                '' => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                _ => operations.push(Operation::AddToSketch(c)),
+            },
+            ACTION_MODE => match c {
+                'A' => {
+                    operations.push(Operation::AppendBelow);
+                    operations.push(Operation::AddToView('\n'));
+                    operations.push(Operation::ChangeMode(EDIT_MODE));
+                }
+                'I' => {
+                    operations.push(Operation::InsertAbove);
+                    operations.push(Operation::AddToView('\n'));
+                    operations.push(Operation::ChangeMode(EDIT_MODE));
+                }
+                _ => {}
+            },
+            EDIT_MODE => match c {
+                '' => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                _ => {
+                    operations.push(Operation::AddToSketch(c));
+                    operations.push(Operation::AddToView(c));
+                }
+            },
         }
 
         operations
     }
 
     fn enhance(&self, sketch: &String, view: &String) -> Option<Enhancement> {
-        let re = Regex::new(r"#(?P<line>\d+)|/(?P<key>.+)").unwrap();
-        let mut filters = Vec::new();
+        match *self {
+            FILTER_MODE => {
+                let re = Regex::new(r"#(?P<line>\d+)|/(?P<key>.+)").unwrap();
+                let mut filters = Vec::new();
 
-        match &re.captures(sketch) {
-            Some(captures) => {
-                if let Some(line) = captures.name("line") {
-                    // Subtract 1 to match row.
-                    line
-                        .as_str()
-                        .parse::<i32>()
-                        .map(|i| i - 1)
-                        .ok()
-                        .map(|r| filters.push(Filter{
-                            row: (r as usize),
-                            column: 0,
-                            length: -1,
-                        }));
-                }
-
-                if let Some(key) = captures.name("key") {
-                    let length = key.as_str().len() as i32;
-
-                    for (row, line) in view.lines().enumerate() {
-                        for (key_index, _) in line.match_indices(key.as_str()) {
-                            filters.push(Filter{
-                                row: (row as usize),
-                                column: key_index,
-                                length,
+                match &re.captures(sketch) {
+                    Some(captures) => {
+                        if let Some(line) = captures.name("line") {
+                            // Subtract 1 to match row.
+                            line.as_str().parse::<i32>().map(|i| i - 1).ok().map(|r| {
+                                filters.push(Filter {
+                                    row: (r as usize),
+                                    column: 0,
+                                    length: -1,
+                                })
                             });
                         }
+
+                        if let Some(key) = captures.name("key") {
+                            let length = key.as_str().len() as i32;
+
+                            for (row, line) in view.lines().enumerate() {
+                                for (key_index, _) in line.match_indices(key.as_str()) {
+                                    filters.push(Filter {
+                                        row: (row as usize),
+                                        column: key_index,
+                                        length,
+                                    });
+                                }
+                            }
+                        }
                     }
+                    None => {}
                 }
+
+                Some(Enhancement::Filters(filters))
             }
-            None => {}
+            DISPLAY_MODE | COMMAND_MODE | ACTION_MODE | EDIT_MODE => None,
         }
-
-        Some(Enhancement::Filters(filters))
-    }
-}
-
-struct ActionMode {}
-
-impl ActionMode {
-    fn new() -> ActionMode {
-        ActionMode {}
-    }
-}
-
-impl Mode for ActionMode {
-    fn handle_input(&self, c: char) -> Vec<Operation> {
-        let mut operations = Vec::new();
-
-        match c {
-            'A' => {
-                operations.push(Operation::AppendBelow);
-                operations.push(Operation::AddToView('\n'));
-                operations.push(Operation::ChangeMode(ModeType::Edit));
-            }
-            'I' => {
-                operations.push(Operation::InsertAbove);
-                operations.push(Operation::AddToView('\n'));
-                operations.push(Operation::ChangeMode(ModeType::Edit));
-            }
-            _ => {}
-        }
-
-        operations
-    }
-}
-
-struct EditMode {}
-
-impl EditMode {
-    fn new() -> EditMode {
-        EditMode {}
-    }
-}
-
-impl Mode for EditMode {
-    fn handle_input(&self, c: char) -> Vec<Operation> {
-        let mut operations = Vec::new();
-
-        match c {
-            '' => operations.push(Operation::ChangeMode(ModeType::Display)),
-            _ => {
-                operations.push(Operation::AddToSketch(c));
-                operations.push(Operation::AddToView(c));
-            }
-        }
-
-        operations
     }
 }
 
@@ -245,7 +172,7 @@ impl Paper {
 
         Paper {
             window,
-            mode: Box::new(DisplayMode::new()),
+            mode: DISPLAY_MODE,
             first_line: 0,
             sketch: String::new(),
             view: String::new(),
@@ -311,13 +238,20 @@ impl Paper {
                     Some(Enhancement::Filters(filters)) => {
                         // Clear filter background.
                         for line in 0..self.window_height() {
-                            self.window.mvchgat(line as i32, 0, -1, pancurses::A_NORMAL, 0);
+                            self.window
+                                .mvchgat(line as i32, 0, -1, pancurses::A_NORMAL, 0);
                         }
 
                         self.filters = filters;
 
                         for filter in self.filters.iter() {
-                            self.window.mvchgat(filter.row as i32, (filter.column + self.line_number_length + 1) as i32, filter.length, pancurses::A_NORMAL, 1);
+                            self.window.mvchgat(
+                                filter.row as i32,
+                                (filter.column + self.line_number_length + 1) as i32,
+                                filter.length,
+                                pancurses::A_NORMAL,
+                                1,
+                            );
                         }
 
                         // Move cursor back to the correct location.
@@ -337,30 +271,24 @@ impl Paper {
                 }
             },
             Operation::ChangeMode(mode) => {
-                match mode {
-                    ModeType::Display => {
-                        self.mode = Box::new(DisplayMode::new());
+                self.mode = mode;
+
+                match self.mode {
+                    DISPLAY_MODE => {
                         self.write_view();
                     }
-                    ModeType::Command => {
-                        self.mode = Box::new(CommandMode::new());
+                    COMMAND_MODE | FILTER_MODE => {
                         self.window.mv(0, 0);
                         self.sketch.clear();
                     }
-                    ModeType::Filter => {
-                        self.mode = Box::new(FilterMode::new());
-                        self.window.mv(0, 0);
-                        self.sketch.clear();
-                    }
-                    ModeType::Action => {
-                        self.mode = Box::new(ActionMode::new());
-                    }
-                    ModeType::Edit => {
-                        self.mode = Box::new(EditMode::new());
+                    ACTION_MODE => {}
+                    EDIT_MODE => {
                         self.write_view();
                         self.sketch.clear();
-                        self.window
-                            .mv(self.filters[0].row as i32, (self.line_number_length as i32) + 1);
+                        self.window.mv(
+                            self.filters[0].row as i32,
+                            (self.line_number_length as i32) + 1,
+                        );
                     }
                 }
             }
