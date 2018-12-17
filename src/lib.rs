@@ -73,7 +73,10 @@ impl Mode for DisplayMode {
 
         match c {
             '.' => operations.push(Operation::ChangeMode(ModeType::Command)),
-            '#' => operations.push(Operation::ChangeMode(ModeType::LineFilter)),
+            '#' => {
+                operations.push(Operation::ChangeMode(ModeType::LineFilter));
+                operations.push(Operation::AddToSketch('#'));
+            }
             'j' => operations.push(Operation::ScrollDown),
             'k' => operations.push(Operation::ScrollUp),
             _ => {}
@@ -131,12 +134,19 @@ impl Mode for LineFilterMode {
     }
 
     fn enhance(&self, sketch: &String) -> Option<Enhancement> {
-        // Subtract 1 to match row.
-        sketch
-            .parse::<i32>()
-            .map(|i| i - 1)
-            .ok()
-            .map(|row| Enhancement::FilterRow(row as usize))
+        let re = Regex::new(r"#(?P<line>\d+)").unwrap();
+
+        match &re.captures(sketch).map(|c| c.name("line").unwrap().as_str()) {
+            Some(line) => {
+                // Subtract 1 to match row.
+                line
+                    .parse::<i32>()
+                    .map(|i| i - 1)
+                    .ok()
+                    .map(|row| Enhancement::FilterRow(row as usize))
+            }
+            None => None,
+        }
     }
 }
 
@@ -257,12 +267,17 @@ impl Paper {
                 }
             }
             Operation::AddToSketch(c) => {
+                self.window
+                    .mv(0, self.sketch.len() as i32);
                 self.window.addch(c);
 
                 match c {
                     BACKSPACE => {
-                        // addch(BACKSPACE) moves cursor back 1, so delete char at cursor.
+                        // addch(BACKSPACE) moves cursor back 1, so cursor is at desired location.
+                        // Delete character and then add space so everything after is kept in
+                        // place.
                         self.window.delch();
+                        self.window.insch(' ');
                         self.sketch.pop();
                     }
                     _ => {
@@ -282,7 +297,11 @@ impl Paper {
                             }
                         }
                     }
-                    None => {}
+                    None => {
+                        for line in 0..self.window_height() {
+                            self.window.mvchgat(line as i32, 0, -1, pancurses::A_NORMAL, 0);
+                        }
+                    }
                 }
             }
             Operation::AddToView(c) => match c {

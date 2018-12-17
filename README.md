@@ -38,7 +38,9 @@ filter modes
   + (C-C) return to display mode
 - filters:
   + line number
-    * (digits) line number
+    * `#`: line number
+    * `filter`|`filter`: 2 separate line number filters
+    * `#``motion``#`: start at line number, include motion
 
 action mode
 
@@ -47,7 +49,7 @@ action mode
   + (A) append new line below and start mark mode
   + (I) insert new line above and start mark mode
 
-mark mode
+edit mode
 
 - allow user to edit view
 - inputs:
