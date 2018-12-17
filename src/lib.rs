@@ -18,6 +18,11 @@ pub struct Paper {
     first_line: usize,
     line_number_length: usize,
     index: usize,
+    filter: Filter,
+}
+
+struct Filter {
+    row: usize,
 }
 
 enum ModeType {
@@ -40,7 +45,7 @@ enum Operation {
 }
 
 enum Enhancement {
-    FilterLine(i32),
+    FilterRow(usize),
 }
 
 enum Notice {
@@ -91,7 +96,10 @@ impl Mode for CommandMode {
         let mut operations = Vec::new();
 
         match c {
-            '\n' => operations.push(Operation::ExecuteCommand),
+            '\n' => {
+                operations.push(Operation::ExecuteCommand);
+                operations.push(Operation::ChangeMode(ModeType::Display));
+            }
             '' => operations.push(Operation::ChangeMode(ModeType::Display)),
             _ => operations.push(Operation::AddToSketch(c)),
         }
@@ -123,12 +131,12 @@ impl Mode for LineFilterMode {
     }
 
     fn enhance(&self, sketch: &String) -> Option<Enhancement> {
-        // Subtract 1 to match line index.
+        // Subtract 1 to match row.
         sketch
             .parse::<i32>()
             .map(|i| i - 1)
             .ok()
-            .map(|line| Enhancement::FilterLine(line))
+            .map(|row| Enhancement::FilterRow(row as usize))
     }
 }
 
@@ -145,8 +153,16 @@ impl Mode for ActionMode {
         let mut operations = Vec::new();
 
         match c {
-            'A' => operations.push(Operation::AppendBelow),
-            'I' => operations.push(Operation::InsertAbove),
+            'A' => {
+                operations.push(Operation::AppendBelow);
+                operations.push(Operation::AddToView('\n'));
+                operations.push(Operation::ChangeMode(ModeType::Edit));
+            }
+            'I' => {
+                operations.push(Operation::InsertAbove);
+                operations.push(Operation::AddToView('\n'));
+                operations.push(Operation::ChangeMode(ModeType::Edit));
+            }
             _ => {}
         }
 
@@ -180,8 +196,8 @@ impl Mode for EditMode {
 
 impl Paper {
     pub fn new() -> Paper {
+        // Must call initscr() first.
         let window = pancurses::initscr();
-        let first_line = 0;
 
         // Prevent curses from outputing keys.
         pancurses::noecho();
@@ -194,11 +210,14 @@ impl Paper {
         Paper {
             window,
             mode: Box::new(DisplayMode::new()),
-            first_line,
+            first_line: 0,
             sketch: String::new(),
             view: String::new(),
             line_number_length: 0,
             index: 0,
+            filter: Filter{
+                row: 0,
+            },
         }
     }
 
@@ -217,32 +236,6 @@ impl Paper {
         pancurses::endwin();
     }
 
-    fn set_mode(&mut self, mode: ModeType) {
-        match mode {
-            ModeType::Display => {
-                self.mode = Box::new(DisplayMode::new());
-                self.write_view();
-            }
-            ModeType::Command => {
-                self.mode = Box::new(CommandMode::new());
-                self.window.mv(0, 0);
-                self.sketch.clear();
-            }
-            ModeType::LineFilter => {
-                self.mode = Box::new(LineFilterMode::new());
-                self.window.mv(0, 0);
-                self.sketch.clear();
-            }
-            ModeType::Action => {
-                self.mode = Box::new(ActionMode::new());
-            }
-            ModeType::Edit => {
-                self.mode = Box::new(EditMode::new());
-                self.write_view();
-            }
-        }
-    }
-
     fn operate(&mut self, op: Operation) -> Option<Notice> {
         match op {
             Operation::ExecuteCommand => {
@@ -256,7 +249,6 @@ impl Paper {
                             let path = see_re.captures(&self.sketch).unwrap()["path"].to_string();
                             self.view = fs::read_to_string(&path).unwrap();
                             self.first_line = 0;
-                            self.set_mode(ModeType::Display);
                         }
                         "end" => return Some(Notice::Quit),
                         _ => {}
@@ -279,12 +271,14 @@ impl Paper {
                 }
 
                 match self.mode.enhance(&self.sketch) {
-                    Some(Enhancement::FilterLine(target)) => {
-                        for line in 0..self.window_height() as i32 {
-                            if line == target {
-                                self.window.mvchgat(line, 0, -1, pancurses::A_NORMAL, 1);
+                    Some(Enhancement::FilterRow(target_row)) => {
+                        self.filter.row = target_row;
+
+                        for line in 0..self.window_height() {
+                            if line == target_row {
+                                self.window.mvchgat(line as i32, 0, -1, pancurses::A_NORMAL, 1);
                             } else {
-                                self.window.mvchgat(line, 0, -1, pancurses::A_NORMAL, 0);
+                                self.window.mvchgat(line as i32, 0, -1, pancurses::A_NORMAL, 0);
                             }
                         }
                     }
@@ -302,7 +296,32 @@ impl Paper {
                 }
             },
             Operation::ChangeMode(mode) => {
-                self.set_mode(mode);
+                match mode {
+                    ModeType::Display => {
+                        self.mode = Box::new(DisplayMode::new());
+                        self.write_view();
+                    }
+                    ModeType::Command => {
+                        self.mode = Box::new(CommandMode::new());
+                        self.window.mv(0, 0);
+                        self.sketch.clear();
+                    }
+                    ModeType::LineFilter => {
+                        self.mode = Box::new(LineFilterMode::new());
+                        self.window.mv(0, 0);
+                        self.sketch.clear();
+                    }
+                    ModeType::Action => {
+                        self.mode = Box::new(ActionMode::new());
+                    }
+                    ModeType::Edit => {
+                        self.mode = Box::new(EditMode::new());
+                        self.write_view();
+                        self.sketch.clear();
+                        self.window
+                            .mv(self.filter.row as i32, (self.line_number_length as i32) + 1);
+                    }
+                }
             }
             Operation::ScrollDown => {
                 self.first_line = cmp::min(
@@ -322,46 +341,26 @@ impl Paper {
                 self.write_view();
             }
             Operation::InsertAbove => {
-                let filter = self.sketch.to_string();
-                let target_line = (filter.parse::<i32>().unwrap() - 1) as usize;
-                let line_index = target_line - 1;
-
-                if target_line == 0 {
-                    self.index = 0;
-                } else {
-                    let newline_indices: Vec<_> = self.view.match_indices("\n").collect();
-                    let (index, _) = *newline_indices.get(line_index).unwrap();
-                    self.index = index;
-                }
-
-                self.view.insert(self.index, '\n');
-                self.index += 1;
-                self.sketch = String::from("");
-                self.set_mode(ModeType::Edit);
-                self.window
-                    .mv(target_line as i32, (self.line_number_length as i32) + 1);
+                self.index = self.calc_index(self.filter.row);
             }
             Operation::AppendBelow => {
-                let filter = self.sketch.to_string();
-                let target_line = filter.parse::<i32>().unwrap() as usize;
-                let line_index = target_line - 1;
-
-                {
-                    let newline_indices: Vec<_> = self.view.match_indices("\n").collect();
-                    let (index, _) = *newline_indices.get(line_index).unwrap();
-                    self.index = index;
-                }
-
-                self.view.insert(self.index, '\n');
-                self.index += 1;
-                self.sketch = String::from("");
-                self.set_mode(ModeType::Edit);
-                self.window
-                    .mv(target_line as i32, (self.line_number_length as i32) + 1);
+                self.filter.row += 1;
+                self.index = self.calc_index(self.filter.row);
             }
         }
 
         None
+    }
+
+    fn calc_index(&self, target: usize) -> usize {
+        match target {
+            0 => 0,
+            _ => {
+                let newline_indices: Vec<_> = self.view.match_indices("\n").collect();
+                let (index, _) = *newline_indices.get(target - 1).unwrap();
+                index
+            }
+        }
     }
 
     fn process_input(&mut self) -> Vec<Operation> {
