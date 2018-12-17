@@ -18,7 +18,7 @@ pub struct Paper {
     first_line: usize,
     line_number_length: usize,
     index: usize,
-    filter: Filter,
+    filters: Vec<Filter>,
 }
 
 struct Filter {
@@ -28,7 +28,7 @@ struct Filter {
 enum ModeType {
     Display,
     Command,
-    LineFilter,
+    Filter,
     Action,
     Edit,
 }
@@ -45,7 +45,7 @@ enum Operation {
 }
 
 enum Enhancement {
-    FilterRow(usize),
+    Filters(Vec<Filter>),
 }
 
 enum Notice {
@@ -54,7 +54,8 @@ enum Notice {
 
 trait Mode {
     fn handle_input(&self, c: char) -> Vec<Operation>;
-    fn enhance(&self, _sketch: &String) -> Option<Enhancement> {
+
+    fn enhance(&self, _sketch: &String, _view: &String) -> Option<Enhancement> {
         None
     }
 }
@@ -73,9 +74,9 @@ impl Mode for DisplayMode {
 
         match c {
             '.' => operations.push(Operation::ChangeMode(ModeType::Command)),
-            '#' => {
-                operations.push(Operation::ChangeMode(ModeType::LineFilter));
-                operations.push(Operation::AddToSketch('#'));
+            '#' | '/' => {
+                operations.push(Operation::ChangeMode(ModeType::Filter));
+                operations.push(Operation::AddToSketch(c));
             }
             'j' => operations.push(Operation::ScrollDown),
             'k' => operations.push(Operation::ScrollUp),
@@ -111,42 +112,55 @@ impl Mode for CommandMode {
     }
 }
 
-struct LineFilterMode {}
+struct FilterMode {}
 
-impl LineFilterMode {
-    fn new() -> LineFilterMode {
-        LineFilterMode {}
+impl FilterMode {
+    fn new() -> FilterMode {
+        FilterMode {}
     }
 }
 
-impl Mode for LineFilterMode {
+impl Mode for FilterMode {
     fn handle_input(&self, c: char) -> Vec<Operation> {
         let mut operations = Vec::new();
 
         match c {
-            '0'...'9' | BACKSPACE => operations.push(Operation::AddToSketch(c)),
             '\n' => operations.push(Operation::ChangeMode(ModeType::Action)),
             '' => operations.push(Operation::ChangeMode(ModeType::Display)),
-            _ => {}
+            _ => operations.push(Operation::AddToSketch(c)),
         }
 
         operations
     }
 
-    fn enhance(&self, sketch: &String) -> Option<Enhancement> {
-        let re = Regex::new(r"#(?P<line>\d+)").unwrap();
+    fn enhance(&self, sketch: &String, view: &String) -> Option<Enhancement> {
+        let re = Regex::new(r"#(?P<line>\d+)|/(?P<key>.+)").unwrap();
+        let mut filters = Vec::new();
 
-        match &re.captures(sketch).map(|c| c.name("line").unwrap().as_str()) {
-            Some(line) => {
-                // Subtract 1 to match row.
-                line
-                    .parse::<i32>()
-                    .map(|i| i - 1)
-                    .ok()
-                    .map(|row| Enhancement::FilterRow(row as usize))
+        match &re.captures(sketch) {
+            Some(captures) => {
+                if let Some(line) = captures.name("line") {
+                    // Subtract 1 to match row.
+                    line
+                        .as_str()
+                        .parse::<i32>()
+                        .map(|i| i - 1)
+                        .ok()
+                        .map(|r| filters.push(Filter{row: (r as usize)}));
+                }
+
+                if let Some(key) = captures.name("key") {
+                    for (index, line) in view.lines().enumerate() {
+                        if line.contains(key.as_str()) {
+                            filters.push(Filter{row: (index as usize)});
+                        }
+                    }
+                }
             }
-            None => None,
+            None => {}
         }
+
+        Some(Enhancement::Filters(filters))
     }
 }
 
@@ -225,9 +239,7 @@ impl Paper {
             view: String::new(),
             line_number_length: 0,
             index: 0,
-            filter: Filter{
-                row: 0,
-            },
+            filters: Vec::new(),
         }
     }
 
@@ -267,8 +279,6 @@ impl Paper {
                 }
             }
             Operation::AddToSketch(c) => {
-                self.window
-                    .mv(0, self.sketch.len() as i32);
                 self.window.addch(c);
 
                 match c {
@@ -285,23 +295,23 @@ impl Paper {
                     }
                 }
 
-                match self.mode.enhance(&self.sketch) {
-                    Some(Enhancement::FilterRow(target_row)) => {
-                        self.filter.row = target_row;
-
-                        for line in 0..self.window_height() {
-                            if line == target_row {
-                                self.window.mvchgat(line as i32, 0, -1, pancurses::A_NORMAL, 1);
-                            } else {
-                                self.window.mvchgat(line as i32, 0, -1, pancurses::A_NORMAL, 0);
-                            }
-                        }
-                    }
-                    None => {
+                match self.mode.enhance(&self.sketch, &self.view) {
+                    Some(Enhancement::Filters(filters)) => {
+                        // Clear filter background.
                         for line in 0..self.window_height() {
                             self.window.mvchgat(line as i32, 0, -1, pancurses::A_NORMAL, 0);
                         }
+
+                        self.filters = filters;
+
+                        for filter in self.filters.iter() {
+                            self.window.mvchgat(filter.row as i32, 0, -1, pancurses::A_NORMAL, 1);
+                        }
+
+                        // Move cursor back to the correct location.
+                        self.window.mv(0, self.sketch.len() as i32);
                     }
+                    None => {}
                 }
             }
             Operation::AddToView(c) => match c {
@@ -325,8 +335,8 @@ impl Paper {
                         self.window.mv(0, 0);
                         self.sketch.clear();
                     }
-                    ModeType::LineFilter => {
-                        self.mode = Box::new(LineFilterMode::new());
+                    ModeType::Filter => {
+                        self.mode = Box::new(FilterMode::new());
                         self.window.mv(0, 0);
                         self.sketch.clear();
                     }
@@ -338,7 +348,7 @@ impl Paper {
                         self.write_view();
                         self.sketch.clear();
                         self.window
-                            .mv(self.filter.row as i32, (self.line_number_length as i32) + 1);
+                            .mv(self.filters[0].row as i32, (self.line_number_length as i32) + 1);
                     }
                 }
             }
@@ -360,11 +370,11 @@ impl Paper {
                 self.write_view();
             }
             Operation::InsertAbove => {
-                self.index = self.calc_index(self.filter.row);
+                self.index = self.calc_index(self.filters[0].row);
             }
             Operation::AppendBelow => {
-                self.filter.row += 1;
-                self.index = self.calc_index(self.filter.row);
+                self.filters[0].row += 1;
+                self.index = self.calc_index(self.filters[0].row);
             }
         }
 
