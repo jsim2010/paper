@@ -98,8 +98,8 @@ impl Mode {
             },
             ACTION_MODE => match c {
                 'i' => {
-                    //operations.push(Operation::AdjustCursor(Direction::Left));
-                    //operations.push(Operation::ChangeMode(EDIT_MODE));
+                    operations.push(Operation::AdjustCursor(Direction::Before));
+                    operations.push(Operation::ChangeMode(EDIT_MODE));
                 }
                 'A' => {
                     operations.push(Operation::AdjustCursor(Direction::After));
@@ -230,19 +230,21 @@ impl Paper {
                 }
             }
             Operation::AddToSketch(c) => {
-                self.window.addch(c);
-
                 match c {
                     BACKSPACE => {
-                        // addch(BACKSPACE) moves cursor back 1, so cursor is at desired location.
-                        // Delete character and then add space so everything after is kept in
-                        // place.
-                        self.window.delch();
-                        self.window.insch(' ');
                         self.sketch.pop();
+
+                        // Move cursor back 1 - addch(BACKSPACE) - then delete character.
+                        self.window.addch(c);
+                        self.window.delch();
                     }
                     _ => {
                         self.sketch.push(c);
+
+                        // Insert a space so that the current character is not overwritten.
+                        // addch() is the only function that advances the cursor.
+                        self.window.insch(' ');
+                        self.window.addch(c);
                     }
                 }
 
