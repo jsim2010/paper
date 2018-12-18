@@ -45,9 +45,9 @@ enum Mode {
 }
 
 #[derive(PartialEq)]
-enum VerticalDirection {
-    Above,
-    Below,
+enum Direction {
+    Before,
+    After,
 }
 
 enum Operation {
@@ -57,7 +57,7 @@ enum Operation {
     ScrollUp,
     AddToSketch(char),
     AddToView(char),
-    InsertLine(VerticalDirection),
+    AdjustCursor(Direction),
 }
 
 enum Enhancement {
@@ -97,14 +97,19 @@ impl Mode {
                 _ => operations.push(Operation::AddToSketch(c)),
             },
             ACTION_MODE => match c {
+                'i' => {
+                    //operations.push(Operation::AdjustCursor(Direction::Left));
+                    //operations.push(Operation::ChangeMode(EDIT_MODE));
+                }
                 'A' => {
-                    operations.push(Operation::InsertLine(VerticalDirection::Below));
+                    operations.push(Operation::AdjustCursor(Direction::After));
                     operations.push(Operation::AddToView(ENTER));
                     operations.push(Operation::ChangeMode(EDIT_MODE));
                 }
                 'I' => {
-                    operations.push(Operation::InsertLine(VerticalDirection::Above));
+                    operations.push(Operation::AdjustCursor(Direction::Before));
                     operations.push(Operation::AddToView(ENTER));
+                    operations.push(Operation::AdjustCursor(Direction::Before));
                     operations.push(Operation::ChangeMode(EDIT_MODE));
                 }
                 _ => {}
@@ -215,7 +220,7 @@ impl Paper {
                         "see" => {
                             let see_re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
                             let path = see_re.captures(&self.sketch).unwrap()["path"].to_string();
-                            self.view = fs::read_to_string(&path).unwrap();
+                            self.view = fs::read_to_string(&path).unwrap().replace('\r', "");
                             self.first_line = 0;
                         }
                         "end" => return Some(Notice::Quit),
@@ -294,7 +299,7 @@ impl Paper {
                         self.sketch.clear();
                         self.window.mv(
                             self.filters[0].row as i32,
-                            (self.line_number_length as i32) + 1,
+                            (self.line_number_length + self.filters[0].column) as i32 + 1,
                         );
                     }
                 }
@@ -316,27 +321,32 @@ impl Paper {
                 }
                 self.write_view();
             }
-            Operation::InsertLine(direction) => {
-                if direction == VerticalDirection::Below {
+            Operation::AdjustCursor(direction) => {
+                self.index = match self.filters[0].row {
+                    0 => 0,
+                    row => {
+                        let newline_indices: Vec<_> = self.view.match_indices(ENTER).collect();
+                        let (index, _) = *newline_indices.get(row - 1).unwrap();
+                        index + 1
+                    }
+                };
+
+                self.index += self.filters[0].column;
+
+                if direction == Direction::After {
+                    self.index += match self.filters[0].length {
+                        -1 => {
+                            self.view.lines().nth(self.filters[0].row).unwrap().len()
+                        }
+                        length => length as usize,
+                    };
+
                     self.filters[0].row += 1;
                 }
-
-                self.index = self.calc_index(self.filters[0].row);
             }
         }
 
         None
-    }
-
-    fn calc_index(&self, target: usize) -> usize {
-        match target {
-            0 => 0,
-            _ => {
-                let newline_indices: Vec<_> = self.view.match_indices(ENTER).collect();
-                let (index, _) = *newline_indices.get(target - 1).unwrap();
-                index
-            }
-        }
     }
 
     fn process_input(&mut self) -> Vec<Operation> {
