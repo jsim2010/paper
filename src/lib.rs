@@ -8,6 +8,8 @@ use std::fs;
 
 /// Character that represents Backspace key.
 const BACKSPACE: char = '\u{08}';
+/// Character that represents Enter key.
+const ENTER: char = '\n';
 
 const DISPLAY_MODE: Mode = Mode::Display {};
 const COMMAND_MODE: Mode = Mode::Command {};
@@ -42,6 +44,12 @@ enum Mode {
     Edit {},
 }
 
+#[derive(PartialEq)]
+enum VerticalDirection {
+    Above,
+    Below,
+}
+
 enum Operation {
     ChangeMode(Mode),
     ExecuteCommand,
@@ -49,8 +57,7 @@ enum Operation {
     ScrollUp,
     AddToSketch(char),
     AddToView(char),
-    AppendBelow,
-    InsertAbove,
+    InsertLine(VerticalDirection),
 }
 
 enum Enhancement {
@@ -77,7 +84,7 @@ impl Mode {
                 _ => {}
             },
             COMMAND_MODE => match c {
-                '\n' => {
+                ENTER => {
                     operations.push(Operation::ExecuteCommand);
                     operations.push(Operation::ChangeMode(DISPLAY_MODE));
                 }
@@ -85,19 +92,19 @@ impl Mode {
                 _ => operations.push(Operation::AddToSketch(c)),
             },
             FILTER_MODE => match c {
-                '\n' => operations.push(Operation::ChangeMode(ACTION_MODE)),
+                ENTER => operations.push(Operation::ChangeMode(ACTION_MODE)),
                 '' => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
                 _ => operations.push(Operation::AddToSketch(c)),
             },
             ACTION_MODE => match c {
                 'A' => {
-                    operations.push(Operation::AppendBelow);
-                    operations.push(Operation::AddToView('\n'));
+                    operations.push(Operation::InsertLine(VerticalDirection::Below));
+                    operations.push(Operation::AddToView(ENTER));
                     operations.push(Operation::ChangeMode(EDIT_MODE));
                 }
                 'I' => {
-                    operations.push(Operation::InsertAbove);
-                    operations.push(Operation::AddToView('\n'));
+                    operations.push(Operation::InsertLine(VerticalDirection::Above));
+                    operations.push(Operation::AddToView(ENTER));
                     operations.push(Operation::ChangeMode(EDIT_MODE));
                 }
                 _ => {}
@@ -309,11 +316,11 @@ impl Paper {
                 }
                 self.write_view();
             }
-            Operation::InsertAbove => {
-                self.index = self.calc_index(self.filters[0].row);
-            }
-            Operation::AppendBelow => {
-                self.filters[0].row += 1;
+            Operation::InsertLine(direction) => {
+                if direction == VerticalDirection::Below {
+                    self.filters[0].row += 1;
+                }
+
                 self.index = self.calc_index(self.filters[0].row);
             }
         }
@@ -325,7 +332,7 @@ impl Paper {
         match target {
             0 => 0,
             _ => {
-                let newline_indices: Vec<_> = self.view.match_indices("\n").collect();
+                let newline_indices: Vec<_> = self.view.match_indices(ENTER).collect();
                 let (index, _) = *newline_indices.get(target - 1).unwrap();
                 index
             }
@@ -354,7 +361,7 @@ impl Paper {
                 width = self.line_number_length
             ));
             self.window.addstr(line);
-            self.window.addch('\n');
+            self.window.addch(ENTER);
         }
     }
 
