@@ -229,11 +229,22 @@ impl Paper {
             Operation::AddToSketch(c) => {
                 match c {
                     BACKSPACE => {
-                        self.window.addch(c);
-                        self.window.delch();
+                        if self.column == 0 {
+                            // Because drawing BACKSPACE across a newline is complicated, just
+                            // reset with write_view().
+                            self.write_view();
 
-                        self.sketch.pop();
-                        self.column -= 1;
+                            self.row -= 1;
+                            let newline_indices: Vec<_> = self.view.match_indices(ENTER).collect();
+                            let (index, _) = *newline_indices.get(self.row - 1).unwrap();
+                            self.column = self.marker - (index + 1);
+                        } else {
+                            self.window.addch(c);
+                            self.window.delch();
+
+                            self.sketch.pop();
+                            self.column -= 1;
+                        }
                     }
                     ENTER => {
                         // Because drawing an Enter character is complicated, just reset with
@@ -242,7 +253,6 @@ impl Paper {
                         self.sketch.clear();
                         self.row += 1;
                         self.column = 0;
-                        self.move_cursor();
                     }
                     _ => {
                         self.window.insch(c);
