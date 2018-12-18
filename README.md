@@ -46,8 +46,8 @@ action mode
 
 - user specifies an action to be taken on the filtered text
 - inputs:
-  + (A) append new line below and start mark mode
-  + (I) insert new line above and start mark mode
+  + (i) insert before filter
+  + (I) insert after filter
 
 edit mode
 

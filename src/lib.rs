@@ -25,8 +25,10 @@ pub struct Paper {
     sketch: String,
     first_line: usize,
     line_number_length: usize,
-    index: usize,
+    marker: usize,
     filters: Vec<Filter>,
+    row: usize,
+    column: usize,
 }
 
 struct Filter {
@@ -57,7 +59,7 @@ enum Operation {
     ScrollUp,
     AddToSketch(char),
     AddToView(char),
-    AdjustCursor(Direction),
+    SetMarker(Direction),
 }
 
 enum Enhancement {
@@ -98,18 +100,11 @@ impl Mode {
             },
             ACTION_MODE => match c {
                 'i' => {
-                    operations.push(Operation::AdjustCursor(Direction::Before));
-                    operations.push(Operation::ChangeMode(EDIT_MODE));
-                }
-                'A' => {
-                    operations.push(Operation::AdjustCursor(Direction::After));
-                    operations.push(Operation::AddToView(ENTER));
+                    operations.push(Operation::SetMarker(Direction::Before));
                     operations.push(Operation::ChangeMode(EDIT_MODE));
                 }
                 'I' => {
-                    operations.push(Operation::AdjustCursor(Direction::Before));
-                    operations.push(Operation::AddToView(ENTER));
-                    operations.push(Operation::AdjustCursor(Direction::Before));
+                    operations.push(Operation::SetMarker(Direction::After));
                     operations.push(Operation::ChangeMode(EDIT_MODE));
                 }
                 _ => {}
@@ -117,8 +112,8 @@ impl Mode {
             EDIT_MODE => match c {
                 '' => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
                 _ => {
-                    operations.push(Operation::AddToSketch(c));
                     operations.push(Operation::AddToView(c));
+                    operations.push(Operation::AddToSketch(c));
                 }
             },
         }
@@ -189,8 +184,10 @@ impl Paper {
             sketch: String::new(),
             view: String::new(),
             line_number_length: 0,
-            index: 0,
+            marker: 0,
             filters: Vec::new(),
+            row: 0,
+            column: 0,
         }
     }
 
@@ -232,19 +229,26 @@ impl Paper {
             Operation::AddToSketch(c) => {
                 match c {
                     BACKSPACE => {
-                        self.sketch.pop();
-
-                        // Move cursor back 1 - addch(BACKSPACE) - then delete character.
                         self.window.addch(c);
                         self.window.delch();
+
+                        self.sketch.pop();
+                        self.column -= 1;
+                    }
+                    ENTER => {
+                        // Because drawing an Enter character is complicated, just reset with
+                        // write_view().
+                        self.write_view();
+                        self.sketch.clear();
+                        self.row += 1;
+                        self.column = 0;
+                        self.move_cursor();
                     }
                     _ => {
-                        self.sketch.push(c);
+                        self.window.insch(c);
 
-                        // Insert a space so that the current character is not overwritten.
-                        // addch() is the only function that advances the cursor.
-                        self.window.insch(' ');
-                        self.window.addch(c);
+                        self.sketch.push(c);
+                        self.column += 1;
                     }
                 }
 
@@ -267,21 +271,20 @@ impl Paper {
                                 1,
                             );
                         }
-
-                        // Move cursor back to the correct location.
-                        self.window.mv(0, self.sketch.len() as i32);
                     }
                     None => {}
                 }
+
+                self.move_cursor();
             }
             Operation::AddToView(c) => match c {
                 BACKSPACE => {
-                    self.index -= 1;
-                    self.view.remove(self.index);
+                    self.marker -= 1;
+                    self.view.remove(self.marker);
                 }
                 _ => {
-                    self.view.insert(self.index, c);
-                    self.index += 1;
+                    self.view.insert(self.marker, c);
+                    self.marker += 1;
                 }
             },
             Operation::ChangeMode(mode) => {
@@ -292,17 +295,16 @@ impl Paper {
                         self.write_view();
                     }
                     COMMAND_MODE | FILTER_MODE => {
-                        self.window.mv(0, 0);
+                        self.row = 0;
+                        self.column = 0;
+                        self.move_cursor();
                         self.sketch.clear();
                     }
                     ACTION_MODE => {}
                     EDIT_MODE => {
                         self.write_view();
+                        self.move_cursor();
                         self.sketch.clear();
-                        self.window.mv(
-                            self.filters[0].row as i32,
-                            (self.line_number_length + self.filters[0].column) as i32 + 1,
-                        );
                     }
                 }
             }
@@ -323,28 +325,27 @@ impl Paper {
                 }
                 self.write_view();
             }
-            Operation::AdjustCursor(direction) => {
-                self.index = match self.filters[0].row {
+            Operation::SetMarker(direction) => {
+                self.row = self.filters[0].row;
+
+                self.column = self.filters[0].column + match direction {
+                    Direction::After => match self.filters[0].length {
+                        -1 => {
+                            self.view.lines().nth(self.row).unwrap().len()
+                        }
+                        length => length as usize,
+                    }
+                    Direction::Before => 0,
+                };
+
+                self.marker = match self.row {
                     0 => 0,
                     row => {
                         let newline_indices: Vec<_> = self.view.match_indices(ENTER).collect();
                         let (index, _) = *newline_indices.get(row - 1).unwrap();
                         index + 1
                     }
-                };
-
-                self.index += self.filters[0].column;
-
-                if direction == Direction::After {
-                    self.index += match self.filters[0].length {
-                        -1 => {
-                            self.view.lines().nth(self.filters[0].row).unwrap().len()
-                        }
-                        length => length as usize,
-                    };
-
-                    self.filters[0].row += 1;
-                }
+                } + self.column;
             }
         }
 
@@ -383,5 +384,9 @@ impl Paper {
 
     fn scroll_height(&self) -> usize {
         self.window_height() / 4
+    }
+
+    fn move_cursor(&mut self) {
+        self.window.mv(self.row as i32, (self.line_number_length + 1 + self.column) as i32);
     }
 }
