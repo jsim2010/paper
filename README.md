@@ -13,6 +13,7 @@ display mode
 - inputs:
   + (.) change to command mode
   + (#) filter by line number
+  + (/) filter by search item
   + (j) move window 1/4 window down
   + (k) move window 1/4 window up
 
@@ -26,6 +27,7 @@ command mode
   + (C-C) return to display mode
 - commands:
   + see `file`
+  + put
   + end
 
 filter modes
@@ -36,11 +38,6 @@ filter modes
   + (Tab) join a new filter
   + (edit) edit filter input
   + (C-C) return to display mode
-- filters:
-  + line number
-    * `#`: line number
-    * `filter`|`filter`: 2 separate line number filters
-    * `#``motion``#`: start at line number, include motion
 
 action mode
 

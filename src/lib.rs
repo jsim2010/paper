@@ -29,6 +29,7 @@ pub struct Paper {
     filters: Vec<Filter>,
     row: usize,
     column: usize,
+    path: String,
 }
 
 struct Filter {
@@ -188,6 +189,7 @@ impl Paper {
             filters: Vec::new(),
             row: 0,
             column: 0,
+            path: String::new(),
         }
     }
 
@@ -216,9 +218,12 @@ impl Paper {
                     Some(caps) => match &caps["command"] {
                         "see" => {
                             let see_re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
-                            let path = see_re.captures(&self.sketch).unwrap()["path"].to_string();
-                            self.view = fs::read_to_string(&path).unwrap().replace('\r', "");
+                            self.path = see_re.captures(&self.sketch).unwrap()["path"].to_string();
+                            self.view = fs::read_to_string(&self.path).unwrap().replace('\r', "");
                             self.first_line = 0;
+                        }
+                        "put" => {
+                            fs::write(&self.path, &self.view).unwrap();
                         }
                         "end" => return Some(Notice::Quit),
                         _ => {}
