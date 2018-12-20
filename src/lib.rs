@@ -5,36 +5,11 @@ extern crate regex;
 use pancurses::Input;
 use regex::Regex;
 use std::cmp;
+use std::fmt;
 use std::fs;
 
-/// Specifies the functionality of the editor for a given state.
-#[derive(PartialEq, Eq)]
-enum Mode {
-    /// Displays the current view.
-    Display {},
-    /// Displays the current command.
-    Command {},
-    /// Displays the current filter expression and highlights the characters that match the filter.
-    Filter {},
-    /// Displays the highlighting that has been selected.
-    Action {},
-    /// Displays the current view along with the current edits.
-    Edit {},
-}
-
-/// The `Display` mode.
-const DISPLAY_MODE: Mode = Mode::Display {};
-/// The `Command` mode.
-const COMMAND_MODE: Mode = Mode::Command {};
-/// The `Filter` mode.
-const FILTER_MODE: Mode = Mode::Filter {};
-/// The `Action` mode.
-const ACTION_MODE: Mode = Mode::Action {};
-/// The 'Edit` mode.
-const EDIT_MODE: Mode = Mode::Edit {};
-
-#[derive(Clone, Copy)]
 /// Location of a block in the terminal grid.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 struct Address {
     /// Index of the row that contains the block (including 0).
     row: usize,
@@ -43,12 +18,12 @@ struct Address {
 }
 
 impl Address {
-    /// Create an Address.
-    fn new(row: usize, column: usize) -> Address {
-        Address { row, column }
+    /// Creates a new Address at a given row and column.
+    fn with_row_column(row: usize, column: usize) -> Address {
+        Address {row, column}
     }
 
-    /// Return if address is start of a row.
+    /// Returns if address is start of a row.
     fn is_origin(&self) -> bool {
         self.column == 0
     }
@@ -80,8 +55,14 @@ impl Address {
     }
 }
 
-#[derive(PartialEq)]
+impl fmt::Display for Address {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {})", self.row, self.column)
+    }
+}
+
 /// Indicates a specific Address of a given Region.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 enum Edge {
     /// Indicates the first Address of the Region.
     Start,
@@ -89,29 +70,45 @@ enum Edge {
     End,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-/// Specifies the length of a Region.
-struct Length(usize);
-
-/// Length that represents the number of characters until the end of the line.
-const EOL: Length = Length(usize::max_value());
-
-impl Length {
-    /// Convert length to usize.
-    fn as_usize(&self) -> &usize {
-        &self.0
+impl fmt::Display for Edge {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
     }
+}
 
-    /// Convert length to i32.
-    fn to_i32(&self) -> i32 {
-        match *self {
-            EOL => -1,
-            _ => self.0 as i32,
+/// Specifies the length of a Region.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
+struct Length(i32);
+
+/// Value that represents the number of characters until the end of the line.
+const EOL_VALUE: i32 = -1;
+
+impl fmt::Display for Length {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            EOL_VALUE => write!(f, "EOL"),
+            _ => write!(f, "{}", self.0),
         }
     }
 }
 
+/// Length that represents the number of characters until the end of the line.
+const EOL: Length = Length(-1);
+
+impl Length {
+    /// Converts to usize.
+    fn to_usize(&self) -> usize {
+        self.0 as usize
+    }
+
+    /// Converts to i32.
+    fn as_i32(&self) -> &i32 {
+        &self.0
+    }
+}
+
 /// Indicates changes to the sketch and view to be made.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 enum Edit {
     /// Removes the previous character from the sketch.
     Backspace,
@@ -121,22 +118,25 @@ enum Edit {
     Add,
 }
 
-#[derive(Clone, Copy)]
+impl fmt::Display for Edit {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 /// An address and its respective index in a view.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 struct Marker {
-    /// Address of marker.
-    address: Address,
     /// Index in view that corresponds with marker.
     index: Option<usize>,
+    /// Address of marker.
+    address: Address,
 }
 
 impl Marker {
     /// Creates a new Marker.
     fn new() -> Marker {
-        Marker {
-            address: Address::new(0, 0),
-            index: Some(0),
-        }
+        Default::default()
     }
 
     /// Creates a new marker at the given address.
@@ -200,6 +200,26 @@ impl Marker {
     }
 }
 
+impl fmt::Display for Marker {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let index_str = match self.index {
+            None => String::from("None"),
+            Some(x) => format!("{}", x),
+        };
+
+        write!(f, "{}->{}", self.address, index_str)
+    }
+}
+
+impl Default for Marker {
+    fn default() -> Marker {
+        Marker {
+            index: Some(0),
+            address: Default::default(),
+        }
+    }
+}
+
 /// Specifies a group of adjacent Addresses.
 struct Region {
     /// Marker at the first Address.
@@ -229,7 +249,7 @@ impl Region {
     fn length(&self, view: &String) -> usize {
         match self.length {
             EOL => self.start.line_length(view),
-            _ => *self.length.as_usize(),
+            _ => self.length.to_usize(),
         }
     }
 
@@ -275,6 +295,36 @@ enum Notice {
     Quit,
 }
 
+/// Specifies the functionality of the editor for a given state.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+enum Mode {
+    /// Displays the current view.
+    Display,
+    /// Displays the current command.
+    Command {},
+    /// Displays the current filter expression and highlights the characters that match the filter.
+    Filter {},
+    /// Displays the highlighting that has been selected.
+    Action {},
+    /// Displays the current view along with the current edits.
+    Edit {},
+}
+
+/// The `Command` mode.
+const COMMAND_MODE: Mode = Mode::Command {};
+/// The `Filter` mode.
+const FILTER_MODE: Mode = Mode::Filter {};
+/// The `Action` mode.
+const ACTION_MODE: Mode = Mode::Action {};
+/// The 'Edit` mode.
+const EDIT_MODE: Mode = Mode::Edit {};
+
+impl Default for Mode {
+    fn default() -> Mode {
+        Mode::Display
+    }
+}
+
 impl Mode {
     /// Returns the operations to be executed based on user input.
     fn handle_input(&self, input: Option<char>) -> Vec<Operation> {
@@ -283,7 +333,7 @@ impl Mode {
         match input {
             Some(c) => {
                 match *self {
-                    DISPLAY_MODE => match c {
+                    Mode::Display => match c {
                         '.' => operations.push(Operation::ChangeMode(COMMAND_MODE)),
                         '#' | '/' => {
                             operations.push(Operation::ChangeMode(FILTER_MODE));
@@ -296,18 +346,18 @@ impl Mode {
                     COMMAND_MODE => match c {
                         ENTER => {
                             operations.push(Operation::ExecuteCommand);
-                            operations.push(Operation::ChangeMode(DISPLAY_MODE));
+                            operations.push(Operation::ChangeMode(Mode::Display));
                         }
-                        ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                        ESC => operations.push(Operation::ChangeMode(Mode::Display)),
                         _ => operations.push(Operation::AddToSketch(c)),
                     },
                     FILTER_MODE => match c {
                         ENTER => operations.push(Operation::ChangeMode(ACTION_MODE)),
-                        ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                        ESC => operations.push(Operation::ChangeMode(Mode::Display)),
                         _ => operations.push(Operation::AddToSketch(c)),
                     },
                     ACTION_MODE => match c {
-                        ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                        ESC => operations.push(Operation::ChangeMode(Mode::Display)),
                         'i' => {
                             operations.push(Operation::SetMarker(Edge::Start));
                             operations.push(Operation::ChangeMode(EDIT_MODE));
@@ -319,7 +369,7 @@ impl Mode {
                         _ => {}
                     },
                     EDIT_MODE => match c {
-                        ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                        ESC => operations.push(Operation::ChangeMode(Mode::Display)),
                         _ => {
                             operations.push(Operation::AddToSketch(c));
                             operations.push(Operation::AddToView(c));
@@ -349,16 +399,16 @@ impl Mode {
                                 .map(|i| i - 1)
                                 .ok()
                                 .map(|row| {
-                                    regions.push(Region::new(Address::new(row, 0), EOL, view));
+                                    regions.push(Region::new(Address::with_row_column(row, 0), EOL, view));
                                 });
                         }
 
                         if let Some(key) = captures.name("key") {
-                            let length = Length(key.as_str().len());
+                            let length = Length(key.as_str().len() as i32);
 
                             for (row, line) in view.lines().enumerate() {
                                 for (key_index, _) in line.match_indices(key.as_str()) {
-                                    regions.push(Region::new(Address::new(row, key_index), length, view));
+                                    regions.push(Region::new(Address::with_row_column(row, key_index), length, view));
                                 }
                             }
                         }
@@ -368,7 +418,7 @@ impl Mode {
 
                 Some(Enhancement::FilterRegions(regions))
             }
-            DISPLAY_MODE | COMMAND_MODE | ACTION_MODE | EDIT_MODE => None,
+            Mode::Display | COMMAND_MODE | ACTION_MODE | EDIT_MODE => None,
         }
     }
 }
@@ -414,11 +464,11 @@ impl UserInterface {
 
     /// Changes the background color of a region.
     fn background(&self, region: &Region, color_pair: i16) {
-        self.window.mvchgat(region.start.y(), self.origin() + region.start.x(), region.length.to_i32(), pancurses::A_NORMAL, color_pair);
+        self.window.mvchgat(region.start.y(), self.origin() + region.start.x(), *region.length.as_i32(), pancurses::A_NORMAL, color_pair);
     }
 
     /// Returns the user input.
-    fn get(&self) -> Option<char> {
+    fn get_input(&self) -> Option<char> {
         match self.window.getch() {
             Some(Input::Character(c)) => Some(c),
             _ => None,
@@ -491,7 +541,7 @@ impl Paper {
     pub fn new() -> Paper {
         Paper {
             ui: UserInterface::new(),
-            mode: DISPLAY_MODE,
+            mode: Mode::Display,
             first_line: 0,
             sketch: String::new(),
             view: String::new(),
@@ -505,7 +555,7 @@ impl Paper {
     /// Runs paper application.
     pub fn run(&mut self) {
         'main: loop {
-            let operations = self.mode.handle_input(self.ui.get());
+            let operations = self.mode.handle_input(self.ui.get_input());
 
             for operation in operations {
                 match self.operate(operation) {
@@ -562,7 +612,7 @@ impl Paper {
                     Some(Enhancement::FilterRegions(regions)) => {
                         // Clear filter background.
                         for line in 0..self.ui.window_height() {
-                            self.ui.background(&Region::new(Address::new(line, 0), EOL, &self.view), 0);
+                            self.ui.background(&Region::new(Address::with_row_column(line, 0), EOL, &self.view), 0);
                         }
 
                         for region in regions.iter() {
@@ -599,7 +649,7 @@ impl Paper {
                 self.mode = mode;
 
                 match self.mode {
-                    DISPLAY_MODE => {
+                    Mode::Display => {
                         self.write_view();
                     }
                     COMMAND_MODE | FILTER_MODE => {
