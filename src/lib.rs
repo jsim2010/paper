@@ -88,6 +88,15 @@ impl Address {
     }
 }
 
+impl Clone for Address {
+    fn clone(&self) -> Address {
+        Address {
+            row: self.row,
+            column: self.column,
+        }
+    }
+}
+
 #[derive(PartialEq)]
 /// Indicates a specific Address of a given Region.
 enum Edge {
@@ -163,6 +172,20 @@ impl Region {
 
         start_address
     }
+
+    /// Moves start of region a given number of blocks to the right.
+    fn move_right(&mut self, count: usize) {
+        self.start.move_right(count);
+    }
+}
+
+impl Clone for Region {
+    fn clone(&self) -> Region {
+        Region {
+            start: self.start.clone(),
+            length: self.length,
+        }
+    }
 }
 
 /// Specifies a procedure based on user input to be executed by the application.
@@ -189,64 +212,71 @@ enum Enhancement {
     FilterRegions(Vec<Region>),
 }
 
-/// Specifies an Operation result that should be processed by the application.
+/// Specifies the result of an Operation to be processed by the application.
 enum Notice {
     /// Ends the application.
     Quit,
 }
 
 impl Mode {
-    fn handle_input(&self, c: char) -> Vec<Operation> {
+    /// Returns the operations to be executed based on user input.
+    fn handle_input(&self, input: Option<char>) -> Vec<Operation> {
         let mut operations = Vec::new();
 
-        match *self {
-            DISPLAY_MODE => match c {
-                '.' => operations.push(Operation::ChangeMode(COMMAND_MODE)),
-                '#' | '/' => {
-                    operations.push(Operation::ChangeMode(FILTER_MODE));
-                    operations.push(Operation::AddToSketch(c));
+        match input {
+            Some(c) => {
+                match *self {
+                    DISPLAY_MODE => match c {
+                        '.' => operations.push(Operation::ChangeMode(COMMAND_MODE)),
+                        '#' | '/' => {
+                            operations.push(Operation::ChangeMode(FILTER_MODE));
+                            operations.push(Operation::AddToSketch(c));
+                        }
+                        'j' => operations.push(Operation::ScrollDown),
+                        'k' => operations.push(Operation::ScrollUp),
+                        _ => {}
+                    },
+                    COMMAND_MODE => match c {
+                        ENTER => {
+                            operations.push(Operation::ExecuteCommand);
+                            operations.push(Operation::ChangeMode(DISPLAY_MODE));
+                        }
+                        ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                        _ => operations.push(Operation::AddToSketch(c)),
+                    },
+                    FILTER_MODE => match c {
+                        ENTER => operations.push(Operation::ChangeMode(ACTION_MODE)),
+                        ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                        _ => operations.push(Operation::AddToSketch(c)),
+                    },
+                    ACTION_MODE => match c {
+                        ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                        'i' => {
+                            operations.push(Operation::SetMarker(Edge::Start));
+                            operations.push(Operation::ChangeMode(EDIT_MODE));
+                        }
+                        'I' => {
+                            operations.push(Operation::SetMarker(Edge::End));
+                            operations.push(Operation::ChangeMode(EDIT_MODE));
+                        }
+                        _ => {}
+                    },
+                    EDIT_MODE => match c {
+                        ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
+                        _ => {
+                            operations.push(Operation::AddToSketch(c));
+                            operations.push(Operation::AddToView(c));
+                        }
+                    },
                 }
-                'j' => operations.push(Operation::ScrollDown),
-                'k' => operations.push(Operation::ScrollUp),
-                _ => {}
-            },
-            COMMAND_MODE => match c {
-                ENTER => {
-                    operations.push(Operation::ExecuteCommand);
-                    operations.push(Operation::ChangeMode(DISPLAY_MODE));
-                }
-                ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
-                _ => operations.push(Operation::AddToSketch(c)),
-            },
-            FILTER_MODE => match c {
-                ENTER => operations.push(Operation::ChangeMode(ACTION_MODE)),
-                ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
-                _ => operations.push(Operation::AddToSketch(c)),
-            },
-            ACTION_MODE => match c {
-                ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
-                'i' => {
-                    operations.push(Operation::SetMarker(Edge::Start));
-                    operations.push(Operation::ChangeMode(EDIT_MODE));
-                }
-                'I' => {
-                    operations.push(Operation::SetMarker(Edge::End));
-                    operations.push(Operation::ChangeMode(EDIT_MODE));
-                }
-                _ => {}
-            },
-            EDIT_MODE => match c {
-                ESC => operations.push(Operation::ChangeMode(DISPLAY_MODE)),
-                _ => {
-                    operations.push(Operation::AddToSketch(c));
-                    operations.push(Operation::AddToView(c));
-                }
-            },
+            }
+            None => {}
         }
 
         operations
     }
 
+    /// Returns the Enhancement to be added.
     fn enhance(&self, sketch: &String, view: &String) -> Option<Enhancement> {
         match *self {
             FILTER_MODE => {
@@ -286,9 +316,75 @@ impl Mode {
     }
 }
 
-/// All data related to paper application.
-pub struct Paper {
+struct UserInterface {
     window: pancurses::Window,
+}
+
+impl UserInterface {
+    fn new() -> UserInterface {
+        // Must call initscr() first.
+        let window = pancurses::initscr();
+
+        // Prevent curses from outputing keys.
+        pancurses::noecho();
+
+        pancurses::start_color();
+        pancurses::use_default_colors();
+        pancurses::init_pair(0, -1, -1);
+        pancurses::init_pair(1, -1, pancurses::COLOR_BLUE);
+
+        UserInterface {
+            window,
+        }
+    }
+
+    fn backspace(&self) {
+        self.window.addch(BACKSPACE);
+        self.window.delch();
+    }
+
+    fn char(&self, c: char) {
+        self.window.insch(c);
+    }
+
+    fn background(&self, region: &Region, color_pair: i16) {
+        self.window.mvchgat(region.start.row as i32, region.start.column as i32, i32::from(region.length), pancurses::A_NORMAL, color_pair);
+    }
+
+    fn get(&self) -> Option<char> {
+        match self.window.getch() {
+            Some(Input::Character(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    fn move_to(&self, address: &Address) {
+        self.window.mv(address.row as i32, address.column as i32);
+    }
+
+    fn clear(&self) {
+        self.window.clear();
+    }
+
+    fn line(&self, line_number: usize, line_number_length: usize, line: &str) {
+        self.window.addstr(format!(
+            "{:>width$} ",
+            line_number,
+            width = line_number_length
+        ));
+        self.window.addstr(line);
+        self.window.addch(ENTER);
+    }
+
+    fn window_height(&self) -> usize {
+        self.window.get_max_y() as usize
+    }
+}
+
+
+/// The application.
+pub struct Paper {
+    ui: UserInterface,
     mode: Mode,
     view: String,
     sketch: String,
@@ -303,19 +399,8 @@ pub struct Paper {
 
 impl Paper {
     pub fn new() -> Paper {
-        // Must call initscr() first.
-        let window = pancurses::initscr();
-
-        // Prevent curses from outputing keys.
-        pancurses::noecho();
-
-        pancurses::start_color();
-        pancurses::use_default_colors();
-        pancurses::init_pair(0, -1, -1);
-        pancurses::init_pair(1, -1, pancurses::COLOR_BLUE);
-
         Paper {
-            window,
+            ui: UserInterface::new(),
             mode: DISPLAY_MODE,
             first_line: 0,
             sketch: String::new(),
@@ -331,7 +416,7 @@ impl Paper {
 
     pub fn run(&mut self) {
         'main: loop {
-            let operations = self.process_input();
+            let operations = self.mode.handle_input(self.ui.get());
 
             for operation in operations {
                 match self.operate(operation) {
@@ -377,9 +462,7 @@ impl Paper {
                             self.sketch.clear();
                             self.cursor_address.move_to_previous_conclusion(&self.view);
                         } else {
-                            self.window.addch(c);
-                            self.window.delch();
-
+                            self.ui.backspace();
                             self.sketch.pop();
                             self.cursor_address.move_left(1);
                         }
@@ -392,8 +475,7 @@ impl Paper {
                         self.cursor_address.move_to_next_origin();
                     }
                     _ => {
-                        self.window.insch(c);
-
+                        self.ui.char(c);
                         self.sketch.push(c);
                         self.cursor_address.move_right(1);
                     }
@@ -402,18 +484,14 @@ impl Paper {
                 match self.mode.enhance(&self.sketch, &self.view) {
                     Some(Enhancement::FilterRegions(regions)) => {
                         // Clear filter background.
-                        for line in 0..self.window_height() {
-                            self.window.mvchgat(
-                                line as i32,
-                                0,
-                                i32::from(EOL),
-                                pancurses::A_NORMAL,
-                                0,
-                            );
+                        for line in 0..self.ui.window_height() {
+                            self.ui.background(&Region::new(line, 0, EOL), 0);
                         }
 
                         for region in regions.iter() {
-                            self.highlight_region(region, 1);
+                            let mut highlight_region = region.clone();
+                            highlight_region.move_right(self.line_number_length + 1);
+                            self.ui.background(&highlight_region, 1);
                         }
 
                         self.filter_regions = regions;
@@ -488,54 +566,26 @@ impl Paper {
         None
     }
 
-    fn process_input(&mut self) -> Vec<Operation> {
-        match self.window.getch() {
-            Some(Input::Character(c)) => self.mode.handle_input(c),
-            _ => Vec::new(),
-        }
-    }
-
     fn write_view(&mut self) {
-        self.window.clear();
-        self.window.mv(0, 0);
+        self.ui.clear();
+        self.ui.move_to(&Address::new(0, 0));
         let lines: Vec<&str> = self.view.lines().collect();
         let length = lines.len();
         self.line_number_length = ((length as f32).log10() as usize) + 2;
-        let max = cmp::min(self.window_height() + self.first_line, length);
+        let max = cmp::min(self.ui.window_height() + self.first_line, length);
 
         for (index, line) in lines[self.first_line..max].iter().enumerate() {
-            self.window.addstr(format!(
-                "{:>width$} ",
-                index + self.first_line + 1,
-                width = self.line_number_length
-            ));
-            self.window.addstr(line);
-            self.window.addch(ENTER);
+            self.ui.line(self.first_line + index + 1, self.line_number_length, line);
         }
     }
 
-    fn window_height(&self) -> usize {
-        self.window.get_max_y() as usize
-    }
-
     fn scroll_height(&self) -> usize {
-        self.window_height() / 4
-    }
-
-    fn highlight_region(&mut self, region: &Region, color_pair: i16) {
-        self.window.mvchgat(
-            region.start.row as i32,
-            (region.start.column + self.line_number_length + 1) as i32,
-            i32::from(region.length),
-            pancurses::A_NORMAL,
-            color_pair,
-        );
+        self.ui.window_height() / 4
     }
 
     fn move_cursor(&mut self) {
-        self.window.mv(
-            self.cursor_address.row as i32,
-            (self.line_number_length + 1 + self.cursor_address.column) as i32,
-        );
+        let mut address = self.cursor_address.clone();
+        address.move_right(self.line_number_length + 1);
+        self.ui.move_to(&address);
     }
 }
