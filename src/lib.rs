@@ -111,6 +111,95 @@ impl Length {
     }
 }
 
+/// Indicates changes to the sketch and view to be made.
+enum Edit {
+    /// Removes the previous character from the sketch.
+    Backspace,
+    /// Clears the sketch and redraws the view.
+    Wash,
+    /// Adds the character to the view.
+    Add,
+}
+
+#[derive(Clone, Copy)]
+/// An address and its respective index in a view.
+struct Marker {
+    /// Address of marker.
+    address: Address,
+    /// Index in view that corresponds with marker.
+    index: Option<usize>,
+}
+
+impl Marker {
+    /// Creates a new Marker.
+    fn new() -> Marker {
+        Marker {
+            address: Address::new(0, 0),
+            index: Some(0),
+        }
+    }
+
+    /// Creates a new marker at the given address.
+    fn with_address(address: Address, view: &String) -> Marker {
+        Marker {
+            address: address,
+            index: match address.row {
+                0 => Some(0),
+                _ => view.match_indices(ENTER).nth(address.row - 1).map(|x| x.0 + 1),
+            }.map(|i| i + address.column),
+        }
+    }
+
+    /// Returns the length of the line at Marker.
+    fn line_length(&self, view: &String) -> usize {
+        view.lines().nth(self.address.row).unwrap().len()
+    }
+
+    /// Moves marker based on the added char and returns the appropriate Edit.
+    fn add(&mut self, c: char, view: &String) -> Edit {
+        match c {
+            BACKSPACE => {
+                self.index = self.index.map(|x| x - 1);
+
+                if self.address.is_origin() {
+                    self.address.move_up();
+                    let column = self.line_length(view);
+                    self.address.move_to_column(column);
+                    return Edit::Wash;
+                }
+
+                self.address.move_left(1);
+                Edit::Backspace
+            }
+            ENTER => {
+                self.index = self.index.map(|x| x + 1);
+                self.address.move_to_next_origin();
+                Edit::Wash
+            }
+            _ => {
+                self.move_right(1);
+                Edit::Add
+            }
+        }
+    }
+
+    /// Moves marker a given number of blocks to the right.
+    fn move_right(&mut self, count: usize) {
+        self.address.move_right(count);
+        self.index = self.index.map(|x| x + count);
+    }
+
+    /// Returns the column of marker.
+    fn x(&self) -> i32 {
+        self.address.column as i32
+    }
+
+    /// Returns the row of marker.
+    fn y(&self) -> i32 {
+        self.address.row as i32
+    }
+}
+
 /// Specifies a group of adjacent Addresses.
 struct Region {
     /// Marker at the first Address.
@@ -139,7 +228,7 @@ impl Region {
     /// Returns the number of characters included in the region of a view.
     fn length(&self, view: &String) -> usize {
         match self.length {
-            EOL => self.start.row_length(view),
+            EOL => self.start.line_length(view),
             _ => *self.length.as_usize(),
         }
     }
@@ -373,89 +462,6 @@ impl UserInterface {
     }
 }
 
-enum Edit {
-    Backspace,
-    Wash,
-    Add,
-}
-
-#[derive(Clone, Copy)]
-struct Marker {
-    address: Address,
-    index: Option<usize>,
-}
-
-impl Marker {
-    fn new() -> Marker {
-        Marker {
-            address: Address::new(0, 0),
-            index: Some(0),
-        }
-    }
-
-    fn with_address(address: Address, view: &String) -> Marker {
-        let mut marker = Marker::new();
-        marker.set_address(address, view);
-        marker
-    }
-
-    fn set_address(&mut self, address: Address, view: &String) {
-        self.address = address;
-        self.index = match address.row {
-            0 => Some(0),
-            _ => view.match_indices(ENTER).nth(address.row - 1).map(|x| x.0 + 1),
-        }.map(|i| i + address.column)
-    }
-
-    fn row_length(&self, view: &String) -> usize {
-        view.lines().nth(self.address.row).unwrap().len()
-    }
-
-    fn add(&mut self, c: char, view: &String) -> Edit {
-        match c {
-            BACKSPACE => {
-                self.index = self.index.map(|x| x - 1);
-
-                if self.address.is_origin() {
-                    self.address.move_up();
-                    let column = self.row_length(view);
-                    self.address.move_to_column(column);
-                    return Edit::Wash;
-                }
-
-                self.address.move_left(1);
-                Edit::Backspace
-            }
-            ENTER => {
-                self.index = self.index.map(|x| x + 1);
-                self.address.move_to_next_origin();
-                Edit::Wash
-            }
-            _ => {
-                self.move_right(1);
-                Edit::Add
-            }
-        }
-    }
-
-    /// Moves marker a given number of blocks to the right.
-    fn move_right(&mut self, count: usize) {
-        self.address.move_right(count);
-        self.index = self.index.map(|x| x + count);
-    }
-
-    /// Returns the column of marker.
-    fn x(&self) -> i32 {
-        self.address.column as i32
-    }
-
-    /// Returns the row of marker.
-    fn y(&self) -> i32 {
-        self.address.row as i32
-    }
-}
-
-
 /// Application data.
 pub struct Paper {
     /// User interface of the application.
@@ -476,10 +482,12 @@ pub struct Paper {
     ///
     /// Used to handle complicated edits.
     is_dirty: bool,
+    /// Marker of the cursor.
     marker: Marker,
 }
 
 impl Paper {
+    /// Creates a new Paper.
     pub fn new() -> Paper {
         Paper {
             ui: UserInterface::new(),
@@ -494,6 +502,7 @@ impl Paper {
         }
     }
 
+    /// Runs paper application.
     pub fn run(&mut self) {
         'main: loop {
             let operations = self.mode.handle_input(self.ui.get());
@@ -509,6 +518,7 @@ impl Paper {
         pancurses::endwin();
     }
 
+    /// Performs the given operation.
     fn operate(&mut self, op: Operation) -> Option<Notice> {
         match op {
             Operation::ExecuteCommand => {
@@ -564,7 +574,7 @@ impl Paper {
                     None => {}
                 }
 
-                self.move_cursor();
+                self.move_marker();
             }
             Operation::AddToView(c) => {
                 if let Some(index) = self.marker.index {
@@ -581,7 +591,7 @@ impl Paper {
                 if self.is_dirty {
                     self.write_view();
                     // write_view() moves cursor so move it back
-                    self.move_cursor();
+                    self.move_marker();
                     self.is_dirty = false;
                 }
             }
@@ -594,13 +604,13 @@ impl Paper {
                     }
                     COMMAND_MODE | FILTER_MODE => {
                         self.marker = Marker::new();
-                        self.move_cursor();
+                        self.move_marker();
                         self.sketch.clear();
                     }
                     ACTION_MODE => {}
                     EDIT_MODE => {
                         self.write_view();
-                        self.move_cursor();
+                        self.move_marker();
                         self.sketch.clear();
                     }
                 }
@@ -630,6 +640,7 @@ impl Paper {
         None
     }
 
+    /// Writes the view to the user interface.
     fn write_view(&mut self) {
         self.ui.clear();
         let lines: Vec<&str> = self.view.lines().collect();
@@ -643,11 +654,13 @@ impl Paper {
         }
     }
 
+    /// Returns the height used for scrolling.
     fn scroll_height(&self) -> usize {
         self.ui.window_height() / 4
     }
 
-    fn move_cursor(&self) {
+    /// Moves cursor to the marker.
+    fn move_marker(&self) {
         self.ui.move_to(self.marker);
     }
 }
