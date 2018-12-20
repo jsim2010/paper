@@ -113,19 +113,17 @@ struct Length(usize);
 /// Length that represents the number of characters until the end of the line.
 const EOL: Length = Length(usize::max_value());
 
-impl From<Length> for usize {
-    /// Convert a Length to a usize.
-    fn from(length: Length) -> usize {
-        length.0
+impl Length {
+    /// Convert length to usize.
+    fn as_usize(&self) -> &usize {
+        &self.0
     }
-}
 
-impl From<Length> for i32 {
-    /// Convert a Length to a i32.
-    fn from(length: Length) -> i32 {
-        match length {
+    /// Convert length to i32.
+    fn to_i32(&self) -> i32 {
+        match *self {
             EOL => -1,
-            _ => length.0 as i32,
+            _ => self.0 as i32,
         }
     }
 }
@@ -158,7 +156,7 @@ impl Region {
     fn length(&self, view: &String) -> usize {
         match self.length {
             EOL => self.start.row_length(view),
-            _ => usize::from(self.length),
+            _ => *self.length.as_usize(),
         }
     }
 
@@ -348,7 +346,7 @@ impl UserInterface {
     }
 
     fn background(&self, region: &Region, color_pair: i16) {
-        self.window.mvchgat(region.start.row as i32, region.start.column as i32, i32::from(region.length), pancurses::A_NORMAL, color_pair);
+        self.window.mvchgat(region.start.row as i32, region.start.column as i32, region.length.to_i32(), pancurses::A_NORMAL, color_pair);
     }
 
     fn get(&self) -> Option<char> {
