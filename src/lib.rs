@@ -33,6 +33,7 @@ const ACTION_MODE: Mode = Mode::Action {};
 /// The 'Edit` mode.
 const EDIT_MODE: Mode = Mode::Edit {};
 
+#[derive(Clone, Copy)]
 /// Location of a block in the terminal grid.
 struct Address {
     /// Index of the row that contains the block (including 0).
@@ -68,32 +69,14 @@ impl Address {
         self.column = 0;
     }
 
-    /// Moves address backward to the end of the previous row.
-    fn move_to_previous_conclusion(&mut self, view: &String) {
+    /// Moves address 1 row up.
+    fn move_up(&mut self) {
         self.row -= 1;
-        self.column = self.row_length(view);
     }
 
-    /// Returns length of row at address.
-    fn row_length(&self, view: &String) -> usize {
-        view.lines().nth(self.row).unwrap().len()
-    }
-
-    /// Returns the index of view that is equivalent to address.
-    fn marker(&self, view: &String) -> usize {
-        self.column + match self.row {
-            0 => 0,
-            _ => view.match_indices(ENTER).nth(self.row - 1).unwrap().0 + 1,
-        }
-    }
-}
-
-impl Clone for Address {
-    fn clone(&self) -> Address {
-        Address {
-            row: self.row,
-            column: self.column,
-        }
+    /// Moves address to column.
+    fn move_to_column(&mut self, column: usize) {
+        self.column = column;
     }
 }
 
@@ -130,8 +113,8 @@ impl Length {
 
 /// Specifies a group of adjacent Addresses.
 struct Region {
-    /// The first Address.
-    start: Address,
+    /// Marker at the first Address.
+    start: Marker,
     /// The number of included Addresses.
     length: Length,
 }
@@ -140,14 +123,15 @@ struct Region {
 const BACKSPACE: char = '\u{08}';
 /// Character that represents the `Enter` key.
 const ENTER: char = '\n';
+// Currently Ctrl + C to allow manual testing within vim terminal where ESC is already mapped.
 /// Character that represents the `Esc` key.
 const ESC: char = '';
 
 impl Region {
     /// Creates a Region.
-    fn new(row: usize, column: usize, length: Length) -> Region {
+    fn new(address: Address, length: Length, view: &String) -> Region {
         Region {
-            start: Address::new(row, column),
+            start: Marker::with_address(address, view),
             length,
         }
     }
@@ -160,29 +144,15 @@ impl Region {
         }
     }
 
-    /// Returns the address at an Edge of the region of a view.
-    fn address(&self, edge: Edge, view: &String) -> Address {
-        let mut start_address = Address::new(self.start.row, self.start.column);
+    /// Returns the marker at an Edge of the region;
+    fn marker(&self, edge: Edge, view: &String) -> Marker {
+        let mut edge_marker = self.start;
 
         if edge == Edge::End {
-            start_address.move_right(self.length(view));
+            edge_marker.move_right(self.length(view));
         }
 
-        start_address
-    }
-
-    /// Moves start of region a given number of blocks to the right.
-    fn move_right(&mut self, count: usize) {
-        self.start.move_right(count);
-    }
-}
-
-impl Clone for Region {
-    fn clone(&self) -> Region {
-        Region {
-            start: self.start.clone(),
-            length: self.length,
-        }
+        edge_marker
     }
 }
 
@@ -290,7 +260,7 @@ impl Mode {
                                 .map(|i| i - 1)
                                 .ok()
                                 .map(|row| {
-                                    regions.push(Region::new(row, 0, EOL));
+                                    regions.push(Region::new(Address::new(row, 0), EOL, view));
                                 });
                         }
 
@@ -299,7 +269,7 @@ impl Mode {
 
                             for (row, line) in view.lines().enumerate() {
                                 for (key_index, _) in line.match_indices(key.as_str()) {
-                                    regions.push(Region::new(row, key_index, length));
+                                    regions.push(Region::new(Address::new(row, key_index), length, view));
                                 }
                             }
                         }
@@ -314,11 +284,16 @@ impl Mode {
     }
 }
 
+/// Displays output and receives input from the user.
 struct UserInterface {
+    /// Interface to the terminal output.
     window: pancurses::Window,
+    /// The number of characters used to output line numbers.
+    line_number_width: usize,
 }
 
 impl UserInterface {
+    /// Creates a new UserInterace.
     fn new() -> UserInterface {
         // Must call initscr() first.
         let window = pancurses::initscr();
@@ -333,22 +308,27 @@ impl UserInterface {
 
         UserInterface {
             window,
+            line_number_width: 0,
         }
     }
 
+    /// Outputs a BACKSPACE (moves back 1 block and deletes the character there).
     fn backspace(&self) {
         self.window.addch(BACKSPACE);
         self.window.delch();
     }
 
-    fn char(&self, c: char) {
+    /// Outputs a character.
+    fn insert(&self, c: char) {
         self.window.insch(c);
     }
 
+    /// Changes the background color of a region.
     fn background(&self, region: &Region, color_pair: i16) {
-        self.window.mvchgat(region.start.row as i32, region.start.column as i32, region.length.to_i32(), pancurses::A_NORMAL, color_pair);
+        self.window.mvchgat(region.start.y(), self.origin() + region.start.x(), region.length.to_i32(), pancurses::A_NORMAL, color_pair);
     }
 
+    /// Returns the user input.
     fn get(&self) -> Option<char> {
         match self.window.getch() {
             Some(Input::Character(c)) => Some(c),
@@ -356,43 +336,147 @@ impl UserInterface {
         }
     }
 
-    fn move_to(&self, address: &Address) {
-        self.window.mv(address.row as i32, address.column as i32);
+    /// Moves the cursor to a Marker.
+    fn move_to(&self, marker: Marker) {
+        self.window.mv(marker.y(), self.origin() + marker.x());
     }
 
+    /// Clears the output.
     fn clear(&self) {
         self.window.clear();
     }
 
-    fn line(&self, line_number: usize, line_number_length: usize, line: &str) {
+    /// Outputs a line, including its line number.
+    fn line(&self, row: usize, line_number: usize, line: &str) {
+        self.window.mv(row as i32, 0);
         self.window.addstr(format!(
             "{:>width$} ",
             line_number,
-            width = line_number_length
+            width = self.line_number_width,
         ));
         self.window.addstr(line);
-        self.window.addch(ENTER);
     }
 
+    /// Returns the height of the terminal.
     fn window_height(&self) -> usize {
         self.window.get_max_y() as usize
+    }
+
+    /// Sets the width needed for to display line numbers for a given number of lines.
+    fn set_line_number_width(&mut self, line_count: usize) {
+        self.line_number_width = ((line_count as f32).log10() as usize) + 2;
+    }
+
+    /// Returns the column index at which view output starts.
+    fn origin(&self) -> i32 {
+        (self.line_number_width + 1) as i32
+    }
+}
+
+enum Edit {
+    Backspace,
+    Wash,
+    Add,
+}
+
+#[derive(Clone, Copy)]
+struct Marker {
+    address: Address,
+    index: Option<usize>,
+}
+
+impl Marker {
+    fn new() -> Marker {
+        Marker {
+            address: Address::new(0, 0),
+            index: Some(0),
+        }
+    }
+
+    fn with_address(address: Address, view: &String) -> Marker {
+        let mut marker = Marker::new();
+        marker.set_address(address, view);
+        marker
+    }
+
+    fn set_address(&mut self, address: Address, view: &String) {
+        self.address = address;
+        self.index = match address.row {
+            0 => Some(0),
+            _ => view.match_indices(ENTER).nth(address.row - 1).map(|x| x.0 + 1),
+        }.map(|i| i + address.column)
+    }
+
+    fn row_length(&self, view: &String) -> usize {
+        view.lines().nth(self.address.row).unwrap().len()
+    }
+
+    fn add(&mut self, c: char, view: &String) -> Edit {
+        match c {
+            BACKSPACE => {
+                self.index = self.index.map(|x| x - 1);
+
+                if self.address.is_origin() {
+                    self.address.move_up();
+                    let column = self.row_length(view);
+                    self.address.move_to_column(column);
+                    return Edit::Wash;
+                }
+
+                self.address.move_left(1);
+                Edit::Backspace
+            }
+            ENTER => {
+                self.index = self.index.map(|x| x + 1);
+                self.address.move_to_next_origin();
+                Edit::Wash
+            }
+            _ => {
+                self.move_right(1);
+                Edit::Add
+            }
+        }
+    }
+
+    /// Moves marker a given number of blocks to the right.
+    fn move_right(&mut self, count: usize) {
+        self.address.move_right(count);
+        self.index = self.index.map(|x| x + count);
+    }
+
+    /// Returns the column of marker.
+    fn x(&self) -> i32 {
+        self.address.column as i32
+    }
+
+    /// Returns the row of marker.
+    fn y(&self) -> i32 {
+        self.address.row as i32
     }
 }
 
 
-/// The application.
+/// Application data.
 pub struct Paper {
+    /// User interface of the application.
     ui: UserInterface,
+    /// Current mode of the application.
     mode: Mode,
+    /// Data of the file being edited.
     view: String,
+    /// Characters being edited to be analyzed by the application.
     sketch: String,
+    /// Index of the first displayed line.
     first_line: usize,
-    line_number_length: usize,
-    marker: usize,
+    /// Regions that match the current filter.
     filter_regions: Vec<Region>,
-    cursor_address: Address,
+    /// Path of the file being edited.
     path: String,
+    /// If the view should be redrawn.
+    ///
+    /// Used to handle complicated edits.
     is_dirty: bool,
+    marker: Marker,
 }
 
 impl Paper {
@@ -403,10 +487,8 @@ impl Paper {
             first_line: 0,
             sketch: String::new(),
             view: String::new(),
-            line_number_length: 0,
-            marker: 0,
+            marker: Marker::new(),
             filter_regions: Vec::new(),
-            cursor_address: Address::new(0, 0),
             path: String::new(),
             is_dirty: false,
         }
@@ -451,31 +533,18 @@ impl Paper {
                 }
             }
             Operation::AddToSketch(c) => {
-                match c {
-                    BACKSPACE => {
-                        if self.cursor_address.is_origin() {
-                            // Because drawing BACKSPACE across a newline is complicated, just
-                            // reset with write_view().
-                            self.is_dirty = true;
-                            self.sketch.clear();
-                            self.cursor_address.move_to_previous_conclusion(&self.view);
-                        } else {
-                            self.ui.backspace();
-                            self.sketch.pop();
-                            self.cursor_address.move_left(1);
-                        }
+                match self.marker.add(c, &self.view) {
+                    Edit::Backspace => {
+                        self.ui.backspace();
+                        self.sketch.pop();
                     }
-                    ENTER => {
-                        // Because drawing an Enter character is complicated, just reset with
-                        // write_view().
+                    Edit::Wash => {
                         self.is_dirty = true;
                         self.sketch.clear();
-                        self.cursor_address.move_to_next_origin();
                     }
-                    _ => {
-                        self.ui.char(c);
+                    Edit::Add => {
+                        self.ui.insert(c);
                         self.sketch.push(c);
-                        self.cursor_address.move_right(1);
                     }
                 }
 
@@ -483,13 +552,11 @@ impl Paper {
                     Some(Enhancement::FilterRegions(regions)) => {
                         // Clear filter background.
                         for line in 0..self.ui.window_height() {
-                            self.ui.background(&Region::new(line, 0, EOL), 0);
+                            self.ui.background(&Region::new(Address::new(line, 0), EOL, &self.view), 0);
                         }
 
                         for region in regions.iter() {
-                            let mut highlight_region = region.clone();
-                            highlight_region.move_right(self.line_number_length + 1);
-                            self.ui.background(&highlight_region, 1);
+                            self.ui.background(region, 1);
                         }
 
                         self.filter_regions = regions;
@@ -500,14 +567,14 @@ impl Paper {
                 self.move_cursor();
             }
             Operation::AddToView(c) => {
-                match c {
-                    BACKSPACE => {
-                        self.marker -= 1;
-                        self.view.remove(self.marker);
-                    }
-                    _ => {
-                        self.view.insert(self.marker, c);
-                        self.marker += 1;
+                if let Some(index) = self.marker.index {
+                    match c {
+                        BACKSPACE => {
+                            self.view.remove(index);
+                        }
+                        _ => {
+                            self.view.insert(index - 1, c);
+                        }
                     }
                 }
 
@@ -526,7 +593,7 @@ impl Paper {
                         self.write_view();
                     }
                     COMMAND_MODE | FILTER_MODE => {
-                        self.cursor_address = Address::new(0, 0);
+                        self.marker = Marker::new();
                         self.move_cursor();
                         self.sketch.clear();
                     }
@@ -556,8 +623,7 @@ impl Paper {
                 self.write_view();
             }
             Operation::SetMarker(edge) => {
-                self.cursor_address = self.filter_regions[0].address(edge, &self.view);
-                self.marker = self.cursor_address.marker(&self.view);
+                self.marker = self.filter_regions[0].marker(edge, &self.view);
             }
         }
 
@@ -566,14 +632,14 @@ impl Paper {
 
     fn write_view(&mut self) {
         self.ui.clear();
-        self.ui.move_to(&Address::new(0, 0));
         let lines: Vec<&str> = self.view.lines().collect();
-        let length = lines.len();
-        self.line_number_length = ((length as f32).log10() as usize) + 2;
-        let max = cmp::min(self.ui.window_height() + self.first_line, length);
+        let line_count = lines.len();
+
+        self.ui.set_line_number_width(line_count);
+        let max = cmp::min(self.ui.window_height() + self.first_line, line_count);
 
         for (index, line) in lines[self.first_line..max].iter().enumerate() {
-            self.ui.line(self.first_line + index + 1, self.line_number_length, line);
+            self.ui.line(index, self.first_line + index + 1, line);
         }
     }
 
@@ -581,9 +647,7 @@ impl Paper {
         self.ui.window_height() / 4
     }
 
-    fn move_cursor(&mut self) {
-        let mut address = self.cursor_address.clone();
-        address.move_right(self.line_number_length + 1);
-        self.ui.move_to(&address);
+    fn move_cursor(&self) {
+        self.ui.move_to(self.marker);
     }
 }
