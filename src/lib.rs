@@ -39,6 +39,7 @@ use std::cmp;
 use std::fmt;
 use std::fs;
 use std::ops::{Add, AddAssign, SubAssign};
+use std::vec::IntoIter;
 use ui::{Region, UserInterface, Address, Length};
 
 /// The paper application.
@@ -131,19 +132,21 @@ impl Paper {
                     None => {}
                 }
             }
-            Operation::AddToSketch(c) => {
-                match self.mark.add(c, &self.view) {
-                    Edit::Backspace => {
-                        self.ui.delete_back();
-                        self.sketch.pop();
-                    }
-                    Edit::Wash => {
-                        self.is_dirty = true;
-                        self.sketch.clear();
-                    }
-                    Edit::Add => {
-                        self.ui.insert_char(c);
-                        self.sketch.push(c);
+            Operation::AddToSketch(s) => {
+                for edit in self.mark.add(s, &self.view) {
+                    match edit {
+                        Edit::Backspace => {
+                            self.ui.delete_back();
+                            self.sketch.pop();
+                        }
+                        Edit::Wash => {
+                            self.is_dirty = true;
+                            self.sketch.clear();
+                        }
+                        Edit::Add(c) => {
+                            self.ui.insert_char(c);
+                            self.sketch.push(c);
+                        }
                     }
                 }
 
@@ -294,8 +297,8 @@ enum Edit {
     Backspace,
     /// Clears the sketch and redraws the view.
     Wash,
-    /// Adds the character to the view.
-    Add,
+    /// Adds a character to the view.
+    Add(char),
 }
 
 impl fmt::Display for Edit {
@@ -354,33 +357,43 @@ impl Mark {
         self.address.reset();
     }
 
-    /// Moves mark based on the added char and returns the appropriate Edit.
-    fn add(&mut self, c: char, view: &View) -> Edit {
-        match c {
-            ui::BACKSPACE => {
-                self.index -= 1;
+    /// Moves mark based on the added [`String`] and returns the appropriate [`Edit`].
+    ///
+    /// [`String`]: https://doc.rust-lang.org/std/string/struct.String.html
+    /// [`Edit`]: .enum.Edit.html
+    fn add(&mut self, s: String, view: &View) -> IntoIter<Edit> {
+        let mut edits = Vec::new();
 
-                if self.address.column == 0 {
-                    self.address.row -= 1;
-                    self.address.column = view.line_length(&self.address);
-                    return Edit::Wash;
+        for c in s.chars() {
+            match c {
+                ui::BACKSPACE => {
+                    self.index -= 1;
+
+                    if self.address.column == 0 {
+                        self.address.row -= 1;
+                        self.address.column = view.line_length(&self.address);
+                        edits.push(Edit::Wash);
+                    }
+
+                    self.address.column -= 1;
+                    edits.push(Edit::Backspace);
                 }
+                ui::ENTER => {
+                    self.index += 1;
+                    self.address.row += 1;
+                    self.address.column = 0;
+                    edits.push(Edit::Wash);
+                }
+                _ => {
+                    self.address.column += 1;
+                    self.index += 1;
 
-                self.address.column -= 1;
-                Edit::Backspace
-            }
-            ui::ENTER => {
-                self.index += 1;
-                self.address.row += 1;
-                self.address.column = 0;
-                Edit::Wash
-            }
-            _ => {
-                self.address.column += 1;
-                self.index += 1;
-                Edit::Add
+                    edits.push(Edit::Add(c));
+                }
             }
         }
+
+        edits.into_iter()
     }
 }
 
@@ -420,13 +433,13 @@ impl Add<usize> for Index {
 
 impl SubAssign<usize> for Index {
     fn sub_assign(&mut self, other: usize) {
-        self.0.map(|x| x - other);
+        self.0 = self.0.map(|x| x - other);
     }
 }
 
 impl AddAssign<usize> for Index {
     fn add_assign(&mut self, other: usize) {
-        self.0.map(|x| x + other);
+        self.0 = self.0.map(|x| x + other);
     }
 }
 
@@ -446,7 +459,7 @@ impl fmt::Display for Index {
 }
 
 /// Specifies a procedure based on user input to be executed by the application.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
 enum Operation {
     /// Changes the mode.
     ChangeMode(Mode),
@@ -456,8 +469,8 @@ enum Operation {
     ScrollDown,
     /// Scrolls the view up by 1/4 of the window.
     ScrollUp,
-    /// Adds a character to the sketch.
-    AddToSketch(char),
+    /// Adds a string to the sketch.
+    AddToSketch(String),
     /// Adds a character to the view.
     AddToView(char),
     /// Sets the mark to be an edge of the filtered regions.
@@ -545,7 +558,7 @@ impl Mode {
                         '.' => operations.push(Operation::ChangeMode(Mode::Command)),
                         '#' | '/' => {
                             operations.push(Operation::ChangeMode(Mode::Filter));
-                            operations.push(Operation::AddToSketch(c));
+                            operations.push(Operation::AddToSketch(c.to_string()));
                         }
                         'j' => operations.push(Operation::ScrollDown),
                         'k' => operations.push(Operation::ScrollUp),
@@ -557,12 +570,13 @@ impl Mode {
                             operations.push(Operation::ChangeMode(Mode::Display));
                         }
                         ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
-                        _ => operations.push(Operation::AddToSketch(c)),
+                        _ => operations.push(Operation::AddToSketch(c.to_string())),
                     },
                     Mode::Filter => match c {
                         ui::ENTER => operations.push(Operation::ChangeMode(Mode::Action)),
+                        '\t' => operations.push(Operation::AddToSketch(String::from("||"))),
                         ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
-                        _ => operations.push(Operation::AddToSketch(c)),
+                        _ => operations.push(Operation::AddToSketch(c.to_string())),
                     },
                     Mode::Action => match c {
                         ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
@@ -579,7 +593,7 @@ impl Mode {
                     Mode::Edit => match c {
                         ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
                         _ => {
-                            operations.push(Operation::AddToSketch(c));
+                            operations.push(Operation::AddToSketch(c.to_string()));
                             operations.push(Operation::AddToView(c));
                         }
                     },
@@ -595,31 +609,34 @@ impl Mode {
     fn enhance(&self, sketch: &String, view: &String) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
-                let re = Regex::new(r"#(?P<line>\d+)|/(?P<key>.+)").unwrap();
+                let re = Regex::new(r"(?P<filter>[^\|]*)(?:\|\|)?").unwrap();
+                let filter_re = Regex::new(r"#(?P<line>\d+)|/(?P<key>.+)").unwrap();
                 let mut regions = Vec::new();
 
-                match &re.captures(sketch) {
-                    Some(captures) => {
-                        if let Some(line) = captures.name("line") {
-                            // Subtract 1 to match row.
-                            line.as_str()
-                                .parse::<usize>()
-                                .map(|i| i - 1)
-                                .ok()
-                                .map(|row| {
-                                    regions.push(Region::line(row));
-                                });
-                        }
+                for caps in re.captures_iter(sketch) {
+                    match &filter_re.captures(&caps["filter"]) {
+                        Some(captures) => {
+                            if let Some(line) = captures.name("line") {
+                                // Subtract 1 to match row.
+                                line.as_str()
+                                    .parse::<usize>()
+                                    .map(|i| i - 1)
+                                    .ok()
+                                    .map(|row| {
+                                        regions.push(Region::line(row));
+                                    });
+                            }
 
-                        if let Some(key) = captures.name("key") {
-                            for (row, line) in view.lines().enumerate() {
-                                for (key_index, key_match) in line.match_indices(key.as_str()) {
-                                    regions.push(Region::with_address_length(Address::with_row_column(row, key_index), Length::from(key_match.len())));
+                            if let Some(key) = captures.name("key") {
+                                for (row, line) in view.lines().enumerate() {
+                                    for (key_index, key_match) in line.match_indices(key.as_str()) {
+                                        regions.push(Region::with_address_length(Address::with_row_column(row, key_index), Length::from(key_match.len())));
+                                    }
                                 }
                             }
                         }
+                        None => {}
                     }
-                    None => {}
                 }
 
                 Some(Enhancement::FilterRegions(regions))

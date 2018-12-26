@@ -35,7 +35,7 @@ filter modes
 - allow user to select desired text to act upon
 - inputs:
   + (Enter) change to action mode
-  + (Tab) join a new filter
+  + (Tab) stack a new filter
   + (edit) edit filter input
   + (C-C) return to display mode
 

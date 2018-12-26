@@ -125,12 +125,12 @@ impl UserInterface {
         self.window.delch();
     }
 
-    /// Outputs a character, moving all subsequent characters move to the right.
+    /// Outputs a char, moving all subsequent characters to the right.
     ///
     /// # Examples
     /// ```ignore
     /// # let ui = UserInterface::new();
-    /// ui.insert_char('a');
+    /// ui.insert_char("a");
     /// ```
     pub fn insert_char(&self, c: char) {
         self.window.insch(c);
