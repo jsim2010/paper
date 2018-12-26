@@ -1,0 +1,2 @@
+[alias]
+doc_all = "doc --document-private-items"
