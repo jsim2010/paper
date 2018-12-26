@@ -27,6 +27,9 @@
 //!     paper.run();
 //! }
 //! ```
+
+#![doc(html_root_url = "https://docs.rs/paper/0.1.0")]
+
 extern crate regex;
 
 mod ui;
@@ -35,6 +38,7 @@ use regex::Regex;
 use std::cmp;
 use std::fmt;
 use std::fs;
+use std::ops::{Add, AddAssign, SubAssign};
 use ui::{Region, UserInterface, Address, Length};
 
 /// The paper application.
@@ -162,16 +166,7 @@ impl Paper {
                 self.move_mark();
             }
             Operation::AddToView(c) => {
-                if let Some(index) = self.mark.index {
-                    match c {
-                        ui::BACKSPACE => {
-                            self.view.data.remove(index);
-                        }
-                        _ => {
-                            self.view.data.insert(index - 1, c);
-                        }
-                    }
-                }
+                self.view.add(c, self.mark.index);
 
                 if self.is_dirty {
                     self.write_view();
@@ -228,13 +223,9 @@ impl Paper {
     /// Displays the view on the user interface.
     fn write_view(&mut self) {
         self.ui.clear();
-        let lines: Vec<&str> = self.view.data.lines().collect();
-        let line_count = lines.len();
+        self.ui.calc_line_number_width(self.view.data.lines().count());
 
-        self.ui.calc_line_number_width(line_count);
-        let max = cmp::min(self.ui.window_height() + self.first_line, line_count);
-
-        for (index, line) in lines[self.first_line..max].iter().enumerate() {
+        for (index, line) in self.view.data.lines().skip(self.first_line).take(self.ui.window_height()).enumerate() {
             self.ui.set_line(index, self.first_line + index + 1, line);
         }
     }
@@ -262,8 +253,22 @@ impl View {
         }
     }
 
-    fn line_length(&self, line: usize) -> usize {
-        self.data.lines().nth(line).unwrap().len()
+    fn line_length(&self, address: &Address) -> usize {
+        self.data.lines().nth(address.row).unwrap().len()
+    }
+
+    fn add(&mut self, c: char, index: Index) {
+        // Ignore the case where index is not valid.
+        if let Ok(i) = index.to_usize() {
+            match c {
+                ui::BACKSPACE => {
+                    self.data.remove(i);
+                }
+                _ => {
+                    self.data.insert(i - 1, c);
+                }
+            }
+        }
     }
 }
 
@@ -308,7 +313,7 @@ impl Marker {
         let mut address = self.region.start();
 
         if edge == Edge::End {
-            address.move_right(self.length(view));
+            address.column += self.length(view);
         }
 
         Mark::with_address(address, view)
@@ -319,17 +324,17 @@ impl Marker {
         let length = self.region.length();
 
         match length {
-            ui::EOL => view.line_length(self.region.start_row()),
+            ui::EOL => view.line_length(&self.region.start()),
             _ => length.to_usize(),
         }
     }
 }
 
 /// An address and its respective index in a view.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 struct Mark {
     /// Index in view that corresponds with mark.
-    index: Option<usize>,
+    index: Index,
     /// Address of mark.
     address: Address,
 }
@@ -339,16 +344,13 @@ impl Mark {
     fn with_address(address: Address, view: &View) -> Mark {
         Mark {
             address: address,
-            index: match address.row {
-                0 => Some(0),
-                _ => view.data.match_indices(ui::ENTER).nth(address.row - 1).map(|x| x.0 + 1),
-            }.map(|i| i + address.column),
+            index: Index::with_address(address, view),
         }
     }
 
     /// Resets mark to default values.
     fn reset(&mut self) {
-        self.index = Some(0);
+        self.index = Default::default();
         self.address.reset();
     }
 
@@ -356,54 +358,90 @@ impl Mark {
     fn add(&mut self, c: char, view: &View) -> Edit {
         match c {
             ui::BACKSPACE => {
-                self.index = self.index.map(|x| x - 1);
+                self.index -= 1;
 
-                if self.address.is_origin() {
-                    self.address.move_up();
-                    let column = view.line_length(self.address.row);
-                    self.address.move_to_column(column);
+                if self.address.column == 0 {
+                    self.address.row -= 1;
+                    self.address.column = view.line_length(&self.address);
                     return Edit::Wash;
                 }
 
-                self.address.move_left(1);
+                self.address.column -= 1;
                 Edit::Backspace
             }
             ui::ENTER => {
-                self.index = self.index.map(|x| x + 1);
-                self.address.move_to_next_origin();
+                self.index += 1;
+                self.address.row += 1;
+                self.address.column = 0;
                 Edit::Wash
             }
             _ => {
-                self.move_right(1);
+                self.address.column += 1;
+                self.index += 1;
                 Edit::Add
             }
         }
-    }
-
-    /// Moves mark a given number of blocks to the right.
-    fn move_right(&mut self, count: usize) {
-        self.address.move_right(count);
-        self.index = self.index.map(|x| x + count);
     }
 }
 
 impl fmt::Display for Mark {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let index_str = match self.index {
-            None => String::from("None"),
-            Some(x) => format!("{}", x),
-        };
-
-        write!(f, "{}[{}]", self.address, index_str)
+        write!(f, "{}{}", self.address, self.index)
     }
 }
 
-impl Default for Mark {
-    fn default() -> Mark {
-        Mark {
-            index: Some(0),
-            address: Default::default(),
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+struct Index(Option<usize>);
+
+impl Index {
+    fn with_address(address: Address, view: &View) -> Index {
+        Index::with_row(address.row, view) + address.column
+    }
+
+    fn with_row(row: usize, view: &View) -> Index {
+        match row {
+            0 => Default::default(),
+            _ => Index(view.data.match_indices(ui::ENTER).nth(row - 1).map(|x| x.0 + 1)),
         }
+    }
+
+    fn to_usize(&self) -> Result<usize, ()> {
+        self.0.ok_or(())
+    }
+}
+
+impl Add<usize> for Index {
+    type Output = Index;
+
+    fn add(self, other: usize) -> Index {
+        Index(self.0.map(|x| x + other))
+    }
+}
+
+impl SubAssign<usize> for Index {
+    fn sub_assign(&mut self, other: usize) {
+        self.0.map(|x| x - other);
+    }
+}
+
+impl AddAssign<usize> for Index {
+    fn add_assign(&mut self, other: usize) {
+        self.0.map(|x| x + other);
+    }
+}
+
+impl Default for Index {
+    fn default() -> Index {
+        Index(Some(0))
+    }
+}
+
+impl fmt::Display for Index {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "[{}]", match self.0 {
+            None => String::from("None"),
+            Some(i) => format!("{}", i),
+        })
     }
 }
 
@@ -576,9 +614,7 @@ impl Mode {
                         if let Some(key) = captures.name("key") {
                             for (row, line) in view.lines().enumerate() {
                                 for (key_index, key_match) in line.match_indices(key.as_str()) {
-                                    let length = Length::new(key_match.len() as i32);
-
-                                    regions.push(Region::with_address_length(Address::with_row_column(row, key_index), length));
+                                    regions.push(Region::with_address_length(Address::with_row_column(row, key_index), Length::from(key_match.len())));
                                 }
                             }
                         }

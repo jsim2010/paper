@@ -2,10 +2,17 @@
 name = "paper"
 version = "0.1.0"
 authors = ["Justin Simerly <jsim2010@gmail.com>"]
+description = "A terminal-based editor with goals to maximize simplicity and efficiency."
+license = "MIT"
+repository = "https://github.com/jsim2010/paper"
+readme = "README.md"
+keywords = ["editor", "mode", "filter"]
+categories = ["command-line-utilities", "text-editors"]
 
 [dependencies]
 clap = "2.32.0"
 regex = "1.1.0"
+version-sync = "0.6"
 
 # Must specify win32 feature to ensure application does not open new window.
 [dependencies.pancurses]

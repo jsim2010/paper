@@ -29,11 +29,6 @@ pub struct UserInterface {
 
 impl UserInterface {
     /// Creates a new UserInterface.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// let ui = UserInterface::new();
-    /// ```
     pub fn new() -> UserInterface {
         UserInterface {
             // Must call initscr() first.
@@ -46,7 +41,8 @@ impl UserInterface {
     ///
     /// # Examples
     /// ```ignore
-    /// # let ui = UserInterface::new();
+    /// let ui = UserInterface::new();
+    ///
     /// ui.init();
     /// ```
     pub fn init(&self) {
@@ -65,8 +61,12 @@ impl UserInterface {
     ///
     /// # Examples
     /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// let input: Option<char> = ui.get_input();
+    /// # mod ui;
+    /// # let interface = ui::UserInterface::new();
+    /// match interface.get_input() {
+    ///     Some(c) => println!("Received '{}'", c),
+    ///     None => println!("Received nothing"),
+    /// }
     /// ```
     ///
     /// [`Option<char>`]: https://doc.rust-lang.org/std/option/enum.Option.html
@@ -198,12 +198,6 @@ impl UserInterface {
     }
 
     /// Returns the column of the terminal grid at which the pane starts.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// let origin: i32 = ui.origin();
-    /// ```
     fn origin(&self) -> i32 {
         (self.line_number_width + LINE_NUMBER_GAP) as i32
     }
@@ -225,10 +219,6 @@ pub struct Region {
 }
 
 impl Region {
-    pub fn new() -> Region {
-        Default::default()
-    }
-        
     /// Creates a Region with given address and length.
     pub fn with_address_length(address: Address, length: Length) -> Region {
         Region {
@@ -244,10 +234,6 @@ impl Region {
 
     pub fn start(&self) -> Address {
         self.start
-    }
-
-    pub fn start_row(&self) -> usize {
-        self.start.row
     }
 
     pub fn length(&self) -> Length {
@@ -297,51 +283,10 @@ impl Address {
         Address {row, column}
     }
 
-    /// Returns if address is start of a row.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let origin = Address::with_row_column(2, 0);
-    /// let non_origin = Address::with_row_column(2, 1);
-    ///
-    /// assert_true!(origin.is_origin());
-    /// assert_false!(non_origin.is_origin());
-    /// ```
-    pub fn is_origin(&self) -> bool {
-        self.column == 0
-    }
-
     /// Resets address to default values
     pub fn reset(&mut self) {
         self.row = Default::default();
         self.column = Default::default();
-    }
-
-    /// Moves address a given number of blocks to the left.
-    pub fn move_left(&mut self, count: usize) {
-        self.column -= count;
-    }
-
-    /// Moves address a given number of blocks to the right.
-    pub fn move_right(&mut self, count: usize) {
-        self.column += count;
-    }
-
-    /// Moves address forward to the start of the next row.
-    pub fn move_to_next_origin(&mut self) {
-        self.row += 1;
-        self.column = 0;
-    }
-
-    /// Moves address 1 row up.
-    pub fn move_up(&mut self) {
-        self.row -= 1;
-    }
-
-    /// Moves address to column.
-    pub fn move_to_column(&mut self, column: usize) {
-        self.column = column;
     }
 
     /// Returns the column of address.
@@ -371,10 +316,6 @@ const EOL_VALUE: i32 = -1;
 pub const EOL: Length = Length(EOL_VALUE);
 
 impl Length {
-    pub fn new(length: i32) -> Length {
-        Length(length)
-    }
-
     /// Converts to usize.
     pub fn to_usize(&self) -> usize {
         self.0 as usize
@@ -392,5 +333,11 @@ impl fmt::Display for Length {
             EOL_VALUE => write!(f, "EOL"),
             _ => write!(f, "{}", self.0),
         }
+    }
+}
+
+impl From<usize> for Length {
+    fn from(value: usize) -> Length {
+        Length(value as i32)
     }
 }
