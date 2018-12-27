@@ -40,7 +40,7 @@ use std::fmt;
 use std::fs;
 use std::ops::{Add, AddAssign, SubAssign};
 use std::vec::IntoIter;
-use ui::{Region, UserInterface, Address, Length};
+use ui::{Address, Length, Region, UserInterface};
 
 /// The paper application.
 #[derive(Debug, Default)]
@@ -80,7 +80,7 @@ impl Paper {
     /// ```
     pub fn new() -> Paper {
         Paper {
-            marks: vec!(Default::default()),
+            marks: vec![Default::default()],
             ..Default::default()
         }
     }
@@ -168,10 +168,26 @@ impl Paper {
                                 let mut new_regions = Vec::new();
 
                                 for region in regions {
-                                    let pre_filter = self.view.data.lines().nth(region.start().row).unwrap().chars().skip(region.start().column).collect::<String>();
+                                    let pre_filter = self
+                                        .view
+                                        .data
+                                        .lines()
+                                        .nth(region.start().row)
+                                        .unwrap()
+                                        .chars()
+                                        .skip(region.start().column)
+                                        .collect::<String>();
 
-                                    for (key_index, key_match) in pre_filter.match_indices(key.as_str()) {
-                                        new_regions.push(Region::with_address_length(Address::with_row_column(region.start().row, region.start().column + key_index), Length::from(key_match.len())));
+                                    for (key_index, key_match) in
+                                        pre_filter.match_indices(key.as_str())
+                                    {
+                                        new_regions.push(Region::with_address_length(
+                                            Address::with_row_column(
+                                                region.start().row,
+                                                region.start().column + key_index,
+                                            ),
+                                            Length::from(key_match.len()),
+                                        ));
                                     }
                                 }
 
@@ -189,29 +205,40 @@ impl Paper {
                     self.noises.push(region);
                 }
 
-                self.move_mark();
+                self.ui.move_to(&self.marks[0].address);
             }
             Operation::AddToSketch(s) => {
-                for mut mark: &Mark in self.marks {
-                    for edit in mark.add(s, &self.view) {
+                let mut adjustment = 0;
+
+                for mark in self.marks.iter_mut() {
+                    mark.adjust(adjustment);
+                    self.ui.move_to(&mark.address);
+
+                    for edit in mark.add(&s, &self.view) {
                         match edit {
                             Edit::Backspace => {
                                 self.ui.delete_back();
                                 self.sketch.pop();
+                                adjustment -= 1;
                             }
-                            Edit::Wash => {
+                            Edit::Wash(x) => {
                                 self.is_dirty = true;
                                 self.sketch.clear();
+                                adjustment += x;
                             }
                             Edit::Add(c) => {
                                 self.ui.insert_char(c);
                                 self.sketch.push(c);
+                                adjustment += 1;
                             }
                         }
                     }
                 }
 
-                match self.mode.enhance(&self.sketch, &self.view.data, &self.noises) {
+                match self
+                    .mode
+                    .enhance(&self.sketch, &self.view.data, &self.noises)
+                {
                     Some(Enhancement::FilterRegions(regions)) => {
                         // Clear filter background.
                         for line in 0..self.ui.window_height() {
@@ -232,17 +259,17 @@ impl Paper {
                     None => {}
                 }
 
-                self.move_mark();
+                self.ui.move_to(&self.marks[0].address);
             }
             Operation::AddToView(c) => {
-                for mark in self.marks {
+                for mark in self.marks.iter() {
                     self.view.add(c, mark.index);
                 }
 
                 if self.is_dirty {
                     self.write_view();
                     // write_view() moves cursor so move it back
-                    self.move_mark();
+                    self.ui.move_to(&self.marks[0].address);
                     self.is_dirty = false;
                 }
             }
@@ -256,13 +283,13 @@ impl Paper {
                     Mode::Command | Mode::Filter => {
                         self.marks.truncate(1);
                         self.marks[0].reset();
-                        self.move_mark();
+                        self.ui.move_to(&self.marks[0].address);
                         self.sketch.clear();
                     }
                     Mode::Action => {}
                     Mode::Edit => {
                         self.write_view();
-                        self.move_mark();
+                        self.ui.move_to(&self.marks[0].address);
                         self.sketch.clear();
                     }
                 }
@@ -285,7 +312,12 @@ impl Paper {
                 self.write_view();
             }
             Operation::SetMarks(edge) => {
-                self.marks[0] = Marker{region: self.signals[0]}.generate_mark(edge, &self.view);
+                self.marks.clear();
+
+                for signal in self.signals.iter() {
+                    self.marks
+                        .push(Marker { region: *signal }.generate_mark(edge, &self.view));
+                }
             }
         }
 
@@ -295,9 +327,17 @@ impl Paper {
     /// Displays the view on the user interface.
     fn write_view(&mut self) {
         self.ui.clear();
-        self.ui.calc_line_number_width(self.view.data.lines().count());
+        self.ui
+            .calc_line_number_width(self.view.data.lines().count());
 
-        for (index, line) in self.view.data.lines().skip(self.first_line).take(self.ui.window_height()).enumerate() {
+        for (index, line) in self
+            .view
+            .data
+            .lines()
+            .skip(self.first_line)
+            .take(self.ui.window_height())
+            .enumerate()
+        {
             self.ui.set_line(index, self.first_line + index + 1, line);
         }
     }
@@ -305,11 +345,6 @@ impl Paper {
     /// Returns the height used for scrolling.
     fn scroll_height(&self) -> usize {
         self.ui.window_height() / 4
-    }
-
-    /// Moves cursor match the address of the [`Mark`].
-    fn move_mark(&self) {
-        self.ui.move_to(self.marks[0].address);
     }
 }
 
@@ -365,7 +400,7 @@ enum Edit {
     /// Removes the previous character from the sketch.
     Backspace,
     /// Clears the sketch and redraws the view.
-    Wash,
+    Wash(isize),
     /// Adds a character to the view.
     Add(char),
 }
@@ -426,11 +461,15 @@ impl Mark {
         self.address.reset();
     }
 
+    fn adjust(&mut self, adjustment: isize) {
+        self.index += adjustment;
+    }
+
     /// Moves mark based on the added [`String`] and returns the appropriate [`Edit`].
     ///
     /// [`String`]: https://doc.rust-lang.org/std/string/struct.String.html
     /// [`Edit`]: .enum.Edit.html
-    fn add(&mut self, s: String, view: &View) -> IntoIter<Edit> {
+    fn add(&mut self, s: &String, view: &View) -> IntoIter<Edit> {
         let mut edits = Vec::new();
 
         for c in s.chars() {
@@ -441,7 +480,7 @@ impl Mark {
                     if self.address.column == 0 {
                         self.address.row -= 1;
                         self.address.column = view.line_length(&self.address);
-                        edits.push(Edit::Wash);
+                        edits.push(Edit::Wash(-1));
                     }
 
                     self.address.column -= 1;
@@ -451,7 +490,7 @@ impl Mark {
                     self.index += 1;
                     self.address.row += 1;
                     self.address.column = 0;
-                    edits.push(Edit::Wash);
+                    edits.push(Edit::Wash(1));
                 }
                 _ => {
                     self.address.column += 1;
@@ -483,7 +522,12 @@ impl Index {
     fn with_row(row: usize, view: &View) -> Index {
         match row {
             0 => Default::default(),
-            _ => Index(view.data.match_indices(ui::ENTER).nth(row - 1).map(|x| x.0 + 1)),
+            _ => Index(
+                view.data
+                    .match_indices(ui::ENTER)
+                    .nth(row - 1)
+                    .map(|x| x.0 + 1),
+            ),
         }
     }
 
@@ -506,9 +550,9 @@ impl SubAssign<usize> for Index {
     }
 }
 
-impl AddAssign<usize> for Index {
-    fn add_assign(&mut self, other: usize) {
-        self.0 = self.0.map(|x| x + other);
+impl AddAssign<isize> for Index {
+    fn add_assign(&mut self, other: isize) {
+        self.0 = self.0.map(|x| (x as isize + other) as usize);
     }
 }
 
@@ -520,10 +564,14 @@ impl Default for Index {
 
 impl fmt::Display for Index {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "[{}]", match self.0 {
-            None => String::from("None"),
-            Some(i) => format!("{}", i),
-        })
+        write!(
+            f,
+            "[{}]",
+            match self.0 {
+                None => String::from("None"),
+                Some(i) => format!("{}", i),
+            }
+        )
     }
 }
 
@@ -622,56 +670,54 @@ impl Mode {
         let mut operations = Vec::new();
 
         match input {
-            Some(c) => {
-                match *self {
-                    Mode::Display => match c {
-                        '.' => operations.push(Operation::ChangeMode(Mode::Command)),
-                        '#' | '/' => {
-                            operations.push(Operation::ChangeMode(Mode::Filter));
-                            operations.push(Operation::AddToSketch(c.to_string()));
-                        }
-                        'j' => operations.push(Operation::ScrollDown),
-                        'k' => operations.push(Operation::ScrollUp),
-                        _ => {}
-                    },
-                    Mode::Command => match c {
-                        ui::ENTER => {
-                            operations.push(Operation::ExecuteCommand);
-                            operations.push(Operation::ChangeMode(Mode::Display));
-                        }
-                        ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
-                        _ => operations.push(Operation::AddToSketch(c.to_string())),
-                    },
-                    Mode::Filter => match c {
-                        ui::ENTER => operations.push(Operation::ChangeMode(Mode::Action)),
-                        '\t' => {
-                            operations.push(Operation::IdentifyNoise);
-                            operations.push(Operation::AddToSketch(String::from("&&")));
-                        }
-                        ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
-                        _ => operations.push(Operation::AddToSketch(c.to_string())),
-                    },
-                    Mode::Action => match c {
-                        ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
-                        'i' => {
-                            operations.push(Operation::SetMarks(Edge::Start));
-                            operations.push(Operation::ChangeMode(Mode::Edit));
-                        }
-                        'I' => {
-                            operations.push(Operation::SetMarks(Edge::End));
-                            operations.push(Operation::ChangeMode(Mode::Edit));
-                        }
-                        _ => {}
-                    },
-                    Mode::Edit => match c {
-                        ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
-                        _ => {
-                            operations.push(Operation::AddToSketch(c.to_string()));
-                            operations.push(Operation::AddToView(c));
-                        }
-                    },
-                }
-            }
+            Some(c) => match *self {
+                Mode::Display => match c {
+                    '.' => operations.push(Operation::ChangeMode(Mode::Command)),
+                    '#' | '/' => {
+                        operations.push(Operation::ChangeMode(Mode::Filter));
+                        operations.push(Operation::AddToSketch(c.to_string()));
+                    }
+                    'j' => operations.push(Operation::ScrollDown),
+                    'k' => operations.push(Operation::ScrollUp),
+                    _ => {}
+                },
+                Mode::Command => match c {
+                    ui::ENTER => {
+                        operations.push(Operation::ExecuteCommand);
+                        operations.push(Operation::ChangeMode(Mode::Display));
+                    }
+                    ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
+                    _ => operations.push(Operation::AddToSketch(c.to_string())),
+                },
+                Mode::Filter => match c {
+                    ui::ENTER => operations.push(Operation::ChangeMode(Mode::Action)),
+                    '\t' => {
+                        operations.push(Operation::IdentifyNoise);
+                        operations.push(Operation::AddToSketch(String::from("&&")));
+                    }
+                    ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
+                    _ => operations.push(Operation::AddToSketch(c.to_string())),
+                },
+                Mode::Action => match c {
+                    ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
+                    'i' => {
+                        operations.push(Operation::SetMarks(Edge::Start));
+                        operations.push(Operation::ChangeMode(Mode::Edit));
+                    }
+                    'I' => {
+                        operations.push(Operation::SetMarks(Edge::End));
+                        operations.push(Operation::ChangeMode(Mode::Edit));
+                    }
+                    _ => {}
+                },
+                Mode::Edit => match c {
+                    ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
+                    _ => {
+                        operations.push(Operation::AddToSketch(c.to_string()));
+                        operations.push(Operation::AddToView(c));
+                    }
+                },
+            },
             None => {}
         }
 
@@ -703,10 +749,23 @@ impl Mode {
                             let mut new_regions = Vec::new();
 
                             for region in regions {
-                                let pre_filter = view.lines().nth(region.start().row).unwrap().chars().skip(region.start().column).collect::<String>();
+                                let pre_filter = view
+                                    .lines()
+                                    .nth(region.start().row)
+                                    .unwrap()
+                                    .chars()
+                                    .skip(region.start().column)
+                                    .collect::<String>();
 
-                                for (key_index, key_match) in pre_filter.match_indices(key.as_str()) {
-                                    new_regions.push(Region::with_address_length(Address::with_row_column(region.start().row, region.start().column + key_index), Length::from(key_match.len())));
+                                for (key_index, key_match) in pre_filter.match_indices(key.as_str())
+                                {
+                                    new_regions.push(Region::with_address_length(
+                                        Address::with_row_column(
+                                            region.start().row,
+                                            region.start().column + key_index,
+                                        ),
+                                        Length::from(key_match.len()),
+                                    ));
                                 }
                             }
 

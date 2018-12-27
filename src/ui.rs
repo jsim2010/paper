@@ -149,7 +149,13 @@ impl UserInterface {
     ///
     /// [`Region`]: struct.Region.html
     pub fn set_background(&self, region: &Region, color_pair: i16) {
-        self.window.mvchgat(region.y(), self.origin() + region.x(), region.n(), pancurses::A_NORMAL, color_pair);
+        self.window.mvchgat(
+            region.y(),
+            self.origin() + region.x(),
+            region.n(),
+            pancurses::A_NORMAL,
+            color_pair,
+        );
     }
 
     /// Outputs a line, including its line number.
@@ -183,7 +189,7 @@ impl UserInterface {
     /// ```
     ///
     /// [`Address`]: .struct.Address.html
-    pub fn move_to(&self, address: Address) {
+    pub fn move_to(&self, address: &Address) {
         self.window.mv(address.y(), self.origin() + address.x());
     }
 
@@ -281,7 +287,7 @@ impl Address {
     /// assert_eq!(address.column, 2);
     /// ```
     pub fn with_row_column(row: usize, column: usize) -> Address {
-        Address {row, column}
+        Address { row, column }
     }
 
     /// Resets address to default values

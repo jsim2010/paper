@@ -1,2 +1,2 @@
 [alias]
-doc_all = "doc --document-private-items"
+docall = "doc --document-private-items"
