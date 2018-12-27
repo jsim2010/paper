@@ -35,8 +35,7 @@ extern crate regex;
 mod rec;
 mod ui;
 
-use rec::Rpt::{Any, Mult, Opt};
-use rec::{ChCls, Rec};
+use rec::{ChCls, Rec, OPT, VAR, SOME, Rpt};
 use regex::Regex;
 use std::cmp;
 use std::fmt;
@@ -119,10 +118,10 @@ impl Paper {
     fn operate(&mut self, op: Operation) -> Option<Notice> {
         match op {
             Operation::ExecuteCommand => {
-                let re = Regex::new(r"(?P<command>.+?)(?:\s|$)").unwrap();
-                let command = self.sketch.clone();
+                let command = (ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | "$")).form();
+                let cmd = self.sketch.clone();
 
-                match re.captures(&command) {
+                match command.captures(&cmd) {
                     Some(caps) => match &caps["command"] {
                         "see" => {
                             let see_re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
@@ -146,9 +145,9 @@ impl Paper {
             }
             Operation::IdentifyNoise => {
                 let first_filter =
-                    (ChCls::AllBut("&").rpt(Any).name("filter") + "&&".rpt(Opt)).form();
-                let filter = ("#" + ChCls::Digit.rpt(Mult).name("line")
-                    | "/" + ChCls::All.rpt(Mult).name("key")).form();
+                    (ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)).form();
+                let filter = ("#" + ChCls::Digit.rpt(SOME).name("line")
+                    | "/" + ChCls::Any.rpt(SOME).name("key")).form();
                 let mut regions = Vec::new();
 
                 for row in 0..self.view.data.lines().count() {
