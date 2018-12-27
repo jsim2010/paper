@@ -58,7 +58,8 @@ pub struct Paper {
     /// [`Region`]s of the view that match the current filter.
     ///
     /// [`Region`]: .struct.Region.html
-    filter_regions: Vec<Region>,
+    signals: Vec<Region>,
+    noises: Vec<Region>,
     /// Path of the file being edited.
     path: String,
     /// If the view should be redrawn.
@@ -122,6 +123,11 @@ impl Paper {
                             self.path = see_re.captures(&self.sketch).unwrap()["path"].to_string();
                             self.view = View::with_file(&self.path);
                             self.first_line = 0;
+                            self.noises.clear();
+
+                            for row in 0..self.view.data.lines().count() {
+                                self.noises.push(Region::line(row));
+                            }
                         }
                         "put" => {
                             fs::write(&self.path, &self.view.data).unwrap();
@@ -131,6 +137,56 @@ impl Paper {
                     },
                     None => {}
                 }
+            }
+            Operation::IdentifyNoise => {
+                let re = Regex::new(r"(?P<filter>[^&]*)(?:&&)?").unwrap();
+                let filter_re = Regex::new(r"#(?P<line>\d+)|/(?P<key>.+)").unwrap();
+                let mut regions = Vec::new();
+
+                for row in 0..self.view.data.lines().count() {
+                    regions.push(Region::line(row));
+                }
+
+                for caps in re.captures_iter(&self.sketch) {
+                    match &filter_re.captures(&caps["filter"]) {
+                        Some(captures) => {
+                            if let Some(line) = captures.name("line") {
+                                // Subtract 1 to match row.
+                                line.as_str()
+                                    .parse::<usize>()
+                                    .map(|i| i - 1)
+                                    .ok()
+                                    .map(|row| {
+                                        regions.retain(|&x| x.start().row == row);
+                                    });
+                            }
+
+                            if let Some(key) = captures.name("key") {
+                                let mut new_regions = Vec::new();
+
+                                for region in regions {
+                                    let pre_filter = self.view.data.lines().nth(region.start().row).unwrap().chars().skip(region.start().column).collect::<String>();
+
+                                    for (key_index, key_match) in pre_filter.match_indices(key.as_str()) {
+                                        new_regions.push(Region::with_address_length(Address::with_row_column(region.start().row, region.start().column + key_index), Length::from(key_match.len())));
+                                    }
+                                }
+
+                                regions = new_regions;
+                            }
+                        }
+                        None => {}
+                    }
+                }
+
+                self.noises.clear();
+
+                for region in regions {
+                    self.ui.set_background(&region, 2);
+                    self.noises.push(region);
+                }
+
+                self.move_mark();
             }
             Operation::AddToSketch(s) => {
                 for edit in self.mark.add(s, &self.view) {
@@ -150,18 +206,23 @@ impl Paper {
                     }
                 }
 
-                match self.mode.enhance(&self.sketch, &self.view.data) {
+                match self.mode.enhance(&self.sketch, &self.view.data, &self.noises) {
                     Some(Enhancement::FilterRegions(regions)) => {
                         // Clear filter background.
                         for line in 0..self.ui.window_height() {
                             self.ui.set_background(&Region::line(line), 0);
                         }
 
+                        // Add back in the noise
+                        for noise in self.noises.iter() {
+                            self.ui.set_background(noise, 2);
+                        }
+
                         for region in regions.iter() {
                             self.ui.set_background(region, 1);
                         }
 
-                        self.filter_regions = regions;
+                        self.signals = regions;
                     }
                     None => {}
                 }
@@ -216,7 +277,7 @@ impl Paper {
                 self.write_view();
             }
             Operation::SetMark(edge) => {
-                self.mark = Marker{region: self.filter_regions[0]}.generate_mark(edge, &self.view);
+                self.mark = Marker{region: self.signals[0]}.generate_mark(edge, &self.view);
             }
         }
 
@@ -475,6 +536,7 @@ enum Operation {
     AddToView(char),
     /// Sets the mark to be an edge of the filtered regions.
     SetMark(Edge),
+    IdentifyNoise,
 }
 
 impl fmt::Display for Operation {
@@ -574,7 +636,10 @@ impl Mode {
                     },
                     Mode::Filter => match c {
                         ui::ENTER => operations.push(Operation::ChangeMode(Mode::Action)),
-                        '\t' => operations.push(Operation::AddToSketch(String::from("||"))),
+                        '\t' => {
+                            operations.push(Operation::IdentifyNoise);
+                            operations.push(Operation::AddToSketch(String::from("&&")));
+                        }
                         ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
                         _ => operations.push(Operation::AddToSketch(c.to_string())),
                     },
@@ -606,37 +671,41 @@ impl Mode {
     }
 
     /// Returns the Enhancement to be added.
-    fn enhance(&self, sketch: &String, view: &String) -> Option<Enhancement> {
+    fn enhance(&self, sketch: &String, view: &String, noises: &Vec<Region>) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
-                let re = Regex::new(r"(?P<filter>[^\|]*)(?:\|\|)?").unwrap();
+                let re = Regex::new(r"(?P<filter>[^&]*)(?:&&)?").unwrap();
                 let filter_re = Regex::new(r"#(?P<line>\d+)|/(?P<key>.+)").unwrap();
-                let mut regions = Vec::new();
+                let mut regions = noises.clone();
 
-                for caps in re.captures_iter(sketch) {
-                    match &filter_re.captures(&caps["filter"]) {
-                        Some(captures) => {
-                            if let Some(line) = captures.name("line") {
-                                // Subtract 1 to match row.
-                                line.as_str()
-                                    .parse::<usize>()
-                                    .map(|i| i - 1)
-                                    .ok()
-                                    .map(|row| {
-                                        regions.push(Region::line(row));
-                                    });
-                            }
+                match &filter_re.captures(&re.captures_iter(sketch).last().unwrap()["filter"]) {
+                    Some(captures) => {
+                        if let Some(line) = captures.name("line") {
+                            // Subtract 1 to match row.
+                            line.as_str()
+                                .parse::<usize>()
+                                .map(|i| i - 1)
+                                .ok()
+                                .map(|row| {
+                                    regions.retain(|&x| x.start().row == row);
+                                });
+                        }
 
-                            if let Some(key) = captures.name("key") {
-                                for (row, line) in view.lines().enumerate() {
-                                    for (key_index, key_match) in line.match_indices(key.as_str()) {
-                                        regions.push(Region::with_address_length(Address::with_row_column(row, key_index), Length::from(key_match.len())));
-                                    }
+                        if let Some(key) = captures.name("key") {
+                            let mut new_regions = Vec::new();
+
+                            for region in regions {
+                                let pre_filter = view.lines().nth(region.start().row).unwrap().chars().skip(region.start().column).collect::<String>();
+
+                                for (key_index, key_match) in pre_filter.match_indices(key.as_str()) {
+                                    new_regions.push(Region::with_address_length(Address::with_row_column(region.start().row, region.start().column + key_index), Length::from(key_match.len())));
                                 }
                             }
+
+                            regions = new_regions;
                         }
-                        None => {}
                     }
+                    None => {}
                 }
 
                 Some(Enhancement::FilterRegions(regions))

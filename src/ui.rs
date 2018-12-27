@@ -52,7 +52,8 @@ impl UserInterface {
         pancurses::start_color();
         pancurses::use_default_colors();
         pancurses::init_pair(0, -1, -1);
-        pancurses::init_pair(1, -1, pancurses::COLOR_BLUE);
+        pancurses::init_pair(1, -1, pancurses::COLOR_RED);
+        pancurses::init_pair(2, -1, pancurses::COLOR_BLUE);
     }
 
     /// Gets input from the user.
