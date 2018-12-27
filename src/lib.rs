@@ -67,7 +67,7 @@ pub struct Paper {
     /// [`Mark`] of the cursor.
     ///
     /// [`Mark`]: .struct.Mark.html
-    mark: Mark,
+    marks: Vec<Mark>,
 }
 
 impl Paper {
@@ -79,7 +79,10 @@ impl Paper {
     /// let paper = Paper::new();
     /// ```
     pub fn new() -> Paper {
-        Default::default()
+        Paper {
+            marks: vec!(Default::default()),
+            ..Default::default()
+        }
     }
 
     /// Runs the application.
@@ -189,19 +192,21 @@ impl Paper {
                 self.move_mark();
             }
             Operation::AddToSketch(s) => {
-                for edit in self.mark.add(s, &self.view) {
-                    match edit {
-                        Edit::Backspace => {
-                            self.ui.delete_back();
-                            self.sketch.pop();
-                        }
-                        Edit::Wash => {
-                            self.is_dirty = true;
-                            self.sketch.clear();
-                        }
-                        Edit::Add(c) => {
-                            self.ui.insert_char(c);
-                            self.sketch.push(c);
+                for mut mark: &Mark in self.marks {
+                    for edit in mark.add(s, &self.view) {
+                        match edit {
+                            Edit::Backspace => {
+                                self.ui.delete_back();
+                                self.sketch.pop();
+                            }
+                            Edit::Wash => {
+                                self.is_dirty = true;
+                                self.sketch.clear();
+                            }
+                            Edit::Add(c) => {
+                                self.ui.insert_char(c);
+                                self.sketch.push(c);
+                            }
                         }
                     }
                 }
@@ -230,7 +235,9 @@ impl Paper {
                 self.move_mark();
             }
             Operation::AddToView(c) => {
-                self.view.add(c, self.mark.index);
+                for mark in self.marks {
+                    self.view.add(c, mark.index);
+                }
 
                 if self.is_dirty {
                     self.write_view();
@@ -247,7 +254,8 @@ impl Paper {
                         self.write_view();
                     }
                     Mode::Command | Mode::Filter => {
-                        self.mark.reset();
+                        self.marks.truncate(1);
+                        self.marks[0].reset();
                         self.move_mark();
                         self.sketch.clear();
                     }
@@ -276,8 +284,8 @@ impl Paper {
                 }
                 self.write_view();
             }
-            Operation::SetMark(edge) => {
-                self.mark = Marker{region: self.signals[0]}.generate_mark(edge, &self.view);
+            Operation::SetMarks(edge) => {
+                self.marks[0] = Marker{region: self.signals[0]}.generate_mark(edge, &self.view);
             }
         }
 
@@ -301,7 +309,7 @@ impl Paper {
 
     /// Moves cursor match the address of the [`Mark`].
     fn move_mark(&self) {
-        self.ui.move_to(self.mark.address);
+        self.ui.move_to(self.marks[0].address);
     }
 }
 
@@ -534,8 +542,8 @@ enum Operation {
     AddToSketch(String),
     /// Adds a character to the view.
     AddToView(char),
-    /// Sets the mark to be an edge of the filtered regions.
-    SetMark(Edge),
+    /// Sets the marks to be an edge of the filtered regions.
+    SetMarks(Edge),
     IdentifyNoise,
 }
 
@@ -646,11 +654,11 @@ impl Mode {
                     Mode::Action => match c {
                         ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
                         'i' => {
-                            operations.push(Operation::SetMark(Edge::Start));
+                            operations.push(Operation::SetMarks(Edge::Start));
                             operations.push(Operation::ChangeMode(Mode::Edit));
                         }
                         'I' => {
-                            operations.push(Operation::SetMark(Edge::End));
+                            operations.push(Operation::SetMarks(Edge::End));
                             operations.push(Operation::ChangeMode(Mode::Edit));
                         }
                         _ => {}
