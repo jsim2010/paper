@@ -32,8 +32,11 @@
 
 extern crate regex;
 
+mod rec;
 mod ui;
 
+use rec::Rpt::{Any, Mult, Opt};
+use rec::{ChCls, Rec};
 use regex::Regex;
 use std::cmp;
 use std::fmt;
@@ -142,16 +145,18 @@ impl Paper {
                 }
             }
             Operation::IdentifyNoise => {
-                let re = Regex::new(r"(?P<filter>[^&]*)(?:&&)?").unwrap();
-                let filter_re = Regex::new(r"#(?P<line>\d+)|/(?P<key>.+)").unwrap();
+                let first_filter =
+                    (ChCls::AllBut("&").rpt(Any).name("filter") + "&&".rpt(Opt)).form();
+                let filter = ("#" + ChCls::Digit.rpt(Mult).name("line")
+                    | "/" + ChCls::All.rpt(Mult).name("key")).form();
                 let mut regions = Vec::new();
 
                 for row in 0..self.view.data.lines().count() {
                     regions.push(Region::line(row));
                 }
 
-                for caps in re.captures_iter(&self.sketch) {
-                    match &filter_re.captures(&caps["filter"]) {
+                for caps in first_filter.captures_iter(&self.sketch) {
+                    match &filter.captures(&caps["filter"]) {
                         Some(captures) => {
                             if let Some(line) = captures.name("line") {
                                 // Subtract 1 to match row.

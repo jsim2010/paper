@@ -39,6 +39,10 @@ filter modes
   + (edit) edit filter input
   + (C-C) return to display mode
 
+(#) Line number
+- (digits) line number
+- (.) range
+
 action mode
 
 - user specifies an action to be taken on the filtered text
