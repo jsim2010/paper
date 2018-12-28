@@ -54,6 +54,7 @@ pub struct Paper<'a> {
     view: View,
     command_hunter: Hunter<'a>,
     see_hunter: Hunter<'a>,
+    first_filter_hunter: Hunter<'a>,
     /// Characters being edited to be analyzed by the application.
     sketch: String,
     /// Index of the first displayed line.
@@ -86,6 +87,7 @@ impl<'a> Paper<'a> {
             marks: vec![Default::default()],
             command_hunter: Hunter::new(CommandPattern),
             see_hunter: Hunter::new(SeePattern),
+            first_filter_hunter: Hunter::new(FirstFilterPattern),
             ..Default::default()
         }
     }
@@ -105,7 +107,7 @@ impl<'a> Paper<'a> {
             let operations = self.mode.handle_input(self.ui.get_input());
 
             for operation in operations {
-                match self.operate(operation) {
+                match operation.operate(self) {
                     Some(Notice::Quit) => break 'main,
                     None => (),
                 }
@@ -113,221 +115,6 @@ impl<'a> Paper<'a> {
         }
 
         self.ui.close();
-    }
-
-    /// Performs the given [`Operation`].
-    ///
-    /// [`Operation`]: enum.Operation.html
-    fn operate(&mut self, op: Operation) -> Option<Notice> {
-        match op {
-            Operation::ExecuteCommand => {
-                match self.command_hunter.capture(&self.sketch) {
-                    Some("see") => {
-                        match self.see_hunter.capture(&self.sketch) {
-                            Some(path) => {
-                                self.path = String::from(path);
-                                self.view = View::with_file(&self.path);
-                                self.first_line = 0;
-                                self.noises.clear();
-
-                                for row in 0..self.view.data.lines().count() {
-                                    self.noises.push(Region::line(row));
-                                }
-                            }
-                            None => {}
-                        }
-                    }
-                    Some("put") => {
-                        fs::write(&self.path, &self.view.data).unwrap();
-                    }
-                    Some("end") => return Some(Notice::Quit),
-                    Some(_) => {}
-                    None => {}
-                }
-            }
-            Operation::IdentifyNoise => {
-                let first_filter =
-                    (ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)).form();
-                let filter = ("#" + ChCls::Digit.rpt(SOME).name("line")
-                    | "/" + ChCls::Any.rpt(SOME).name("key")).form();
-                let mut regions = Vec::new();
-
-                for row in 0..self.view.data.lines().count() {
-                    regions.push(Region::line(row));
-                }
-
-                for caps in first_filter.captures_iter(&self.sketch) {
-                    match &filter.captures(&caps["filter"]) {
-                        Some(captures) => {
-                            if let Some(line) = captures.name("line") {
-                                // Subtract 1 to match row.
-                                line.as_str()
-                                    .parse::<usize>()
-                                    .map(|i| i - 1)
-                                    .ok()
-                                    .map(|row| {
-                                        regions.retain(|&x| x.start().row == row);
-                                    });
-                            }
-
-                            if let Some(key) = captures.name("key") {
-                                let mut new_regions = Vec::new();
-
-                                for region in regions {
-                                    let pre_filter = self
-                                        .view
-                                        .data
-                                        .lines()
-                                        .nth(region.start().row)
-                                        .unwrap()
-                                        .chars()
-                                        .skip(region.start().column)
-                                        .collect::<String>();
-
-                                    for (key_index, key_match) in
-                                        pre_filter.match_indices(key.as_str())
-                                    {
-                                        new_regions.push(Region::with_address_length(
-                                            Address::with_row_column(
-                                                region.start().row,
-                                                region.start().column + key_index,
-                                            ),
-                                            Length::from(key_match.len()),
-                                        ));
-                                    }
-                                }
-
-                                regions = new_regions;
-                            }
-                        }
-                        None => {}
-                    }
-                }
-
-                self.noises.clear();
-
-                for region in regions {
-                    self.ui.set_background(&region, 2);
-                    self.noises.push(region);
-                }
-
-                self.ui.move_to(&self.marks[0].address);
-            }
-            Operation::AddToSketch(s) => {
-                let mut adjustment = 0;
-
-                for mark in self.marks.iter_mut() {
-                    mark.adjust(adjustment);
-                    self.ui.move_to(&mark.address);
-
-                    for edit in mark.add(&s, &self.view) {
-                        match edit {
-                            Edit::Backspace => {
-                                self.ui.delete_back();
-                                self.sketch.pop();
-                                adjustment -= 1;
-                            }
-                            Edit::Wash(x) => {
-                                self.is_dirty = true;
-                                self.sketch.clear();
-                                adjustment += x;
-                            }
-                            Edit::Add(c) => {
-                                self.ui.insert_char(c);
-                                self.sketch.push(c);
-                                adjustment += 1;
-                            }
-                        }
-                    }
-                }
-
-                match self
-                    .mode
-                    .enhance(&self.sketch, &self.view.data, &self.noises)
-                {
-                    Some(Enhancement::FilterRegions(regions)) => {
-                        // Clear filter background.
-                        for line in 0..self.ui.window_height() {
-                            self.ui.set_background(&Region::line(line), 0);
-                        }
-
-                        // Add back in the noise
-                        for noise in self.noises.iter() {
-                            self.ui.set_background(noise, 2);
-                        }
-
-                        for region in regions.iter() {
-                            self.ui.set_background(region, 1);
-                        }
-
-                        self.signals = regions;
-                    }
-                    None => {}
-                }
-
-                self.ui.move_to(&self.marks[0].address);
-            }
-            Operation::AddToView(c) => {
-                for mark in self.marks.iter() {
-                    self.view.add(c, mark.index);
-                }
-
-                if self.is_dirty {
-                    self.write_view();
-                    // write_view() moves cursor so move it back
-                    self.ui.move_to(&self.marks[0].address);
-                    self.is_dirty = false;
-                }
-            }
-            Operation::ChangeMode(mode) => {
-                self.mode = mode;
-
-                match self.mode {
-                    Mode::Display => {
-                        self.write_view();
-                    }
-                    Mode::Command | Mode::Filter => {
-                        self.marks.truncate(1);
-                        self.marks[0].reset();
-                        self.ui.move_to(&self.marks[0].address);
-                        self.sketch.clear();
-                    }
-                    Mode::Action => {}
-                    Mode::Edit => {
-                        self.write_view();
-                        self.ui.move_to(&self.marks[0].address);
-                        self.sketch.clear();
-                    }
-                }
-            }
-            Operation::ScrollDown => {
-                self.first_line = cmp::min(
-                    self.first_line + self.scroll_height(),
-                    self.view.data.lines().count() - 1,
-                );
-                self.write_view();
-            }
-            Operation::ScrollUp => {
-                let movement = self.scroll_height();
-
-                if self.first_line < movement {
-                    self.first_line = 0;
-                } else {
-                    self.first_line -= movement;
-                }
-                self.write_view();
-            }
-            Operation::SetMarks(edge) => {
-                self.marks.clear();
-
-                for signal in self.signals.iter() {
-                    self.marks
-                        .push(Marker { region: *signal }.generate_mark(edge, &self.view));
-                }
-            }
-        }
-
-        None
     }
 
     /// Displays the view on the user interface.
@@ -354,6 +141,31 @@ impl<'a> Paper<'a> {
     }
 }
 
+struct Catches<'a, 'b, 'c> {
+    captures_iter: regex::CaptureMatches<'a, 'b>,
+    prey: &'c str,
+}
+
+impl<'a, 'b, 'c> Catches<'a, 'b, 'c> {
+    fn new(captures_iter: regex::CaptureMatches<'a, 'b>, prey: &'c str) -> Catches<'a, 'b, 'c> {
+        Catches {
+            captures_iter,
+            prey,
+        }
+    }
+}
+
+impl<'a, 'b, 'c> Iterator for Catches<'a, 'b, 'c> {
+    type Item = &'b str;
+
+    fn next(&mut self) -> Option<&'b str> {
+        match self.captures_iter.next() {
+            Some(captures) => captures.name(self.prey).map(|x| x.as_str()),
+            None => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Hunter<'a> {
     re: regex::Regex,
@@ -373,6 +185,10 @@ impl<'a> Hunter<'a> {
             Some(captures) => captures.name(self.prey).map(|x| x.as_str()),
             None => None,
         }
+    }
+
+    fn capture_iter(&self, field: &'a str) -> Catches {
+        Catches::new(self.re.captures_iter(field), self.prey)
     }
 }
 
@@ -404,13 +220,25 @@ impl<'a> Pattern<'a> for CommandPattern {
 
 struct SeePattern;
 
-impl <'a> Pattern<'a> for SeePattern {
+impl<'a> Pattern<'a> for SeePattern {
     fn regex(&self) -> regex::Regex {
         ("see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path")).form()
     }
 
     fn prey(&self) -> &'a str {
         "path"
+    }
+}
+
+struct FirstFilterPattern;
+
+impl<'a> Pattern<'a> for FirstFilterPattern {
+    fn regex(&self) -> regex::Regex {
+        (ChCls::AllBut("&").rpt(VAR).name("fltr") + "&&".rpt(OPT)).form()
+    }
+
+    fn prey(&self) -> &'a str {
+        "fltr"
     }
 }
 
@@ -641,29 +469,264 @@ impl fmt::Display for Index {
     }
 }
 
-/// Specifies a procedure based on user input to be executed by the application.
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-enum Operation {
-    /// Changes the mode.
-    ChangeMode(Mode),
-    /// Executes the command in the sketch.
-    ExecuteCommand,
-    /// Scrolls the view down by 1/4 of the window.
-    ScrollDown,
-    /// Scrolls the view up by 1/4 of the window.
-    ScrollUp,
-    /// Adds a string to the sketch.
-    AddToSketch(String),
-    /// Adds a character to the view.
-    AddToView(char),
-    /// Sets the marks to be an edge of the filtered regions.
-    SetMarks(Edge),
-    IdentifyNoise,
+trait Operation {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice>;
 }
 
-impl fmt::Display for Operation {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
+struct ChangeMode(Mode);
+
+impl Operation for ChangeMode {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        paper.mode = self.0;
+
+        match paper.mode {
+            Mode::Display => {
+                paper.write_view();
+            }
+            Mode::Command | Mode::Filter => {
+                paper.marks.truncate(1);
+                paper.marks[0].reset();
+                paper.ui.move_to(&paper.marks[0].address);
+                paper.sketch.clear();
+            }
+            Mode::Action => {}
+            Mode::Edit => {
+                paper.write_view();
+                paper.ui.move_to(&paper.marks[0].address);
+                paper.sketch.clear();
+            }
+        }
+
+        None
+    }
+}
+
+struct ExecuteCommand;
+
+impl Operation for ExecuteCommand {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        match paper.command_hunter.capture(&paper.sketch) {
+            Some("see") => {
+                match paper.see_hunter.capture(&paper.sketch) {
+                    Some(path) => {
+                        paper.path = String::from(path);
+                        paper.view = View::with_file(&paper.path);
+                        paper.first_line = 0;
+                        paper.noises.clear();
+
+                        for row in 0..paper.view.data.lines().count() {
+                            paper.noises.push(Region::line(row));
+                        }
+                    }
+                    None => {}
+                }
+            }
+            Some("put") => {
+                fs::write(&paper.path, &paper.view.data).unwrap();
+            }
+            Some("end") => return Some(Notice::Quit),
+            Some(_) => {}
+            None => {}
+        }
+
+        None
+    }
+}
+
+struct IdentifyNoise;
+
+impl Operation for IdentifyNoise {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        let filter = ("#" + ChCls::Digit.rpt(SOME).name("line")
+            | "/" + ChCls::Any.rpt(SOME).name("key")).form();
+        let mut regions = Vec::new();
+
+        for row in 0..paper.view.data.lines().count() {
+            regions.push(Region::line(row));
+        }
+
+        for capture in paper.first_filter_hunter.capture_iter(&paper.sketch) {
+            match &filter.captures(capture) {
+                Some(captures) => {
+                    if let Some(line) = captures.name("line") {
+                        // Subtract 1 to match row.
+                        line.as_str()
+                            .parse::<usize>()
+                            .map(|i| i - 1)
+                            .ok()
+                            .map(|row| {
+                                regions.retain(|&x| x.start().row == row);
+                            });
+                    }
+
+                    if let Some(key) = captures.name("key") {
+                        let mut new_regions = Vec::new();
+
+                        for region in regions {
+                            let pre_filter = paper
+                                .view
+                                .data
+                                .lines()
+                                .nth(region.start().row)
+                                .unwrap()
+                                .chars()
+                                .skip(region.start().column)
+                                .collect::<String>();
+
+                            for (key_index, key_match) in
+                                pre_filter.match_indices(key.as_str())
+                            {
+                                new_regions.push(Region::with_address_length(
+                                    Address::with_row_column(
+                                        region.start().row,
+                                        region.start().column + key_index,
+                                    ),
+                                    Length::from(key_match.len()),
+                                ));
+                            }
+                        }
+
+                        regions = new_regions;
+                    }
+                }
+                None => {}
+            }
+        }
+
+        paper.noises.clear();
+
+        for region in regions {
+            paper.ui.set_background(&region, 2);
+            paper.noises.push(region);
+        }
+
+        paper.ui.move_to(&paper.marks[0].address);
+        None
+    }
+}
+
+struct AddToSketch(String);
+
+impl Operation for AddToSketch {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        let mut adjustment = 0;
+
+        for mark in paper.marks.iter_mut() {
+            mark.adjust(adjustment);
+            paper.ui.move_to(&mark.address);
+
+            for edit in mark.add(&self.0, &paper.view) {
+                match edit {
+                    Edit::Backspace => {
+                        paper.ui.delete_back();
+                        paper.sketch.pop();
+                        adjustment -= 1;
+                    }
+                    Edit::Wash(x) => {
+                        paper.is_dirty = true;
+                        paper.sketch.clear();
+                        adjustment += x;
+                    }
+                    Edit::Add(c) => {
+                        paper.ui.insert_char(c);
+                        paper.sketch.push(c);
+                        adjustment += 1;
+                    }
+                }
+            }
+        }
+
+        match paper
+            .mode
+            .enhance(&paper.sketch, &paper.view.data, &paper.noises)
+        {
+            Some(Enhancement::FilterRegions(regions)) => {
+                // Clear filter background.
+                for line in 0..paper.ui.window_height() {
+                    paper.ui.set_background(&Region::line(line), 0);
+                }
+
+                // Add back in the noise
+                for noise in paper.noises.iter() {
+                    paper.ui.set_background(noise, 2);
+                }
+
+                for region in regions.iter() {
+                    paper.ui.set_background(region, 1);
+                }
+
+                paper.signals = regions;
+            }
+            None => {}
+        }
+
+        paper.ui.move_to(&paper.marks[0].address);
+        None
+    }
+}
+
+struct AddToView(char);
+
+impl Operation for AddToView {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        for mark in paper.marks.iter() {
+            paper.view.add(self.0, mark.index);
+        }
+
+        if paper.is_dirty {
+            paper.write_view();
+            // write_view() moves cursor so move it back
+            paper.ui.move_to(&paper.marks[0].address);
+            paper.is_dirty = false;
+        }
+
+        None
+    }
+}
+
+struct ScrollDown;
+
+impl Operation for ScrollDown {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        paper.first_line = cmp::min(
+            paper.first_line + paper.scroll_height(),
+            paper.view.data.lines().count() - 1,
+        );
+
+        paper.write_view();
+        None
+    }
+}
+
+struct ScrollUp;
+
+impl Operation for ScrollUp {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        let movement = paper.scroll_height();
+
+        if paper.first_line < movement {
+            paper.first_line = 0;
+        } else {
+            paper.first_line -= movement;
+        }
+
+        paper.write_view();
+        None
+    }
+}
+
+struct SetMarks(Edge);
+
+impl Operation for SetMarks {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        paper.marks.clear();
+
+        for signal in paper.signals.iter() {
+            paper.marks
+                .push(Marker { region: *signal }.generate_mark(self.0, &paper.view));
+        }
+
+        None
     }
 }
 
@@ -690,7 +753,7 @@ impl fmt::Display for Enhancement {
     }
 }
 
-/// Specifies the result of an Operation to be processed by the application.
+/// Specifies the result of an Op to be processed by the application.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 enum Notice {
     /// Ends the application.
@@ -732,55 +795,55 @@ impl Default for Mode {
 
 impl Mode {
     /// Returns the operations to be executed based on user input.
-    fn handle_input(&self, input: Option<char>) -> Vec<Operation> {
-        let mut operations = Vec::new();
+    fn handle_input(&self, input: Option<char>) -> Vec<Box<dyn Operation>> {
+        let mut operations: Vec<Box<dyn Operation>> = Vec::new();
 
         match input {
             Some(c) => match *self {
                 Mode::Display => match c {
-                    '.' => operations.push(Operation::ChangeMode(Mode::Command)),
+                    '.' => operations.push(Box::new(ChangeMode(Mode::Command))),
                     '#' | '/' => {
-                        operations.push(Operation::ChangeMode(Mode::Filter));
-                        operations.push(Operation::AddToSketch(c.to_string()));
+                        operations.push(Box::new(ChangeMode(Mode::Filter)));
+                        operations.push(Box::new(AddToSketch(c.to_string())));
                     }
-                    'j' => operations.push(Operation::ScrollDown),
-                    'k' => operations.push(Operation::ScrollUp),
+                    'j' => operations.push(Box::new(ScrollDown)),
+                    'k' => operations.push(Box::new(ScrollUp)),
                     _ => {}
                 },
                 Mode::Command => match c {
                     ui::ENTER => {
-                        operations.push(Operation::ExecuteCommand);
-                        operations.push(Operation::ChangeMode(Mode::Display));
+                        operations.push(Box::new(ExecuteCommand));
+                        operations.push(Box::new(ChangeMode(Mode::Display)));
                     }
-                    ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
-                    _ => operations.push(Operation::AddToSketch(c.to_string())),
+                    ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
+                    _ => operations.push(Box::new(AddToSketch(c.to_string()))),
                 },
                 Mode::Filter => match c {
-                    ui::ENTER => operations.push(Operation::ChangeMode(Mode::Action)),
+                    ui::ENTER => operations.push(Box::new(ChangeMode(Mode::Action))),
                     '\t' => {
-                        operations.push(Operation::IdentifyNoise);
-                        operations.push(Operation::AddToSketch(String::from("&&")));
+                        operations.push(Box::new(IdentifyNoise));
+                        operations.push(Box::new(AddToSketch(String::from("&&"))));
                     }
-                    ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
-                    _ => operations.push(Operation::AddToSketch(c.to_string())),
+                    ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
+                    _ => operations.push(Box::new(AddToSketch(c.to_string()))),
                 },
                 Mode::Action => match c {
-                    ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
+                    ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
                     'i' => {
-                        operations.push(Operation::SetMarks(Edge::Start));
-                        operations.push(Operation::ChangeMode(Mode::Edit));
+                        operations.push(Box::new(SetMarks(Edge::Start)));
+                        operations.push(Box::new(ChangeMode(Mode::Edit)));
                     }
                     'I' => {
-                        operations.push(Operation::SetMarks(Edge::End));
-                        operations.push(Operation::ChangeMode(Mode::Edit));
+                        operations.push(Box::new(SetMarks(Edge::End)));
+                        operations.push(Box::new(ChangeMode(Mode::Edit)));
                     }
                     _ => {}
                 },
                 Mode::Edit => match c {
-                    ui::ESC => operations.push(Operation::ChangeMode(Mode::Display)),
+                    ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
                     _ => {
-                        operations.push(Operation::AddToSketch(c.to_string()));
-                        operations.push(Operation::AddToView(c));
+                        operations.push(Box::new(AddToSketch(c.to_string())));
+                        operations.push(Box::new(AddToView(c)));
                     }
                 },
             },
