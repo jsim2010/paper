@@ -118,7 +118,7 @@ impl Paper {
         match op {
             Operation::ExecuteCommand => {
                 let command =
-                    (ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | "$")).form();
+                    (ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End)).form();
                 let cmd = self.sketch.clone();
 
                 match command.captures(&cmd) {
@@ -739,12 +739,13 @@ impl Mode {
                     (ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)).form();
                 let filter = (("#"
                     + (ChCls::Digit.rpt(SOME).name("line") + ChCls::End
-                        | (ChCls::Digit.rpt(SOME).name("start")
+                        | ChCls::Digit.rpt(SOME).name("start")
                             + "."
-                            + ChCls::Digit.rpt(SOME).name("end"))))
+                            + ChCls::Digit.rpt(SOME).name("end")
+                        | ChCls::Digit.rpt(SOME).name("origin")
+                            + (("+".re() | "-") + ChCls::Digit.rpt(SOME)).name("movement")))
                     | ("/" + ChCls::Any.rpt(SOME).name("key"))).form();
                 let mut regions = noises.clone();
-                eprintln!("{}", filter);
 
                 match &filter.captures(&each_filter.captures_iter(sketch).last().unwrap()["filter"])
                 {
@@ -758,18 +759,38 @@ impl Mode {
                                 .map(|row| {
                                     regions.retain(|&x| x.start().row == row);
                                 });
-                        }
+                        } else if let (Some(line_start), Some(line_end)) =
+                            (captures.name("start"), captures.name("end"))
+                        {
+                            if let (Ok(start), Ok(end)) = (
+                                line_start.as_str().parse::<usize>().map(|i| i - 1),
+                                line_end.as_str().parse::<usize>().map(|i| i - 1),
+                            ) {
+                                let top = cmp::min(start, end);
+                                let bottom = cmp::max(start, end);
 
-                        if let (Some(line_start), Some(line_end)) = (captures.name("start"), captures.name("end")) {
-                            if let (Ok(start), Ok(end)) = (line_start.as_str().parse::<usize>().map(|i| i - 1), line_end.as_str().parse::<usize>().map(|i| i - 1)) {
                                 regions.retain(|&x| {
                                     let row = x.start().row;
-                                    (row >= start && row <= end) || (row <= start && row >= end)
+                                    row >= top && row <= bottom
                                 })
                             }
-                        }
+                        } else if let (Some(line_origin), Some(line_movement)) =
+                            (captures.name("origin"), captures.name("movement"))
+                        {
+                            if let (Ok(origin), Ok(movement)) = (
+                                line_origin.as_str().parse::<usize>().map(|i| i - 1),
+                                line_movement.as_str().parse::<isize>(),
+                            ) {
+                                let end = (origin as isize + movement) as usize;
+                                let top = cmp::min(origin, end);
+                                let bottom = cmp::max(origin, end);
 
-                        if let Some(key) = captures.name("key") {
+                                regions.retain(|&x| {
+                                    let row = x.start().row;
+                                    row >= top && row <= bottom
+                                })
+                            }
+                        } else if let Some(key) = captures.name("key") {
                             let mut new_regions = Vec::new();
 
                             for region in regions {

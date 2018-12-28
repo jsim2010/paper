@@ -9,19 +9,19 @@ pub const SOME: RepeatConst = RepeatConst("+");
 const LAZY: &str = "?";
 
 pub trait Rec {
-    fn regex(&self) -> String;
+    fn reg_exp(&self) -> String;
 
     fn re(&self) -> Re {
-        Re::new(self.regex())
+        Re::new(self.reg_exp())
     }
 
     fn rpt(&self, rpt: impl Rpt) -> Re {
-        self.re().group() + rpt.repr()
+        self.re().repeat(rpt)
     }
 }
 
 impl<'a> Rec for ChCls<'a> {
-    fn regex(&self) -> String {
+    fn reg_exp(&self) -> String {
         match self {
             ChCls::AllBut(chars) => String::from("[^") + chars + "]",
             ChCls::Digit => String::from(r"\d"),
@@ -33,8 +33,8 @@ impl<'a> Rec for ChCls<'a> {
 }
 
 impl<'a> Rec for &'a str {
-    fn regex(&self) -> String {
-        String::from(*self).replace(".", r"\.")
+    fn reg_exp(&self) -> String {
+        String::from(*self).replace(".", r"\.").replace("+", r"\+")
     }
 }
 
@@ -94,6 +94,10 @@ impl Re {
         self
     }
 
+    fn repeat(self, repeat: impl Rpt) -> Re {
+        Re::new(self.group().expression + repeat.repr())
+    }
+
     pub fn build(&self) -> Result<Regex, regex::Error> {
         Regex::new(&self.expression)
     }
@@ -143,6 +147,14 @@ impl BitOr for Re {
     }
 }
 
+impl<'a> BitOr<&'a str> for Re {
+    type Output = Re;
+
+    fn bitor(self, rhs: &'a str) -> Re {
+        self | rhs.re()
+    }
+}
+
 impl fmt::Display for Re {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.expression)
@@ -161,6 +173,14 @@ impl<'a, 'b> BitOr<&'a str> for ChCls<'b> {
     type Output = Re;
 
     fn bitor(self, rhs: &'a str) -> Re {
+        self.re() | rhs.re()
+    }
+}
+
+impl<'a> BitOr for ChCls<'a> {
+    type Output = Re;
+
+    fn bitor(self, rhs: ChCls<'a>) -> Re {
         self.re() | rhs.re()
     }
 }
