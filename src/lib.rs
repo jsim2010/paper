@@ -127,7 +127,8 @@ impl Paper {
                             let see_command = ("see"
                                 + ChCls::WhSpc.rpt(SOME)
                                 + ChCls::Any.rpt(VAR).name("path")).form();
-                            self.path = see_command.captures(&self.sketch).unwrap()["path"].to_string();
+                            self.path =
+                                see_command.captures(&self.sketch).unwrap()["path"].to_string();
                             self.view = View::with_file(&self.path);
                             self.first_line = 0;
                             self.noises.clear();
@@ -734,11 +735,19 @@ impl Mode {
     fn enhance(&self, sketch: &String, view: &String, noises: &Vec<Region>) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
-                let each_filter = (ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)).form();
-                let filter = (("#" + ChCls::Digit.rpt(SOME).name("line")) | ("/" + ChCls::Any.rpt(SOME).name("key"))).form();
+                let each_filter =
+                    (ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)).form();
+                let filter = (("#"
+                    + (ChCls::Digit.rpt(SOME).name("line") + ChCls::End
+                        | (ChCls::Digit.rpt(SOME).name("start")
+                            + "."
+                            + ChCls::Digit.rpt(SOME).name("end"))))
+                    | ("/" + ChCls::Any.rpt(SOME).name("key"))).form();
                 let mut regions = noises.clone();
+                eprintln!("{}", filter);
 
-                match &filter.captures(&each_filter.captures_iter(sketch).last().unwrap()["filter"]) {
+                match &filter.captures(&each_filter.captures_iter(sketch).last().unwrap()["filter"])
+                {
                     Some(captures) => {
                         if let Some(line) = captures.name("line") {
                             // Subtract 1 to match row.
@@ -749,6 +758,15 @@ impl Mode {
                                 .map(|row| {
                                     regions.retain(|&x| x.start().row == row);
                                 });
+                        }
+
+                        if let (Some(line_start), Some(line_end)) = (captures.name("start"), captures.name("end")) {
+                            if let (Ok(start), Ok(end)) = (line_start.as_str().parse::<usize>().map(|i| i - 1), line_end.as_str().parse::<usize>().map(|i| i - 1)) {
+                                regions.retain(|&x| {
+                                    let row = x.start().row;
+                                    (row >= start && row <= end) || (row <= start && row >= end)
+                                })
+                            }
                         }
 
                         if let Some(key) = captures.name("key") {

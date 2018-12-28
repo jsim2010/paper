@@ -27,13 +27,22 @@ impl<'a> Rec for ChCls<'a> {
             ChCls::Digit => String::from(r"\d"),
             ChCls::Any => String::from("."),
             ChCls::WhSpc => String::from(r"\s"),
+            ChCls::End => String::from("$"),
         }
     }
 }
 
 impl<'a> Rec for &'a str {
     fn regex(&self) -> String {
-        String::from(*self)
+        String::from(*self).replace(".", r"\.")
+    }
+}
+
+impl<'a> Add<Re> for &'a str {
+    type Output = Re;
+
+    fn add(self, other: Re) -> Re {
+        self.re() + other
     }
 }
 
@@ -76,7 +85,12 @@ impl Re {
     }
 
     fn group(mut self) -> Re {
-        self.expression = String::from("(?:") + &self.expression + ")";
+        let length = self.expression.chars().count();
+
+        if length > 2 || (length == 2 && self.expression.chars().nth(0) != Some('\\')) {
+            self.expression = String::from("(?:") + &self.expression + ")";
+        }
+
         self
     }
 
@@ -97,19 +111,11 @@ impl Add for Re {
     }
 }
 
-impl<'a> Add<Re> for &'a str {
-    type Output = Re;
-
-    fn add(self, other: Re) -> Re {
-        Re::new(String::from(self) + &other.expression)
-    }
-}
-
 impl<'a> Add<&'a str> for Re {
     type Output = Re;
 
     fn add(self, other: &str) -> Re {
-        Re::new(self.expression + other)
+        self + other.re()
     }
 }
 
@@ -117,7 +123,15 @@ impl Add<String> for Re {
     type Output = Re;
 
     fn add(self, other: String) -> Re {
-        Re::new(self.expression + &other)
+        self + other.as_str().re()
+    }
+}
+
+impl<'a> Add<ChCls<'a>> for Re {
+    type Output = Re;
+
+    fn add(self, other: ChCls<'a>) -> Re {
+        self + other.re()
     }
 }
 
@@ -140,6 +154,7 @@ pub enum ChCls<'a> {
     AllBut(&'a str),
     Digit,
     WhSpc,
+    End,
 }
 
 impl<'a, 'b> BitOr<&'a str> for ChCls<'b> {

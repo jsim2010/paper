@@ -41,7 +41,7 @@ filter modes
 
 (#) Line number
 - (digits) line number
-- (.) range
+- (digits)(.)(digits) range
 
 action mode
 
