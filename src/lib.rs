@@ -732,7 +732,7 @@ impl Default for Mode {
 
 impl Mode {
     /// Returns the operations to be executed based on user input.
-    fn handle_input(&self, input: Option<char>) -> Vec<impl Operation> {
+    fn handle_input(&self, input: Option<char>) -> Vec<Operation> {
         let mut operations = Vec::new();
 
         match input {
