@@ -69,7 +69,7 @@ impl Rpt for Repeat {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Re {
     expression: String,
 }

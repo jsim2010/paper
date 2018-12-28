@@ -45,13 +45,15 @@ use ui::{Address, Length, Region, UserInterface};
 
 /// The paper application.
 #[derive(Debug, Default)]
-pub struct Paper {
+pub struct Paper<'a> {
     /// User interface of the application.
     ui: UserInterface,
     /// Current mode of the application.
     mode: Mode,
     /// Data of the file being edited.
     view: View,
+    command_hunter: Hunter<'a>,
+    see_hunter: Hunter<'a>,
     /// Characters being edited to be analyzed by the application.
     sketch: String,
     /// Index of the first displayed line.
@@ -71,7 +73,7 @@ pub struct Paper {
     marks: Vec<Mark>,
 }
 
-impl Paper {
+impl<'a> Paper<'a> {
     /// Creates a new paper application.
     ///
     /// # Examples
@@ -79,9 +81,11 @@ impl Paper {
     /// # use paper::Paper;
     /// let paper = Paper::new();
     /// ```
-    pub fn new() -> Paper {
+    pub fn new() -> Paper<'a> {
         Paper {
             marks: vec![Default::default()],
+            command_hunter: Hunter::new(CommandPattern),
+            see_hunter: Hunter::new(SeePattern),
             ..Default::default()
         }
     }
@@ -117,32 +121,27 @@ impl Paper {
     fn operate(&mut self, op: Operation) -> Option<Notice> {
         match op {
             Operation::ExecuteCommand => {
-                let command =
-                    (ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End)).form();
-                let cmd = self.sketch.clone();
+                match self.command_hunter.capture(&self.sketch) {
+                    Some("see") => {
+                        match self.see_hunter.capture(&self.sketch) {
+                            Some(path) => {
+                                self.path = String::from(path);
+                                self.view = View::with_file(&self.path);
+                                self.first_line = 0;
+                                self.noises.clear();
 
-                match command.captures(&cmd) {
-                    Some(caps) => match &caps["command"] {
-                        "see" => {
-                            let see_command = ("see"
-                                + ChCls::WhSpc.rpt(SOME)
-                                + ChCls::Any.rpt(VAR).name("path")).form();
-                            self.path =
-                                see_command.captures(&self.sketch).unwrap()["path"].to_string();
-                            self.view = View::with_file(&self.path);
-                            self.first_line = 0;
-                            self.noises.clear();
-
-                            for row in 0..self.view.data.lines().count() {
-                                self.noises.push(Region::line(row));
+                                for row in 0..self.view.data.lines().count() {
+                                    self.noises.push(Region::line(row));
+                                }
                             }
+                            None => {}
                         }
-                        "put" => {
-                            fs::write(&self.path, &self.view.data).unwrap();
-                        }
-                        "end" => return Some(Notice::Quit),
-                        _ => {}
-                    },
+                    }
+                    Some("put") => {
+                        fs::write(&self.path, &self.view.data).unwrap();
+                    }
+                    Some("end") => return Some(Notice::Quit),
+                    Some(_) => {}
                     None => {}
                 }
             }
@@ -352,6 +351,66 @@ impl Paper {
     /// Returns the height used for scrolling.
     fn scroll_height(&self) -> usize {
         self.ui.window_height() / 4
+    }
+}
+
+#[derive(Debug)]
+struct Hunter<'a> {
+    re: regex::Regex,
+    prey: &'a str,
+}
+
+impl<'a> Hunter<'a> {
+    fn new(pattern: impl Pattern<'a>) -> Hunter<'a> {
+        Hunter {
+            re: pattern.regex(),
+            prey: pattern.prey(),
+        }
+    }
+
+    fn capture(&self, field: &'a str) -> Option<&'a str> {
+        match self.re.captures(field) {
+            Some(captures) => captures.name(self.prey).map(|x| x.as_str()),
+            None => None,
+        }
+    }
+}
+
+impl<'a> Default for Hunter<'a> {
+    fn default() -> Hunter<'a> {
+        Hunter {
+            re: regex::Regex::new("").unwrap(),
+            prey: Default::default(),
+        }
+    }
+}
+
+trait Pattern<'a> {
+    fn regex(&self) -> regex::Regex;
+    fn prey(&self) -> &'a str;
+}
+
+struct CommandPattern;
+
+impl<'a> Pattern<'a> for CommandPattern {
+    fn regex(&self) -> regex::Regex {
+        (ChCls::Any.rpt(SOME.lazy()).name("cmd") + (ChCls::WhSpc | ChCls::End)).form()
+    }
+
+    fn prey(&self) -> &'a str {
+        "cmd"
+    }
+}
+
+struct SeePattern;
+
+impl <'a> Pattern<'a> for SeePattern {
+    fn regex(&self) -> regex::Regex {
+        ("see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path")).form()
+    }
+
+    fn prey(&self) -> &'a str {
+        "path"
     }
 }
 

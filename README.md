@@ -42,7 +42,7 @@ filter modes
 (#) Line number
 - (digits) line number
 - (digits)(.)(digits) range between 2 numbers
-- (digits)(+)(digits) range starting at first number and going 2nd number up or down
+- (digits)(+/-)(digits) range starting at first number and going 2nd number up or down
 
 action mode
 
