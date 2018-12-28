@@ -39,7 +39,7 @@ impl<'a> Rec for &'a str {
 
 pub trait Rpt {
     fn repr(&self) -> &str;
-    
+
     fn lazy(&self) -> Repeat {
         Repeat(String::from(self.repr()) + LAZY)
     }
@@ -66,8 +66,8 @@ pub struct Re {
 }
 
 impl Re {
-    fn new (expression: String) -> Re {
-        Re {expression}
+    fn new(expression: String) -> Re {
+        Re { expression }
     }
 
     pub fn name(mut self, name: &str) -> Re {

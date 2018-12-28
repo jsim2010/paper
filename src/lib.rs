@@ -35,8 +35,7 @@ extern crate regex;
 mod rec;
 mod ui;
 
-use rec::{ChCls, Rec, OPT, VAR, SOME, Rpt};
-use regex::Regex;
+use rec::{ChCls, Rec, Rpt, OPT, SOME, VAR};
 use std::cmp;
 use std::fmt;
 use std::fs;
@@ -118,14 +117,17 @@ impl Paper {
     fn operate(&mut self, op: Operation) -> Option<Notice> {
         match op {
             Operation::ExecuteCommand => {
-                let command = (ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | "$")).form();
+                let command =
+                    (ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | "$")).form();
                 let cmd = self.sketch.clone();
 
                 match command.captures(&cmd) {
                     Some(caps) => match &caps["command"] {
                         "see" => {
-                            let see_re = Regex::new(r"see\s*(?P<path>.*)").unwrap();
-                            self.path = see_re.captures(&self.sketch).unwrap()["path"].to_string();
+                            let see_command = ("see"
+                                + ChCls::WhSpc.rpt(SOME)
+                                + ChCls::Any.rpt(VAR).name("path")).form();
+                            self.path = see_command.captures(&self.sketch).unwrap()["path"].to_string();
                             self.view = View::with_file(&self.path);
                             self.first_line = 0;
                             self.noises.clear();
@@ -732,11 +734,11 @@ impl Mode {
     fn enhance(&self, sketch: &String, view: &String, noises: &Vec<Region>) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
-                let re = Regex::new(r"(?P<filter>[^&]*)(?:&&)?").unwrap();
-                let filter_re = Regex::new(r"#(?P<line>\d+)|/(?P<key>.+)").unwrap();
+                let each_filter = (ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)).form();
+                let filter = (("#" + ChCls::Digit.rpt(SOME).name("line")) | ("/" + ChCls::Any.rpt(SOME).name("key"))).form();
                 let mut regions = noises.clone();
 
-                match &filter_re.captures(&re.captures_iter(sketch).last().unwrap()["filter"]) {
+                match &filter.captures(&each_filter.captures_iter(sketch).last().unwrap()["filter"]) {
                     Some(captures) => {
                         if let Some(line) = captures.name("line") {
                             // Subtract 1 to match row.
