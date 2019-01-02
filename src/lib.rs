@@ -45,16 +45,16 @@ use ui::{Address, Length, Region, UserInterface};
 
 /// The paper application.
 #[derive(Debug, Default)]
-pub struct Paper<'a> {
+pub struct Paper {
     /// User interface of the application.
     ui: UserInterface,
     /// Current mode of the application.
     mode: Mode,
     /// Data of the file being edited.
     view: View,
-    command_hunter: Hunter<'a>,
-    see_hunter: Hunter<'a>,
-    first_filter_hunter: Hunter<'a>,
+    command_hunter: Hunter,
+    see_hunter: Hunter,
+    first_filter_hunter: Hunter,
     /// Characters being edited to be analyzed by the application.
     sketch: String,
     /// Index of the first displayed line.
@@ -74,7 +74,7 @@ pub struct Paper<'a> {
     marks: Vec<Mark>,
 }
 
-impl<'a> Paper<'a> {
+impl Paper {
     /// Creates a new paper application.
     ///
     /// # Examples
@@ -82,7 +82,7 @@ impl<'a> Paper<'a> {
     /// # use paper::Paper;
     /// let paper = Paper::new();
     /// ```
-    pub fn new() -> Paper<'a> {
+    pub fn new() -> Paper {
         Paper {
             marks: vec![Default::default()],
             command_hunter: Hunter::new(CommandPattern),
@@ -141,25 +141,25 @@ impl<'a> Paper<'a> {
     }
 }
 
-struct Catches<'a, 'b, 'c> {
-    captures_iter: regex::CaptureMatches<'a, 'b>,
-    prey: &'c str,
+struct Kills<'r, 't, 'p> {
+    capture_matches: regex::CaptureMatches<'r, 't>,
+    prey: &'p str,
 }
 
-impl<'a, 'b, 'c> Catches<'a, 'b, 'c> {
-    fn new(captures_iter: regex::CaptureMatches<'a, 'b>, prey: &'c str) -> Catches<'a, 'b, 'c> {
-        Catches {
-            captures_iter,
+impl<'r, 't, 'p> Kills<'r, 't, 'p> {
+    fn new(capture_matches: regex::CaptureMatches<'r, 't>, prey: &'p str) -> Kills<'r, 't, 'p> {
+        Kills {
+            capture_matches,
             prey,
         }
     }
 }
 
-impl<'a, 'b, 'c> Iterator for Catches<'a, 'b, 'c> {
-    type Item = &'b str;
+impl<'r, 't, 'p> Iterator for Kills<'r, 't, 'p> {
+    type Item = &'t str;
 
-    fn next(&mut self) -> Option<&'b str> {
-        match self.captures_iter.next() {
+    fn next(&mut self) -> Option<&'t str> {
+        match self.capture_matches.next() {
             Some(captures) => captures.name(self.prey).map(|x| x.as_str()),
             None => None,
         }
@@ -167,78 +167,62 @@ impl<'a, 'b, 'c> Iterator for Catches<'a, 'b, 'c> {
 }
 
 #[derive(Debug)]
-struct Hunter<'a> {
+struct Hunter {
     re: regex::Regex,
-    prey: &'a str,
 }
 
-impl<'a> Hunter<'a> {
-    fn new(pattern: impl Pattern<'a>) -> Hunter<'a> {
+impl Hunter {
+    fn new(pattern: impl Pattern) -> Hunter {
         Hunter {
             re: pattern.regex(),
-            prey: pattern.prey(),
         }
     }
 
-    fn capture(&self, field: &'a str) -> Option<&'a str> {
+    fn kill<'a, 'b>(&self, field: &'a str, prey: &'b str) -> Option<&'a str> {
         match self.re.captures(field) {
-            Some(captures) => captures.name(self.prey).map(|x| x.as_str()),
+            Some(captures) => captures.name(prey).map(|x| x.as_str()),
             None => None,
         }
     }
 
-    fn capture_iter(&self, field: &'a str) -> Catches {
-        Catches::new(self.re.captures_iter(field), self.prey)
+    fn kill_iter<'a, 'b>(&self, field: &'a str, prey: &'b str) -> Kills<'_, 'a, 'b> {
+        Kills::new(self.re.captures_iter(field), prey)
     }
 }
 
-impl<'a> Default for Hunter<'a> {
-    fn default() -> Hunter<'a> {
+impl Default for Hunter {
+    fn default() -> Hunter {
         Hunter {
             re: regex::Regex::new("").unwrap(),
-            prey: Default::default(),
         }
     }
 }
 
-trait Pattern<'a> {
+trait Pattern {
     fn regex(&self) -> regex::Regex;
-    fn prey(&self) -> &'a str;
 }
 
 struct CommandPattern;
 
-impl<'a> Pattern<'a> for CommandPattern {
+impl Pattern for CommandPattern {
     fn regex(&self) -> regex::Regex {
-        (ChCls::Any.rpt(SOME.lazy()).name("cmd") + (ChCls::WhSpc | ChCls::End)).form()
-    }
-
-    fn prey(&self) -> &'a str {
-        "cmd"
+        (ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End)).form()
     }
 }
 
 struct SeePattern;
 
-impl<'a> Pattern<'a> for SeePattern {
+impl Pattern for SeePattern {
     fn regex(&self) -> regex::Regex {
         ("see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path")).form()
-    }
-
-    fn prey(&self) -> &'a str {
-        "path"
     }
 }
 
 struct FirstFilterPattern;
 
-impl<'a> Pattern<'a> for FirstFilterPattern {
+impl Pattern for FirstFilterPattern {
     fn regex(&self) -> regex::Regex {
-        (ChCls::AllBut("&").rpt(VAR).name("fltr") + "&&".rpt(OPT)).form()
-    }
-
-    fn prey(&self) -> &'a str {
-        "fltr"
+        (ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)).form()
     }
 }
 
@@ -505,9 +489,9 @@ struct ExecuteCommand;
 
 impl Operation for ExecuteCommand {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        match paper.command_hunter.capture(&paper.sketch) {
+        match paper.command_hunter.kill(&paper.sketch, "command") {
             Some("see") => {
-                match paper.see_hunter.capture(&paper.sketch) {
+                match paper.see_hunter.kill(&paper.sketch, "path") {
                     Some(path) => {
                         paper.path = String::from(path);
                         paper.view = View::with_file(&paper.path);
@@ -545,8 +529,8 @@ impl Operation for IdentifyNoise {
             regions.push(Region::line(row));
         }
 
-        for capture in paper.first_filter_hunter.capture_iter(&paper.sketch) {
-            match &filter.captures(capture) {
+        for kill in paper.first_filter_hunter.kill_iter(&paper.sketch, "filter") {
+            match &filter.captures(kill) {
                 Some(captures) => {
                     if let Some(line) = captures.name("line") {
                         // Subtract 1 to match row.
@@ -638,7 +622,7 @@ impl Operation for AddToSketch {
 
         match paper
             .mode
-            .enhance(&paper.sketch, &paper.view.data, &paper.noises)
+            .enhance(&paper, &paper.view.data, &paper.noises)
         {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
@@ -854,11 +838,9 @@ impl Mode {
     }
 
     /// Returns the Enhancement to be added.
-    fn enhance(&self, sketch: &String, view: &String, noises: &Vec<Region>) -> Option<Enhancement> {
+    fn enhance(&self, paper: &Paper, view: &String, noises: &Vec<Region>) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
-                let each_filter =
-                    (ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)).form();
                 let filter = (("#"
                     + (ChCls::Digit.rpt(SOME).name("line") + ChCls::End
                         | ChCls::Digit.rpt(SOME).name("start")
@@ -869,77 +851,78 @@ impl Mode {
                     | ("/" + ChCls::Any.rpt(SOME).name("key"))).form();
                 let mut regions = noises.clone();
 
-                match &filter.captures(&each_filter.captures_iter(sketch).last().unwrap()["filter"])
-                {
-                    Some(captures) => {
-                        if let Some(line) = captures.name("line") {
-                            // Subtract 1 to match row.
-                            line.as_str()
-                                .parse::<usize>()
-                                .map(|i| i - 1)
-                                .ok()
-                                .map(|row| {
-                                    regions.retain(|&x| x.start().row == row);
-                                });
-                        } else if let (Some(line_start), Some(line_end)) =
-                            (captures.name("start"), captures.name("end"))
-                        {
-                            if let (Ok(start), Ok(end)) = (
-                                line_start.as_str().parse::<usize>().map(|i| i - 1),
-                                line_end.as_str().parse::<usize>().map(|i| i - 1),
-                            ) {
-                                let top = cmp::min(start, end);
-                                let bottom = cmp::max(start, end);
+                if let Some(last_filter) = paper.first_filter_hunter.kill_iter(&paper.sketch, "filter").last() {
+                    match &filter.captures(last_filter) {
+                        Some(captures) => {
+                            if let Some(line) = captures.name("line") {
+                                // Subtract 1 to match row.
+                                line.as_str()
+                                    .parse::<usize>()
+                                    .map(|i| i - 1)
+                                    .ok()
+                                    .map(|row| {
+                                        regions.retain(|&x| x.start().row == row);
+                                    });
+                            } else if let (Some(line_start), Some(line_end)) =
+                                (captures.name("start"), captures.name("end"))
+                            {
+                                if let (Ok(start), Ok(end)) = (
+                                    line_start.as_str().parse::<usize>().map(|i| i - 1),
+                                    line_end.as_str().parse::<usize>().map(|i| i - 1),
+                                ) {
+                                    let top = cmp::min(start, end);
+                                    let bottom = cmp::max(start, end);
 
-                                regions.retain(|&x| {
-                                    let row = x.start().row;
-                                    row >= top && row <= bottom
-                                })
-                            }
-                        } else if let (Some(line_origin), Some(line_movement)) =
-                            (captures.name("origin"), captures.name("movement"))
-                        {
-                            if let (Ok(origin), Ok(movement)) = (
-                                line_origin.as_str().parse::<usize>().map(|i| i - 1),
-                                line_movement.as_str().parse::<isize>(),
-                            ) {
-                                let end = (origin as isize + movement) as usize;
-                                let top = cmp::min(origin, end);
-                                let bottom = cmp::max(origin, end);
-
-                                regions.retain(|&x| {
-                                    let row = x.start().row;
-                                    row >= top && row <= bottom
-                                })
-                            }
-                        } else if let Some(key) = captures.name("key") {
-                            let mut new_regions = Vec::new();
-
-                            for region in regions {
-                                let pre_filter = view
-                                    .lines()
-                                    .nth(region.start().row)
-                                    .unwrap()
-                                    .chars()
-                                    .skip(region.start().column)
-                                    .collect::<String>();
-
-                                for (key_index, key_match) in pre_filter.match_indices(key.as_str())
-                                {
-                                    new_regions.push(Region::with_address_length(
-                                        Address::with_row_column(
-                                            region.start().row,
-                                            region.start().column + key_index,
-                                        ),
-                                        Length::from(key_match.len()),
-                                    ));
+                                    regions.retain(|&x| {
+                                        let row = x.start().row;
+                                        row >= top && row <= bottom
+                                    })
                                 }
-                            }
+                            } else if let (Some(line_origin), Some(line_movement)) =
+                                (captures.name("origin"), captures.name("movement"))
+                            {
+                                if let (Ok(origin), Ok(movement)) = (
+                                    line_origin.as_str().parse::<usize>().map(|i| i - 1),
+                                    line_movement.as_str().parse::<isize>(),
+                                ) {
+                                    let end = (origin as isize + movement) as usize;
+                                    let top = cmp::min(origin, end);
+                                    let bottom = cmp::max(origin, end);
 
-                            regions = new_regions;
+                                    regions.retain(|&x| {
+                                        let row = x.start().row;
+                                        row >= top && row <= bottom
+                                    })
+                                }
+                            } else if let Some(key) = captures.name("key") {
+                                let mut new_regions = Vec::new();
+
+                                for region in regions {
+                                    let pre_filter = view
+                                        .lines()
+                                        .nth(region.start().row)
+                                        .unwrap()
+                                        .chars()
+                                        .skip(region.start().column)
+                                        .collect::<String>();
+
+                                    for (key_index, key_match) in pre_filter.match_indices(key.as_str())
+                                    {
+                                        new_regions.push(Region::with_address_length(
+                                            Address::with_row_column(
+                                                region.start().row,
+                                                region.start().column + key_index,
+                                            ),
+                                            Length::from(key_match.len()),
+                                        ));
+                                    }
+                                }
+
+                                regions = new_regions;
+                            }
                         }
+                        None => {}
                     }
-                    None => {}
                 }
 
                 Some(Enhancement::FilterRegions(regions))
