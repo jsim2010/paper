@@ -35,7 +35,7 @@ extern crate regex;
 mod rec;
 mod ui;
 
-use rec::{ChCls, Rec, Rpt, OPT, SOME, VAR};
+use rec::{ChCls, Rec, Re, Rpt, OPT, SOME, VAR};
 use std::cmp;
 use std::fmt;
 use std::fs;
@@ -174,7 +174,7 @@ struct Hunter {
 impl Hunter {
     fn new(pattern: impl Pattern) -> Hunter {
         Hunter {
-            re: pattern.regex(),
+            re: pattern.rec().form(),
         }
     }
 
@@ -199,30 +199,30 @@ impl Default for Hunter {
 }
 
 trait Pattern {
-    fn regex(&self) -> regex::Regex;
+    fn rec(&self) -> Re
 }
 
 struct CommandPattern;
 
 impl Pattern for CommandPattern {
-    fn regex(&self) -> regex::Regex {
-        (ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End)).form()
+    fn rec(&self) -> Re {
+        ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End)
     }
 }
 
 struct SeePattern;
 
 impl Pattern for SeePattern {
-    fn regex(&self) -> regex::Regex {
-        ("see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path")).form()
+    fn rec(&self) -> Re {
+        "see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path")
     }
 }
 
 struct FirstFilterPattern;
 
 impl Pattern for FirstFilterPattern {
-    fn regex(&self) -> regex::Regex {
-        (ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)).form()
+    fn rec(&self) -> Re {
+        ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)
     }
 }
 
@@ -530,18 +530,28 @@ impl Operation for IdentifyNoise {
         }
 
         for kill in paper.first_filter_hunter.kill_iter(&paper.sketch, "filter") {
-            match &filter.captures(kill) {
-                Some(captures) => {
-                    if let Some(line) = captures.name("line") {
-                        // Subtract 1 to match row.
-                        line.as_str()
-                            .parse::<usize>()
-                            .map(|i| i - 1)
-                            .ok()
-                            .map(|row| {
-                                regions.retain(|&x| x.start().row == row);
-                            });
+            match kill.chars().nth(0) {
+                Some('#') => {
+                    let filter = ("#" + ChCls::Digit.rpt(SOME).name("line")).form();
+
+                    match &filter.captures(kill) {
+                        Some(captures) => {
+                            if let Some(line) = captures.name("line") {
+                                // Subtract 1 to match row.
+                                line.as_str()
+                                    .parse::<usize>()
+                                    .map(|i| i - 1)
+                                    .ok()
+                                    .map(|row| {
+                                        regions.retain(|&x| x.start().row == row);
+                                    });
+                            }
+                        }
+                        None => {}
                     }
+                }
+                Some('/') => {
+                    let filter = ("/" + ChCls::Any.rpt(SOME).name("key")).form();
 
                     if let Some(key) = captures.name("key") {
                         let mut new_regions = Vec::new();
