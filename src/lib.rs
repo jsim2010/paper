@@ -199,7 +199,7 @@ impl Default for Hunter {
 }
 
 trait Pattern {
-    fn rec(&self) -> Re
+    fn rec(&self) -> Re;
 }
 
 struct CommandPattern;
@@ -521,8 +521,6 @@ struct IdentifyNoise;
 
 impl Operation for IdentifyNoise {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        let filter = ("#" + ChCls::Digit.rpt(SOME).name("line")
-            | "/" + ChCls::Any.rpt(SOME).name("key")).form();
         let mut regions = Vec::new();
 
         for row in 0..paper.view.data.lines().count() {
@@ -553,36 +551,42 @@ impl Operation for IdentifyNoise {
                 Some('/') => {
                     let filter = ("/" + ChCls::Any.rpt(SOME).name("key")).form();
 
-                    if let Some(key) = captures.name("key") {
-                        let mut new_regions = Vec::new();
+                    match &filter.captures(kill) {
+                        Some(captures) => {
+                            if let Some(key) = captures.name("key") {
+                                let mut new_regions = Vec::new();
 
-                        for region in regions {
-                            let pre_filter = paper
-                                .view
-                                .data
-                                .lines()
-                                .nth(region.start().row)
-                                .unwrap()
-                                .chars()
-                                .skip(region.start().column)
-                                .collect::<String>();
+                                for region in regions {
+                                    let pre_filter = paper
+                                        .view
+                                        .data
+                                        .lines()
+                                        .nth(region.start().row)
+                                        .unwrap()
+                                        .chars()
+                                        .skip(region.start().column)
+                                        .collect::<String>();
 
-                            for (key_index, key_match) in
-                                pre_filter.match_indices(key.as_str())
-                            {
-                                new_regions.push(Region::with_address_length(
-                                    Address::with_row_column(
-                                        region.start().row,
-                                        region.start().column + key_index,
-                                    ),
-                                    Length::from(key_match.len()),
-                                ));
+                                    for (key_index, key_match) in
+                                        pre_filter.match_indices(key.as_str())
+                                    {
+                                        new_regions.push(Region::with_address_length(
+                                            Address::with_row_column(
+                                                region.start().row,
+                                                region.start().column + key_index,
+                                            ),
+                                            Length::from(key_match.len()),
+                                        ));
+                                    }
+                                }
+
+                                regions = new_regions;
                             }
                         }
-
-                        regions = new_regions;
+                        None => {}
                     }
                 }
+                Some(_) => {}
                 None => {}
             }
         }
