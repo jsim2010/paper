@@ -1,163 +1,149 @@
 use std::fmt;
 use std::ops::{Add, BitOr};
 
-use regex::Regex;
+use regex::{CaptureMatches, Captures, Regex};
 
-pub const OPT: RepeatConst = RepeatConst("?");
-pub const VAR: RepeatConst = RepeatConst("*");
-pub const SOME: RepeatConst = RepeatConst("+");
+pub const OPT: ConstantQuantifier = ConstantQuantifier("?");
+pub const VAR: ConstantQuantifier = ConstantQuantifier("*");
+pub const SOME: ConstantQuantifier = ConstantQuantifier("+");
 const LAZY: &str = "?";
 
-pub trait Rec {
-    fn reg_exp(&self) -> String;
+#[derive(Debug)]
+pub struct Pattern {
+    re: Regex,
+}
 
-    fn re(&self) -> Re {
-        Re::new(self.reg_exp())
+impl Pattern {
+    /// Assumes rec is valid.
+    pub fn define(rec: Rec) -> Pattern {
+        Pattern { re: rec.build() }
     }
 
-    fn rpt(&self, rpt: impl Rpt) -> Re {
-        self.re().repeat(rpt)
+    pub fn tokenize<'t>(&self, target: &'t str) -> Tokens<'t> {
+        Tokens::new(self.re.captures(target))
+    }
+
+    pub fn tokenize_iter<'r, 't>(&'r self, target: &'t str) -> TokensIter<'r, 't> {
+        TokensIter::new(self.re.captures_iter(target))
     }
 }
 
-impl<'a> Rec for ChCls<'a> {
-    fn reg_exp(&self) -> String {
-        match self {
-            ChCls::AllBut(chars) => String::from("[^") + chars + "]",
-            ChCls::Digit => String::from(r"\d"),
-            ChCls::Any => String::from("."),
-            ChCls::WhSpc => String::from(r"\s"),
-            ChCls::End => String::from("$"),
+impl Default for Pattern {
+    fn default() -> Pattern {
+        Pattern {
+            re: Regex::new("").unwrap(),
         }
     }
 }
 
-impl<'a> Rec for &'a str {
-    fn reg_exp(&self) -> String {
-        String::from(*self).replace(".", r"\.").replace("+", r"\+")
+pub struct Tokens<'t> {
+    captures: Option<Captures<'t>>,
+}
+
+impl<'t> Tokens<'t> {
+    fn new(captures: Option<Captures<'t>>) -> Tokens<'t> {
+        Tokens { captures }
+    }
+
+    pub fn get<'a>(&self, name: &'a str) -> Option<&'t str> {
+        self.captures
+            .as_ref()
+            .and_then(|c| c.name(name).map(|x| x.as_str()))
     }
 }
 
-impl<'a> Add<Re> for &'a str {
-    type Output = Re;
+pub struct TokensIter<'r, 't> {
+    capture_matches: CaptureMatches<'r, 't>,
+}
 
-    fn add(self, other: Re) -> Re {
-        self.re() + other
+impl<'r, 't> TokensIter<'r, 't> {
+    fn new(capture_matches: CaptureMatches<'r, 't>) -> TokensIter<'r, 't> {
+        TokensIter { capture_matches }
     }
 }
 
-pub trait Rpt {
-    fn repr(&self) -> &str;
+impl<'r, 't> Iterator for TokensIter<'r, 't> {
+    type Item = Tokens<'t>;
 
-    fn lazy(&self) -> Repeat {
-        Repeat(String::from(self.repr()) + LAZY)
-    }
-}
-
-pub struct RepeatConst<'a>(&'a str);
-pub struct Repeat(String);
-
-impl<'a> Rpt for RepeatConst<'a> {
-    fn repr(&self) -> &str {
-        self.0
-    }
-}
-
-impl Rpt for Repeat {
-    fn repr(&self) -> &str {
-        self.0.as_str()
+    fn next(&mut self) -> Option<Tokens<'t>> {
+        self.capture_matches
+            .next()
+            .and_then(|x| Some(Tokens::new(Some(x))))
     }
 }
 
 #[derive(Debug, Default)]
-pub struct Re {
-    expression: String,
-}
+pub struct Rec(String);
 
-impl Re {
-    fn new(expression: String) -> Re {
-        Re { expression }
+impl Rec {
+    pub fn name(self, name: &str) -> Rec {
+        Rec(String::from("(?P<") + name + ">" + &self.0 + ")")
     }
 
-    pub fn name(mut self, name: &str) -> Re {
-        self.expression = String::from("(?P<") + name + ">" + &self.expression + ")";
-        self
-    }
+    fn group(self) -> Rec {
+        let length = self.0.chars().count();
 
-    fn group(mut self) -> Re {
-        let length = self.expression.chars().count();
-
-        if length > 2 || (length == 2 && self.expression.chars().nth(0) != Some('\\')) {
-            self.expression = String::from("(?:") + &self.expression + ")";
+        if length > 2 || (length == 2 && self.0.chars().nth(0) != Some('\\')) {
+            return Rec(String::from("(?:") + &self.0 + ")");
         }
 
         self
     }
 
-    fn repeat(self, repeat: impl Rpt) -> Re {
-        Re::new(self.group().expression + repeat.repr())
+    fn quantify(self, quantifier: impl Quantifier) -> Rec {
+        Rec(self.group().0 + quantifier.regex())
     }
 
-    pub fn build(&self) -> Result<Regex, regex::Error> {
-        Regex::new(&self.expression)
+    pub fn build(&self) -> Regex {
+        self.try_build().unwrap()
     }
 
-    pub fn form(&self) -> Regex {
-        Regex::new(&self.expression).unwrap()
-    }
-}
-
-impl Add for Re {
-    type Output = Re;
-
-    fn add(self, other: Re) -> Re {
-        Re::new(self.expression + &other.expression)
+    pub fn try_build(&self) -> Result<Regex, regex::Error> {
+        Regex::new(&self.0)
     }
 }
 
-impl<'a> Add<&'a str> for Re {
-    type Output = Re;
+impl Add for Rec {
+    type Output = Rec;
 
-    fn add(self, other: &str) -> Re {
-        self + other.re()
+    fn add(self, other: Rec) -> Rec {
+        Rec(self.0 + &other.0)
     }
 }
 
-impl Add<String> for Re {
-    type Output = Re;
+impl<T> Add<T> for Rec
+where
+    T: Atom,
+{
+    type Output = Rec;
 
-    fn add(self, other: String) -> Re {
-        self + other.as_str().re()
+    fn add(self, other: T) -> Rec {
+        self + other.rec()
     }
 }
 
-impl<'a> Add<ChCls<'a>> for Re {
-    type Output = Re;
+impl BitOr for Rec {
+    type Output = Rec;
 
-    fn add(self, other: ChCls<'a>) -> Re {
-        self + other.re()
+    fn bitor(self, rhs: Rec) -> Rec {
+        Rec(self.0 + "|" + &rhs.0).group()
     }
 }
 
-impl BitOr for Re {
-    type Output = Re;
+impl<T> BitOr<T> for Rec
+where
+    T: Atom,
+{
+    type Output = Rec;
 
-    fn bitor(self, rhs: Re) -> Re {
-        Re::new(self.expression + "|" + &rhs.expression).group()
+    fn bitor(self, rhs: T) -> Rec {
+        self | rhs.rec()
     }
 }
 
-impl<'a> BitOr<&'a str> for Re {
-    type Output = Re;
-
-    fn bitor(self, rhs: &'a str) -> Re {
-        self | rhs.re()
-    }
-}
-
-impl fmt::Display for Re {
+impl fmt::Display for Rec {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.expression)
+        write!(f, "{}", self.0)
     }
 }
 
@@ -170,17 +156,78 @@ pub enum ChCls<'a> {
 }
 
 impl<'a, 'b> BitOr<&'a str> for ChCls<'b> {
-    type Output = Re;
+    type Output = Rec;
 
-    fn bitor(self, rhs: &'a str) -> Re {
-        self.re() | rhs.re()
+    fn bitor(self, rhs: &'a str) -> Rec {
+        self.rec() | rhs.rec()
     }
 }
 
 impl<'a> BitOr for ChCls<'a> {
-    type Output = Re;
+    type Output = Rec;
 
-    fn bitor(self, rhs: ChCls<'a>) -> Re {
-        self.re() | rhs.re()
+    fn bitor(self, rhs: ChCls<'a>) -> Rec {
+        self.rec() | rhs.rec()
+    }
+}
+
+pub trait Atom {
+    fn regex(&self) -> String;
+
+    fn rec(&self) -> Rec {
+        Rec(self.regex())
+    }
+
+    fn rpt(&self, quantifier: impl Quantifier) -> Rec {
+        self.rec().quantify(quantifier)
+    }
+}
+
+impl<'a> Atom for ChCls<'a> {
+    fn regex(&self) -> String {
+        match self {
+            ChCls::AllBut(chars) => String::from("[^") + chars + "]",
+            ChCls::Digit => String::from(r"\d"),
+            ChCls::Any => String::from("."),
+            ChCls::WhSpc => String::from(r"\s"),
+            ChCls::End => String::from("$"),
+        }
+    }
+}
+
+pub trait Quantifier {
+    fn regex(&self) -> &str;
+
+    fn lazy(&self) -> Repeat {
+        Repeat(String::from(self.regex()) + LAZY)
+    }
+}
+
+pub struct ConstantQuantifier<'a>(&'a str);
+pub struct Repeat(String);
+
+impl<'a> Quantifier for ConstantQuantifier<'a> {
+    fn regex(&self) -> &str {
+        self.0
+    }
+}
+
+impl Quantifier for Repeat {
+    fn regex(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl<'a> Atom for &'a str {
+    fn regex(&self) -> String {
+        self.replace(".", r"\.").replace("+", r"\+")
+    }
+}
+
+impl<'a> Add<Rec> for &'a str {
+    type Output = Rec;
+
+    fn add(self, other: Rec) -> Rec {
+        self.rec() + other
     }
 }

@@ -35,7 +35,7 @@ extern crate regex;
 mod rec;
 mod ui;
 
-use rec::{ChCls, Re, Rec, Rpt, OPT, SOME, VAR};
+use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
 use std::cmp;
 use std::fmt;
 use std::fs;
@@ -52,9 +52,9 @@ pub struct Paper {
     mode: Mode,
     /// Data of the file being edited.
     view: View,
-    command_hunter: Hunter,
-    see_hunter: Hunter,
-    first_filter_hunter: Hunter,
+    command_pattern: Pattern,
+    see_pattern: Pattern,
+    first_feature_pattern: Pattern,
     filters: Vec<Box<dyn Filter>>,
     /// Characters being edited to be analyzed by the application.
     sketch: String,
@@ -86,13 +86,16 @@ impl Paper {
     pub fn new() -> Paper {
         Paper {
             marks: vec![Default::default()],
-            command_hunter: Hunter::new(CommandPattern),
-            see_hunter: Hunter::new(SeePattern),
-            first_filter_hunter: Hunter::new(FirstFilterPattern),
-            filters: vec![
-                Box::new(LineFilter::new()),
-                Box::new(KeyFilter::new()),
-            ],
+            command_pattern: Pattern::define(
+                ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End),
+            ),
+            see_pattern: Pattern::define(
+                "see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path"),
+            ),
+            first_feature_pattern: Pattern::define(
+                ChCls::AllBut("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
+            ),
+            filters: vec![Box::new(LineFilter::new()), Box::new(KeyFilter::new())],
             ..Default::default()
         }
     }
@@ -143,133 +146,6 @@ impl Paper {
     /// Returns the height used for scrolling.
     fn scroll_height(&self) -> usize {
         self.ui.window_height() / 4
-    }
-}
-
-struct Kills<'r, 't, 'p> {
-    capture_matches: regex::CaptureMatches<'r, 't>,
-    prey: &'p str,
-}
-
-impl<'r, 't, 'p> Kills<'r, 't, 'p> {
-    fn new(capture_matches: regex::CaptureMatches<'r, 't>, prey: &'p str) -> Kills<'r, 't, 'p> {
-        Kills {
-            capture_matches,
-            prey,
-        }
-    }
-}
-
-impl<'r, 't, 'p> Iterator for Kills<'r, 't, 'p> {
-    type Item = &'t str;
-
-    fn next(&mut self) -> Option<&'t str> {
-        match self.capture_matches.next() {
-            Some(captures) => captures.name(self.prey).map(|x| x.as_str()),
-            None => None,
-        }
-    }
-}
-
-struct Catch<'t> {
-    captures: Option<regex::Captures<'t>>,
-}
-
-impl<'t> Catch<'t> {
-    fn new(captures: Option<regex::Captures<'t>>) -> Catch<'t> {
-        Catch {
-            captures
-        }
-    }
-
-    fn fetch<'a>(&self, prey: &'a str) -> Option<&'t str> {
-        match &self.captures {
-            Some(captures) => captures.name(prey).map(|x| x.as_str()),
-            None => None,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Hunter {
-    re: regex::Regex,
-}
-
-impl Hunter {
-    fn new(pattern: impl Pattern) -> Hunter {
-        Hunter {
-            re: pattern.re().form(),
-        }
-    }
-
-    fn catch<'a>(&self, field: &'a str) -> Catch<'a> {
-        Catch::new(self.re.captures(field))
-    }
-
-    fn kill<'a, 'b>(&self, field: &'a str, prey: &'b str) -> Option<&'a str> {
-        match self.re.captures(field) {
-            Some(captures) => captures.name(prey).map(|x| x.as_str()),
-            None => None,
-        }
-    }
-
-    fn kill_iter<'a, 'b>(&self, field: &'a str, prey: &'b str) -> Kills<'_, 'a, 'b> {
-        Kills::new(self.re.captures_iter(field), prey)
-    }
-}
-
-impl Default for Hunter {
-    fn default() -> Hunter {
-        Hunter {
-            re: regex::Regex::new("").unwrap(),
-        }
-    }
-}
-
-trait Pattern {
-    fn re(&self) -> Re;
-}
-
-struct CommandPattern;
-
-impl Pattern for CommandPattern {
-    fn re(&self) -> Re {
-        ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End)
-    }
-}
-
-struct SeePattern;
-
-impl Pattern for SeePattern {
-    fn re(&self) -> Re {
-        "see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path")
-    }
-}
-
-struct FirstFilterPattern;
-
-impl Pattern for FirstFilterPattern {
-    fn re(&self) -> Re {
-        ChCls::AllBut("&").rpt(VAR).name("filter") + "&&".rpt(OPT)
-    }
-}
-
-struct LinePattern;
-
-impl Pattern for LinePattern {
-    fn re(&self) -> Re {
-        "#" + (ChCls::Digit.rpt(SOME).name("line") + ChCls::End
-            | ChCls::Digit.rpt(SOME).name("start") + "." + ChCls::Digit.rpt(SOME).name("end")
-            | ChCls::Digit.rpt(SOME).name("origin")
-                + (("+".re() | "-") + ChCls::Digit.rpt(SOME)).name("movement"))
-    }
-}
-
-struct KeyPattern;
-
-impl Pattern for KeyPattern {
-    fn re(&self) -> Re {
-        "/" + ChCls::Any.rpt(SOME).name("key")
     }
 }
 
@@ -536,8 +412,8 @@ struct ExecuteCommand;
 
 impl Operation for ExecuteCommand {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        match paper.command_hunter.kill(&paper.sketch, "command") {
-            Some("see") => match paper.see_hunter.kill(&paper.sketch, "path") {
+        match paper.command_pattern.tokenize(&paper.sketch).get("command") {
+            Some("see") => match paper.see_pattern.tokenize(&paper.sketch).get("path") {
                 Some(path) => {
                     paper.path = String::from(path);
                     paper.view = View::with_file(&paper.path);
@@ -554,8 +430,7 @@ impl Operation for ExecuteCommand {
                 fs::write(&paper.path, &paper.view.data).unwrap();
             }
             Some("end") => return Some(Notice::Quit),
-            Some(_) => {}
-            None => {}
+            Some(_) | None => {}
         }
 
         None
@@ -572,12 +447,14 @@ impl Operation for IdentifyNoise {
             regions.push(Region::line(row));
         }
 
-        for feature in paper.first_filter_hunter.kill_iter(&paper.sketch, "filter") {
-            if let Some(id) = feature.chars().nth(0) {
-                for filter in paper.filters.iter() {
-                    if id == filter.id() {
-                        filter.extract(feature, &mut regions, &paper.view.data);
-                        break;
+        for tokens in paper.first_feature_pattern.tokenize_iter(&paper.sketch) {
+            if let Some(feature) = tokens.get("feature") {
+                if let Some(id) = feature.chars().nth(0) {
+                    for filter in paper.filters.iter() {
+                        if id == filter.id() {
+                            filter.extract(feature, &mut regions, &paper.view.data);
+                            break;
+                        }
                     }
                 }
             }
@@ -848,9 +725,10 @@ impl Mode {
                 let mut regions = noises.clone();
 
                 if let Some(last_feature) = paper
-                    .first_filter_hunter
-                    .kill_iter(&paper.sketch, "filter")
+                    .first_feature_pattern
+                    .tokenize_iter(&paper.sketch)
                     .last()
+                    .and_then(|x| x.get("feature"))
                 {
                     if let Some(id) = last_feature.chars().nth(0) {
                         for filter in paper.filters.iter() {
@@ -876,13 +754,20 @@ trait Filter: fmt::Debug {
 
 #[derive(Debug)]
 struct LineFilter {
-    hunter: Hunter,
+    pattern: Pattern,
 }
 
 impl LineFilter {
     fn new() -> LineFilter {
         LineFilter {
-            hunter: Hunter::new(LinePattern),
+            pattern: Pattern::define(
+                "#" + (ChCls::Digit.rpt(SOME).name("line") + ChCls::End
+                    | ChCls::Digit.rpt(SOME).name("start")
+                        + "."
+                        + ChCls::Digit.rpt(SOME).name("end")
+                    | ChCls::Digit.rpt(SOME).name("origin")
+                        + (("+".rec() | "-") + ChCls::Digit.rpt(SOME)).name("movement")),
+            ),
         }
     }
 }
@@ -893,18 +778,14 @@ impl Filter for LineFilter {
     }
 
     fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Region>, _view: &String) {
-        let catch = self.hunter.catch(feature);
+        let tokens = self.pattern.tokenize(feature);
 
-        if let Some(line) = catch.fetch("line") {
+        if let Some(line) = tokens.get("line") {
             // Subtract 1 to match row.
-            line.parse::<usize>()
-                .map(|i| i - 1)
-                .ok()
-                .map(|row| {
-                    regions.retain(|&x| x.start().row == row);
-                });
-        } else if let (Some(line_start), Some(line_end)) =
-            (catch.fetch("start"), catch.fetch("end"))
+            line.parse::<usize>().map(|i| i - 1).ok().map(|row| {
+                regions.retain(|&x| x.start().row == row);
+            });
+        } else if let (Some(line_start), Some(line_end)) = (tokens.get("start"), tokens.get("end"))
         {
             if let (Ok(start), Ok(end)) = (
                 line_start.parse::<usize>().map(|i| i - 1),
@@ -919,7 +800,7 @@ impl Filter for LineFilter {
                 })
             }
         } else if let (Some(line_origin), Some(line_movement)) =
-            (catch.fetch("origin"), catch.fetch("movement"))
+            (tokens.get("origin"), tokens.get("movement"))
         {
             if let (Ok(origin), Ok(movement)) = (
                 line_origin.parse::<usize>().map(|i| i - 1),
@@ -940,24 +821,24 @@ impl Filter for LineFilter {
 
 #[derive(Debug)]
 struct KeyFilter {
-    hunter: Hunter,
+    pattern: Pattern,
 }
 
 impl KeyFilter {
     fn new() -> KeyFilter {
         KeyFilter {
-            hunter: Hunter::new(KeyPattern),
+            pattern: Pattern::define("/" + ChCls::Any.rpt(SOME).name("key")),
         }
     }
 }
 
 impl Filter for KeyFilter {
-    fn id (&self) -> char {
+    fn id(&self) -> char {
         '/'
     }
 
     fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Region>, view: &String) {
-        if let Some(key) = self.hunter.kill(feature, "key") {
+        if let Some(key) = self.pattern.tokenize(feature).get("key") {
             let noise = regions.clone();
             regions.clear();
 
@@ -970,9 +851,7 @@ impl Filter for KeyFilter {
                     .skip(region.start().column)
                     .collect::<String>();
 
-                for (key_index, key_match) in
-                    pre_filter.match_indices(key)
-                {
+                for (key_index, key_match) in pre_filter.match_indices(key) {
                     regions.push(Region::with_address_length(
                         Address::with_row_column(
                             region.start().row,
