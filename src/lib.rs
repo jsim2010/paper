@@ -169,9 +169,9 @@ impl View {
         self.data.lines().count()
     }
 
-    fn add(&mut self, c: char, index: Index) {
-        // Ignore the case where index is not valid.
-        if let Ok(i) = index.to_usize() {
+    fn add(&mut self, c: char, pointer: Pointer) {
+        // Ignore the case where pointer is not valid.
+        if let Ok(i) = pointer.to_usize() {
             match c {
                 ui::BACKSPACE => {
                     self.data.remove(i);
@@ -242,11 +242,11 @@ impl Marker {
     }
 }
 
-/// An address and its respective index in a view.
+/// An address and its respective pointer in a view.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 struct Mark {
-    /// Index in view that corresponds with mark.
-    index: Index,
+    /// Pointer in view that corresponds with mark.
+    pointer: Pointer,
     /// Address of mark.
     address: Address,
 }
@@ -256,18 +256,18 @@ impl Mark {
     fn with_address(address: Address, view: &View) -> Mark {
         Mark {
             address: address,
-            index: Index::with_address(address, view),
+            pointer: Pointer::with_address(address, view),
         }
     }
 
     /// Resets mark to default values.
     fn reset(&mut self) {
-        self.index = Default::default();
+        self.pointer = Default::default();
         self.address.reset();
     }
 
     fn adjust(&mut self, adjustment: isize) {
-        self.index += adjustment;
+        self.pointer += adjustment;
     }
 
     /// Moves mark based on the added [`String`] and returns the appropriate [`Edit`].
@@ -280,7 +280,7 @@ impl Mark {
         for c in s.chars() {
             match c {
                 ui::BACKSPACE => {
-                    self.index -= 1;
+                    self.pointer -= 1;
 
                     if self.address.column == 0 {
                         self.address.row -= 1;
@@ -292,14 +292,14 @@ impl Mark {
                     edits.push(Edit::Backspace);
                 }
                 ui::ENTER => {
-                    self.index += 1;
+                    self.pointer += 1;
                     self.address.row += 1;
                     self.address.column = 0;
                     edits.push(Edit::Wash(1));
                 }
                 _ => {
                     self.address.column += 1;
-                    self.index += 1;
+                    self.pointer += 1;
 
                     edits.push(Edit::Add(c));
                 }
@@ -312,22 +312,22 @@ impl Mark {
 
 impl fmt::Display for Mark {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}{}", self.address, self.index)
+        write!(f, "{}{}", self.address, self.pointer)
     }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
-struct Index(Option<usize>);
+struct Pointer(Option<usize>);
 
-impl Index {
-    fn with_address(address: Address, view: &View) -> Index {
-        Index::with_row(address.row, view) + address.column
+impl Pointer {
+    fn with_address(address: Address, view: &View) -> Pointer {
+        Pointer::with_row(address.row, view) + address.column
     }
 
-    fn with_row(row: usize, view: &View) -> Index {
+    fn with_row(row: usize, view: &View) -> Pointer {
         match row {
             0 => Default::default(),
-            _ => Index(
+            _ => Pointer(
                 view.data
                     .match_indices(ui::ENTER)
                     .nth(row - 1)
@@ -341,33 +341,33 @@ impl Index {
     }
 }
 
-impl Add<usize> for Index {
-    type Output = Index;
+impl Add<usize> for Pointer {
+    type Output = Pointer;
 
-    fn add(self, other: usize) -> Index {
-        Index(self.0.map(|x| x + other))
+    fn add(self, other: usize) -> Pointer {
+        Pointer(self.0.map(|x| x + other))
     }
 }
 
-impl SubAssign<usize> for Index {
+impl SubAssign<usize> for Pointer {
     fn sub_assign(&mut self, other: usize) {
         self.0 = self.0.map(|x| x - other);
     }
 }
 
-impl AddAssign<isize> for Index {
+impl AddAssign<isize> for Pointer {
     fn add_assign(&mut self, other: isize) {
         self.0 = self.0.map(|x| (x as isize + other) as usize);
     }
 }
 
-impl Default for Index {
-    fn default() -> Index {
-        Index(Some(0))
+impl Default for Pointer {
+    fn default() -> Pointer {
+        Pointer(Some(0))
     }
 }
 
-impl fmt::Display for Index {
+impl fmt::Display for Pointer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -378,6 +378,13 @@ impl fmt::Display for Index {
             }
         )
     }
+}
+
+struct Section;
+
+struct Place {
+    line: usize,
+    index: usize,
 }
 
 trait Operation {
@@ -538,7 +545,7 @@ struct AddToView(char);
 impl Operation for AddToView {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         for mark in paper.marks.iter() {
-            paper.view.add(self.0, mark.index);
+            paper.view.add(self.0, mark.pointer);
         }
 
         if paper.is_dirty {
