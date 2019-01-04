@@ -137,7 +137,7 @@ impl Paper {
             .take(self.ui.window_height())
             .enumerate()
         {
-            self.ui.set_line(self.view.margin_width, index, self.first_line + index + 1, line);
+            self.ui.set_line(index, format!("{:>width$} {}", self.first_line + index + 1, line, width = self.view.margin_width - 1));
         }
     }
 

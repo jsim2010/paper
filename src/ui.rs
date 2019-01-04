@@ -57,23 +57,11 @@ impl UserInterface {
     }
 
     /// Closes the user interface.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// ui.close();
-    /// ```
     pub fn close(&self) {
         pancurses::endwin();
     }
 
     /// Clears the output.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// ui.clear();
-    /// ```
     pub fn clear(&self) {
         self.window.clear();
     }
@@ -81,37 +69,17 @@ impl UserInterface {
     /// Moves back 1 block and deletes the character there.
     ///
     /// All subsequent characters move one block to the left.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// ui.delete_back();
-    /// ```
     pub fn delete_back(&self) {
         self.window.addch(BACKSPACE);
         self.window.delch();
     }
 
     /// Outputs a char, moving all subsequent characters to the right.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// ui.insert_char("a");
-    /// ```
     pub fn insert_char(&self, c: char) {
         self.window.insch(c);
     }
 
     /// Changes the background color of a [`Region`].
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// let region = Region::new();
-    ///
-    /// ui.set_background(region, 0);
-    /// ```
     ///
     /// [`Region`]: struct.Region.html
     pub fn set_background(&self, region: &Region, color_pair: i16) {
@@ -124,35 +92,13 @@ impl UserInterface {
         );
     }
 
-    /// Outputs a line, including its line number.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// ui.set_line(1, 1, "foobar");
-    /// ```
-    pub fn set_line(&self, margin_width: usize, row: usize, line_number: usize, line: &str) {
+    /// Outputs a line.
+    pub fn set_line(&self, row: usize, line: String) {
         self.window.mv(row as i32, 0);
-        self.window.addstr(format!(
-            "{:>width$} ",
-            line_number,
-            width = margin_width - 1,
-        ));
         self.window.addstr(line);
     }
 
     /// Moves the cursor to an [`Address`].
-    ///
-    /// Note that an the row and column of an [`Address`] does not necessarily equal the row and
-    /// column of the terminal. Rather it is the row and column of the pane, i.e. the part of the
-    /// terminal that displays the view.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// let address = Address::new();
-    /// ui.move_to(address);
-    /// ```
     ///
     /// [`Address`]: .struct.Address.html
     pub fn move_to(&self, address: &Address) {
@@ -160,12 +106,6 @@ impl UserInterface {
     }
 
     /// Returns the height of the pane.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// let height: usize = ui.window_height();
-    /// ```
     pub fn window_height(&self) -> usize {
         self.window.get_max_y() as usize
     }
