@@ -60,11 +60,11 @@ pub struct Paper {
     sketch: String,
     /// Index of the first displayed line.
     first_line: usize,
-    /// [`Region`]s of the view that match the current filter.
+    /// [`Section`]s of the view that match the current filter.
     ///
-    /// [`Region`]: .struct.Region.html
-    signals: Vec<Region>,
-    noises: Vec<Region>,
+    /// [`Section`]: .struct.Section.html
+    signals: Vec<Section>,
+    noises: Vec<Section>,
     /// Path of the file being edited.
     path: String,
     /// If the view should be redrawn.
@@ -161,8 +161,8 @@ impl View {
         }
     }
 
-    fn line_length(&self, address: &Address) -> usize {
-        self.data.lines().nth(address.row).unwrap().len()
+    fn line_length(&self, place: &Place) -> usize {
+        self.data.lines().nth(place.line).unwrap().len()
     }
 
     fn line_count(&self) -> usize {
@@ -184,12 +184,12 @@ impl View {
     }
 }
 
-/// Indicates a specific Address of a given Region.
+/// Indicates a specific Place of a given Section.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 enum Edge {
-    /// Indicates the first Address of the Region.
+    /// Indicates the first Place of the Section.
     Start,
-    /// Indicates the last Address of the Region.
+    /// Indicates the last Place of the Section.
     End,
 }
 
@@ -217,26 +217,26 @@ impl fmt::Display for Edit {
 }
 
 struct Marker {
-    region: Region,
+    section: Section,
 }
 
 impl Marker {
     fn generate_mark(&self, edge: Edge, view: &View) -> Mark {
-        let mut address = self.region.start();
+        let mut place = self.section.start;
 
         if edge == Edge::End {
-            address.column += self.length(view);
+            place.index += self.length(view);
         }
 
-        Mark::with_address(address, view)
+        Mark::with_place(place, view)
     }
 
-    /// Returns the number of characters included in the region of the marker.
+    /// Returns the number of characters included in the section of the marker.
     fn length(&self, view: &View) -> usize {
-        let length = self.region.length();
+        let length = self.section.length;
 
         match length {
-            ui::EOL => view.line_length(&self.region.start()),
+            ui::EOL => view.line_length(&self.section.start),
             _ => length.to_usize(),
         }
     }
@@ -247,23 +247,24 @@ impl Marker {
 struct Mark {
     /// Pointer in view that corresponds with mark.
     pointer: Pointer,
-    /// Address of mark.
-    address: Address,
+    /// Place of mark.
+    place: Place,
 }
 
 impl Mark {
-    /// Creates a new mark at the given address.
-    fn with_address(address: Address, view: &View) -> Mark {
+    /// Creates a new mark at the given place.
+    fn with_place(place: Place, view: &View) -> Mark {
         Mark {
-            address: address,
-            pointer: Pointer::with_address(address, view),
+            place,
+            pointer: Pointer::with_place(place, view),
         }
     }
 
     /// Resets mark to default values.
     fn reset(&mut self) {
         self.pointer = Default::default();
-        self.address.reset();
+        self.place.line = 0;
+        self.place.index = 0;
     }
 
     fn adjust(&mut self, adjustment: isize) {
@@ -282,23 +283,23 @@ impl Mark {
                 ui::BACKSPACE => {
                     self.pointer -= 1;
 
-                    if self.address.column == 0 {
-                        self.address.row -= 1;
-                        self.address.column = view.line_length(&self.address);
+                    if self.place.index == 0 {
+                        self.place.line -= 1;
+                        self.place.index = view.line_length(&self.place);
                         edits.push(Edit::Wash(-1));
                     }
 
-                    self.address.column -= 1;
+                    self.place.index -= 1;
                     edits.push(Edit::Backspace);
                 }
                 ui::ENTER => {
                     self.pointer += 1;
-                    self.address.row += 1;
-                    self.address.column = 0;
+                    self.place.line += 1;
+                    self.place.index = 0;
                     edits.push(Edit::Wash(1));
                 }
                 _ => {
-                    self.address.column += 1;
+                    self.place.index += 1;
                     self.pointer += 1;
 
                     edits.push(Edit::Add(c));
@@ -312,7 +313,7 @@ impl Mark {
 
 impl fmt::Display for Mark {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}{}", self.address, self.pointer)
+        write!(f, "{}{}", self.place, self.pointer)
     }
 }
 
@@ -320,17 +321,17 @@ impl fmt::Display for Mark {
 struct Pointer(Option<usize>);
 
 impl Pointer {
-    fn with_address(address: Address, view: &View) -> Pointer {
-        Pointer::with_row(address.row, view) + address.column
+    fn with_place(address: Place, view: &View) -> Pointer {
+        Pointer::with_row(address.line, view) + address.index
     }
 
-    fn with_row(row: usize, view: &View) -> Pointer {
-        match row {
+    fn with_row(line: usize, view: &View) -> Pointer {
+        match line {
             0 => Default::default(),
             _ => Pointer(
                 view.data
                     .match_indices(ui::ENTER)
-                    .nth(row - 1)
+                    .nth(line - 1)
                     .map(|x| x.0 + 1),
             ),
         }
@@ -380,11 +381,50 @@ impl fmt::Display for Pointer {
     }
 }
 
-struct Section;
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+struct Section {
+    start: Place,
+    length: Length,
+}
 
+impl Section {
+    pub fn line(line: usize) -> Section {
+        Section {
+            start: Place {
+                line,
+                index: 0,
+            },
+            length: ui::EOL,
+        }
+    }
+
+    pub fn to_region(&self, first_line: usize, origin: usize) -> Region {
+        Region::with_address_length(self.start.to_address(first_line, origin), self.length)
+    }
+}
+
+impl fmt::Display for Section {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}->{}", self.start, self.length)
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 struct Place {
     line: usize,
     index: usize,
+}
+
+impl Place {
+    fn to_address(&self, first_line: usize, origin: usize) -> Address {
+        Address::with_row_column(self.line - first_line, origin + self.index)
+    }
+}
+
+impl fmt::Display for Place {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ln {}, idx {}>", self.line, self.index)
+    }
 }
 
 trait Operation {
@@ -404,13 +444,13 @@ impl Operation for ChangeMode {
             Mode::Command | Mode::Filter => {
                 paper.marks.truncate(1);
                 paper.marks[0].reset();
-                paper.ui.move_to(&paper.marks[0].address);
+                paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
                 paper.sketch.clear();
             }
             Mode::Action => {}
             Mode::Edit => {
                 paper.write_view();
-                paper.ui.move_to(&paper.marks[0].address);
+                paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
                 paper.sketch.clear();
             }
         }
@@ -431,8 +471,8 @@ impl Operation for ExecuteCommand {
                     paper.first_line = 0;
                     paper.noises.clear();
 
-                    for row in 0..paper.view.line_count() {
-                        paper.noises.push(Region::line(row));
+                    for line in 0..paper.view.line_count() {
+                        paper.noises.push(Section::line(line));
                     }
                 }
                 None => {}
@@ -452,10 +492,10 @@ struct IdentifyNoise;
 
 impl Operation for IdentifyNoise {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        let mut regions = Vec::new();
+        let mut sections = Vec::new();
 
-        for row in 0..paper.view.line_count() {
-            regions.push(Region::line(row));
+        for line in 0..paper.view.line_count() {
+            sections.push(Section::line(line));
         }
 
         for tokens in paper.first_feature_pattern.tokenize_iter(&paper.sketch) {
@@ -463,7 +503,7 @@ impl Operation for IdentifyNoise {
                 if let Some(id) = feature.chars().nth(0) {
                     for filter in paper.filters.iter() {
                         if id == filter.id() {
-                            filter.extract(feature, &mut regions, &paper.view.data);
+                            filter.extract(feature, &mut sections, &paper.view.data);
                             break;
                         }
                     }
@@ -473,12 +513,12 @@ impl Operation for IdentifyNoise {
 
         paper.noises.clear();
 
-        for region in regions {
-            paper.ui.set_background(&region, 2);
-            paper.noises.push(region);
+        for section in sections {
+            paper.ui.set_background(&section.to_region(paper.first_line, paper.ui.origin()), 2);
+            paper.noises.push(section);
         }
 
-        paper.ui.move_to(&paper.marks[0].address);
+        paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
         None
     }
 }
@@ -491,7 +531,7 @@ impl Operation for AddToSketch {
 
         for mark in paper.marks.iter_mut() {
             mark.adjust(adjustment);
-            paper.ui.move_to(&mark.address);
+            paper.ui.move_to(&mark.place.to_address(paper.first_line, paper.ui.origin()));
 
             for edit in mark.add(&self.0, &paper.view) {
                 match edit {
@@ -518,16 +558,16 @@ impl Operation for AddToSketch {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
                 for line in 0..paper.ui.window_height() {
-                    paper.ui.set_background(&Region::line(line), 0);
+                    paper.ui.set_background(&Section::line(line).to_region(paper.first_line, paper.ui.origin()), 0);
                 }
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
-                    paper.ui.set_background(noise, 2);
+                    paper.ui.set_background(&noise.to_region(paper.first_line, paper.ui.origin()), 2);
                 }
 
                 for region in regions.iter() {
-                    paper.ui.set_background(region, 1);
+                    paper.ui.set_background(&region.to_region(paper.first_line, paper.ui.origin()), 1);
                 }
 
                 paper.signals = regions;
@@ -535,7 +575,7 @@ impl Operation for AddToSketch {
             None => {}
         }
 
-        paper.ui.move_to(&paper.marks[0].address);
+        paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
         None
     }
 }
@@ -551,7 +591,7 @@ impl Operation for AddToView {
         if paper.is_dirty {
             paper.write_view();
             // write_view() moves cursor so move it back
-            paper.ui.move_to(&paper.marks[0].address);
+            paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
             paper.is_dirty = false;
         }
 
@@ -599,7 +639,7 @@ impl Operation for SetMarks {
         for signal in paper.signals.iter() {
             paper
                 .marks
-                .push(Marker { region: *signal }.generate_mark(self.0, &paper.view));
+                .push(Marker { section: *signal }.generate_mark(self.0, &paper.view));
         }
 
         None
@@ -610,7 +650,7 @@ impl Operation for SetMarks {
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 enum Enhancement {
     /// Highlights specified regions.
-    FilterRegions(Vec<Region>),
+    FilterRegions(Vec<Section>),
 }
 
 impl fmt::Display for Enhancement {
@@ -730,7 +770,7 @@ impl Mode {
     }
 
     /// Returns the Enhancement to be added.
-    fn enhance(&self, paper: &Paper, view: &String, noises: &Vec<Region>) -> Option<Enhancement> {
+    fn enhance(&self, paper: &Paper, view: &String, noises: &Vec<Section>) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
                 let mut regions = noises.clone();
@@ -760,7 +800,7 @@ impl Mode {
 
 trait Filter: fmt::Debug {
     fn id(&self) -> char;
-    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Region>, view: &String);
+    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Section>, view: &String);
 }
 
 #[derive(Debug)]
@@ -788,13 +828,13 @@ impl Filter for LineFilter {
         '#'
     }
 
-    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Region>, _view: &String) {
+    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Section>, _view: &String) {
         let tokens = self.pattern.tokenize(feature);
 
         if let Some(line) = tokens.get("line") {
             // Subtract 1 to match row.
             line.parse::<usize>().map(|i| i - 1).ok().map(|row| {
-                regions.retain(|&x| x.start().row == row);
+                regions.retain(|&x| x.start.line == row);
             });
         } else if let (Some(line_start), Some(line_end)) = (tokens.get("start"), tokens.get("end"))
         {
@@ -806,7 +846,7 @@ impl Filter for LineFilter {
                 let bottom = cmp::max(start, end);
 
                 regions.retain(|&x| {
-                    let row = x.start().row;
+                    let row = x.start.line;
                     row >= top && row <= bottom
                 })
             }
@@ -822,7 +862,7 @@ impl Filter for LineFilter {
                 let bottom = cmp::max(origin, end);
 
                 regions.retain(|&x| {
-                    let row = x.start().row;
+                    let row = x.start.line;
                     row >= top && row <= bottom
                 })
             }
@@ -848,7 +888,7 @@ impl Filter for PatternFilter {
         '/'
     }
 
-    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Region>, view: &String) {
+    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Section>, view: &String) {
         if let Some(pattern) = self.pattern.tokenize(feature).get("pattern") {
             let noise = regions.clone();
             regions.clear();
@@ -856,20 +896,20 @@ impl Filter for PatternFilter {
             for region in noise {
                 let pre_filter = view
                     .lines()
-                    .nth(region.start().row)
+                    .nth(region.start.line)
                     .unwrap()
                     .chars()
-                    .skip(region.start().column)
+                    .skip(region.start.index)
                     .collect::<String>();
 
                 for (key_index, key_match) in pre_filter.match_indices(pattern) {
-                    regions.push(Region::with_address_length(
-                        Address::with_row_column(
-                            region.start().row,
-                            region.start().column + key_index,
-                        ),
-                        Length::from(key_match.len()),
-                    ));
+                    regions.push(Section {
+                        start: Place {
+                            line: region.start.line,
+                            index: region.start.index + key_index,
+                        },
+                        length: Length::from(key_match.len()),
+                    });
                 }
             }
         }

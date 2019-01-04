@@ -151,7 +151,7 @@ impl UserInterface {
     pub fn set_background(&self, region: &Region, color_pair: i16) {
         self.window.mvchgat(
             region.y(),
-            self.origin() + region.x(),
+            region.x(),
             region.n(),
             pancurses::A_NORMAL,
             color_pair,
@@ -190,7 +190,7 @@ impl UserInterface {
     ///
     /// [`Address`]: .struct.Address.html
     pub fn move_to(&self, address: &Address) {
-        self.window.mv(address.y(), self.origin() + address.x());
+        self.window.mv(address.y(), address.x());
     }
 
     /// Returns the height of the pane.
@@ -205,8 +205,8 @@ impl UserInterface {
     }
 
     /// Returns the column of the terminal grid at which the pane starts.
-    fn origin(&self) -> i32 {
-        (self.line_number_width + LINE_NUMBER_GAP) as i32
+    pub fn origin(&self) -> usize {
+        self.line_number_width + LINE_NUMBER_GAP
     }
 }
 
@@ -270,9 +270,9 @@ impl fmt::Display for Region {
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Address {
     /// Index of the row that contains the block (including 0).
-    pub row: usize,
+    row: usize,
     /// Index of the column that contains the block (including 0).
-    pub column: usize,
+    column: usize,
 }
 
 impl Address {
