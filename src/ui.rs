@@ -128,7 +128,7 @@ pub struct Region {
 
 impl Region {
     /// Creates a Region with given address and length.
-    pub fn with_address_length(address: Address, length: Length) -> Region {
+    pub fn new(address: Address, length: Length) -> Region {
         Region {
             start: address,
             length,
@@ -165,7 +165,7 @@ pub struct Address {
 
 impl Address {
     /// Creates a new Address at a given row and column.
-    pub fn with_row_column(row: usize, column: usize) -> Address {
+    pub fn new(row: usize, column: usize) -> Address {
         Address { row, column }
     }
 

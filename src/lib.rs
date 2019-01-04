@@ -409,7 +409,7 @@ impl Section {
     }
 
     pub fn to_region(&self, first_line: usize, origin: usize) -> Region {
-        Region::with_address_length(self.start.to_address(first_line, origin), self.length)
+        Region::new(self.start.to_address(first_line, origin), self.length)
     }
 }
 
@@ -427,7 +427,7 @@ struct Place {
 
 impl Place {
     fn to_address(&self, first_line: usize, origin: usize) -> Address {
-        Address::with_row_column(self.line - first_line, origin + self.index)
+        Address::new(self.line - first_line, origin + self.index)
     }
 }
 
