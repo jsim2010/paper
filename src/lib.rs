@@ -137,7 +137,15 @@ impl Paper {
             .take(self.ui.window_height())
             .enumerate()
         {
-            self.ui.set_line(index, format!("{:>width$} {}", self.first_line + index + 1, line, width = self.view.margin_width - 1));
+            self.ui.set_line(
+                index,
+                format!(
+                    "{:>width$} {}",
+                    self.first_line + index + 1,
+                    line,
+                    width = self.view.margin_width - 1
+                ),
+            );
         }
     }
 
@@ -166,7 +174,7 @@ impl View {
 
         View {
             data,
-            line_count, 
+            line_count,
             margin_width: digits_in_number(line_count) + 1,
         }
     }
@@ -400,10 +408,7 @@ struct Section {
 impl Section {
     pub fn line(line: usize) -> Section {
         Section {
-            start: Place {
-                line,
-                index: 0,
-            },
+            start: Place { line, index: 0 },
             length: ui::EOL,
         }
     }
@@ -454,13 +459,21 @@ impl Operation for ChangeMode {
             Mode::Command | Mode::Filter => {
                 paper.marks.truncate(1);
                 paper.marks[0].reset();
-                paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
+                paper.ui.move_to(
+                    &paper.marks[0]
+                        .place
+                        .to_address(paper.first_line, paper.view.margin_width),
+                );
                 paper.sketch.clear();
             }
             Mode::Action => {}
             Mode::Edit => {
                 paper.write_view();
-                paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
+                paper.ui.move_to(
+                    &paper.marks[0]
+                        .place
+                        .to_address(paper.first_line, paper.view.margin_width),
+                );
                 paper.sketch.clear();
             }
         }
@@ -524,41 +537,58 @@ impl Operation for IdentifyNoise {
         paper.noises.clear();
 
         for section in sections {
-            paper.ui.set_background(&section.to_region(paper.first_line, paper.view.margin_width), 2);
+            paper.ui.set_background(
+                &section.to_region(paper.first_line, paper.view.margin_width),
+                2,
+            );
             paper.noises.push(section);
         }
 
-        paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
+        paper.ui.move_to(
+            &paper.marks[0]
+                .place
+                .to_address(paper.first_line, paper.view.margin_width),
+        );
         None
     }
 }
 
-struct AddToSketch(String);
+struct AddToSketch(String, bool);
 
 impl Operation for AddToSketch {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        let mut adjustment = 0;
+        for c in self.0.chars() {
+            match c {
+                ui::BACKSPACE => {
+                    paper.sketch.pop();
+                }
+                _ => {
+                    paper.sketch.push(c);
+                }
+            }
+        }
 
-        for mark in paper.marks.iter_mut() {
-            mark.adjust(adjustment);
-            paper.ui.move_to(&mark.place.to_address(paper.first_line, paper.view.margin_width));
+        if self.1 {
+            let mut adjustment = 0;
 
-            for edit in mark.add(&self.0, &paper.view) {
-                match edit {
-                    Edit::Backspace => {
-                        paper.ui.delete_back();
-                        paper.sketch.pop();
-                        adjustment -= 1;
-                    }
-                    Edit::Wash(x) => {
-                        paper.is_dirty = true;
-                        paper.sketch.clear();
-                        adjustment += x;
-                    }
-                    Edit::Add(c) => {
-                        paper.ui.insert_char(c);
-                        paper.sketch.push(c);
-                        adjustment += 1;
+            for mark in paper.marks.iter_mut() {
+                mark.adjust(adjustment);
+                paper.ui.move_to(&mark.place.to_address(paper.first_line, paper.view.margin_width));
+
+                for edit in mark.add(&self.0, &paper.view) {
+                    match edit {
+                        Edit::Backspace => {
+                            paper.ui.delete_back();
+                            adjustment -= 1;
+                        }
+                        Edit::Wash(x) => {
+                            paper.is_dirty = true;
+                            adjustment += x;
+                        }
+                        Edit::Add(c) => {
+                            paper.ui.insert_char(c);
+                            adjustment += 1;
+                        }
                     }
                 }
             }
@@ -568,16 +598,25 @@ impl Operation for AddToSketch {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
                 for line in 0..paper.ui.window_height() {
-                    paper.ui.set_background(&Section::line(line).to_region(paper.first_line, paper.view.margin_width), 0);
+                    paper.ui.set_background(
+                        &Section::line(line).to_region(paper.first_line, paper.view.margin_width),
+                        0,
+                    );
                 }
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
-                    paper.ui.set_background(&noise.to_region(paper.first_line, paper.view.margin_width), 2);
+                    paper.ui.set_background(
+                        &noise.to_region(paper.first_line, paper.view.margin_width),
+                        2,
+                    );
                 }
 
                 for region in regions.iter() {
-                    paper.ui.set_background(&region.to_region(paper.first_line, paper.view.margin_width), 1);
+                    paper.ui.set_background(
+                        &region.to_region(paper.first_line, paper.view.margin_width),
+                        1,
+                    );
                 }
 
                 paper.signals = regions;
@@ -585,7 +624,11 @@ impl Operation for AddToSketch {
             None => {}
         }
 
-        paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
+        paper.ui.move_to(
+            &paper.marks[0]
+                .place
+                .to_address(paper.first_line, paper.view.margin_width),
+        );
         None
     }
 }
@@ -594,6 +637,30 @@ struct AddToView(char);
 
 impl Operation for AddToView {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        let mut adjustment = 0;
+
+        for mark in paper.marks.iter_mut() {
+            mark.adjust(adjustment);
+            paper.ui.move_to(&mark.place.to_address(paper.first_line, paper.view.margin_width));
+
+            for edit in mark.add(&self.0.to_string(), &paper.view) {
+                match edit {
+                    Edit::Backspace => {
+                        paper.ui.delete_back();
+                        adjustment -= 1;
+                    }
+                    Edit::Wash(x) => {
+                        paper.is_dirty = true;
+                        adjustment += x;
+                    }
+                    Edit::Add(c) => {
+                        paper.ui.insert_char(c);
+                        adjustment += 1;
+                    }
+                }
+            }
+        }
+
         for mark in paper.marks.iter() {
             paper.view.add(self.0, mark.pointer);
         }
@@ -603,10 +670,19 @@ impl Operation for AddToView {
             paper.view.margin_width = digits_in_number(paper.view.line_count);
             paper.write_view();
             // write_view() moves cursor so move it back
-            paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
+            paper.ui.move_to(
+                &paper.marks[0]
+                    .place
+                    .to_address(paper.first_line, paper.view.margin_width),
+            );
             paper.is_dirty = false;
         }
 
+        paper.ui.move_to(
+            &paper.marks[0]
+                .place
+                .to_address(paper.first_line, paper.view.margin_width),
+        );
         None
     }
 }
@@ -732,7 +808,7 @@ impl Mode {
                     '.' => operations.push(Box::new(ChangeMode(Mode::Command))),
                     '#' | '/' => {
                         operations.push(Box::new(ChangeMode(Mode::Filter)));
-                        operations.push(Box::new(AddToSketch(c.to_string())));
+                        operations.push(Box::new(AddToSketch(c.to_string(), true)));
                     }
                     'j' => operations.push(Box::new(ScrollDown)),
                     'k' => operations.push(Box::new(ScrollUp)),
@@ -744,16 +820,16 @@ impl Mode {
                         operations.push(Box::new(ChangeMode(Mode::Display)));
                     }
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
-                    _ => operations.push(Box::new(AddToSketch(c.to_string()))),
+                    _ => operations.push(Box::new(AddToSketch(c.to_string(), true))),
                 },
                 Mode::Filter => match c {
                     ui::ENTER => operations.push(Box::new(ChangeMode(Mode::Action))),
                     '\t' => {
                         operations.push(Box::new(IdentifyNoise));
-                        operations.push(Box::new(AddToSketch(String::from("&&"))));
+                        operations.push(Box::new(AddToSketch(String::from("&&"), true)));
                     }
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
-                    _ => operations.push(Box::new(AddToSketch(c.to_string()))),
+                    _ => operations.push(Box::new(AddToSketch(c.to_string(), true))),
                 },
                 Mode::Action => match c {
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
@@ -770,7 +846,7 @@ impl Mode {
                 Mode::Edit => match c {
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
                     _ => {
-                        operations.push(Box::new(AddToSketch(c.to_string())));
+                        operations.push(Box::new(AddToSketch(c.to_string(), false)));
                         operations.push(Box::new(AddToView(c)));
                     }
                 },
