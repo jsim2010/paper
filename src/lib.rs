@@ -67,8 +67,6 @@ pub struct Paper {
     noises: Vec<Section>,
     /// Path of the file being edited.
     path: String,
-    /// If the view should be redrawn.
-    is_dirty: bool,
     /// [`Mark`] of the cursor.
     ///
     /// [`Mark`]: .struct.Mark.html
@@ -553,7 +551,7 @@ impl Operation for IdentifyNoise {
     }
 }
 
-struct AddToSketch(String, bool);
+struct AddToSketch(String);
 
 impl Operation for AddToSketch {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
@@ -564,32 +562,6 @@ impl Operation for AddToSketch {
                 }
                 _ => {
                     paper.sketch.push(c);
-                }
-            }
-        }
-
-        if self.1 {
-            let mut adjustment = 0;
-
-            for mark in paper.marks.iter_mut() {
-                mark.adjust(adjustment);
-                paper.ui.move_to(&mark.place.to_address(paper.first_line, paper.view.margin_width));
-
-                for edit in mark.add(&self.0, &paper.view) {
-                    match edit {
-                        Edit::Backspace => {
-                            paper.ui.delete_back();
-                            adjustment -= 1;
-                        }
-                        Edit::Wash(x) => {
-                            paper.is_dirty = true;
-                            adjustment += x;
-                        }
-                        Edit::Add(c) => {
-                            paper.ui.insert_char(c);
-                            adjustment += 1;
-                        }
-                    }
                 }
             }
         }
@@ -624,6 +596,37 @@ impl Operation for AddToSketch {
             None => {}
         }
 
+        None
+    }
+}
+
+struct Draw(String);
+
+impl Operation for Draw {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        let mut adjustment = 0;
+
+        for mark in paper.marks.iter_mut() {
+            mark.adjust(adjustment);
+            paper.ui.move_to(&mark.place.to_address(paper.first_line, paper.view.margin_width));
+
+            for edit in mark.add(&self.0, &paper.view) {
+                match edit {
+                    Edit::Backspace => {
+                        paper.ui.delete_back();
+                        adjustment -= 1;
+                    }
+                    Edit::Wash(x) => {
+                        adjustment += x;
+                    }
+                    Edit::Add(c) => {
+                        paper.ui.insert_char(c);
+                        adjustment += 1;
+                    }
+                }
+            }
+        }
+
         paper.ui.move_to(
             &paper.marks[0]
                 .place
@@ -638,6 +641,7 @@ struct AddToView(char);
 impl Operation for AddToView {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         let mut adjustment = 0;
+        let mut is_dirty = false;
 
         for mark in paper.marks.iter_mut() {
             mark.adjust(adjustment);
@@ -650,7 +654,7 @@ impl Operation for AddToView {
                         adjustment -= 1;
                     }
                     Edit::Wash(x) => {
-                        paper.is_dirty = true;
+                        is_dirty = true;
                         adjustment += x;
                     }
                     Edit::Add(c) => {
@@ -665,7 +669,7 @@ impl Operation for AddToView {
             paper.view.add(self.0, mark.pointer);
         }
 
-        if paper.is_dirty {
+        if is_dirty {
             paper.view.line_count = paper.view.data.lines().count();
             paper.view.margin_width = digits_in_number(paper.view.line_count);
             paper.write_view();
@@ -675,7 +679,6 @@ impl Operation for AddToView {
                     .place
                     .to_address(paper.first_line, paper.view.margin_width),
             );
-            paper.is_dirty = false;
         }
 
         paper.ui.move_to(
@@ -807,8 +810,10 @@ impl Mode {
                 Mode::Display => match c {
                     '.' => operations.push(Box::new(ChangeMode(Mode::Command))),
                     '#' | '/' => {
+                        let s = c.to_string();
                         operations.push(Box::new(ChangeMode(Mode::Filter)));
-                        operations.push(Box::new(AddToSketch(c.to_string(), true)));
+                        operations.push(Box::new(AddToSketch(s.clone())));
+                        operations.push(Box::new(Draw(s)));
                     }
                     'j' => operations.push(Box::new(ScrollDown)),
                     'k' => operations.push(Box::new(ScrollUp)),
@@ -820,16 +825,26 @@ impl Mode {
                         operations.push(Box::new(ChangeMode(Mode::Display)));
                     }
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
-                    _ => operations.push(Box::new(AddToSketch(c.to_string(), true))),
+                    _ => {
+                        let s = c.to_string();
+                        operations.push(Box::new(AddToSketch(s.clone())));
+                        operations.push(Box::new(Draw(s)));
+                    }
                 },
                 Mode::Filter => match c {
                     ui::ENTER => operations.push(Box::new(ChangeMode(Mode::Action))),
                     '\t' => {
+                        let s = String::from("&&");
                         operations.push(Box::new(IdentifyNoise));
-                        operations.push(Box::new(AddToSketch(String::from("&&"), true)));
+                        operations.push(Box::new(AddToSketch(s.clone())));
+                        operations.push(Box::new(Draw(s)));
                     }
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
-                    _ => operations.push(Box::new(AddToSketch(c.to_string(), true))),
+                    _ => {
+                        let s = c.to_string();
+                        operations.push(Box::new(AddToSketch(s.clone())));
+                        operations.push(Box::new(Draw(s)));
+                    }
                 },
                 Mode::Action => match c {
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
@@ -846,7 +861,7 @@ impl Mode {
                 Mode::Edit => match c {
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
                     _ => {
-                        operations.push(Box::new(AddToSketch(c.to_string(), false)));
+                        operations.push(Box::new(AddToSketch(c.to_string())));
                         operations.push(Box::new(AddToView(c)));
                     }
                 },
