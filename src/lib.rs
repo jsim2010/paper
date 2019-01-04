@@ -128,8 +128,6 @@ impl Paper {
     /// Displays the view on the user interface.
     fn write_view(&mut self) {
         self.ui.clear();
-        self.ui
-            .calc_line_number_width(self.view.line_count());
 
         for (index, line) in self
             .view
@@ -139,7 +137,7 @@ impl Paper {
             .take(self.ui.window_height())
             .enumerate()
         {
-            self.ui.set_line(index, self.first_line + index + 1, line);
+            self.ui.set_line(self.view.margin_width, index, self.first_line + index + 1, line);
         }
     }
 
@@ -149,15 +147,27 @@ impl Paper {
     }
 }
 
+fn digits_in_number(number: usize) -> usize {
+    ((number + 1) as f32).log10().ceil() as usize
+}
+
 #[derive(Debug, Default)]
 struct View {
     data: String,
+    line_count: usize,
+    /// The number of characters needed to output everything in margin (ex: line numbers).
+    margin_width: usize,
 }
 
 impl View {
     fn with_file(filename: &String) -> View {
+        let data = fs::read_to_string(filename).unwrap().replace('\r', "");
+        let line_count = data.lines().count();
+
         View {
-            data: fs::read_to_string(filename).unwrap().replace('\r', ""),
+            data,
+            line_count, 
+            margin_width: digits_in_number(line_count) + 1,
         }
     }
 
@@ -444,13 +454,13 @@ impl Operation for ChangeMode {
             Mode::Command | Mode::Filter => {
                 paper.marks.truncate(1);
                 paper.marks[0].reset();
-                paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
+                paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
                 paper.sketch.clear();
             }
             Mode::Action => {}
             Mode::Edit => {
                 paper.write_view();
-                paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
+                paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
                 paper.sketch.clear();
             }
         }
@@ -514,11 +524,11 @@ impl Operation for IdentifyNoise {
         paper.noises.clear();
 
         for section in sections {
-            paper.ui.set_background(&section.to_region(paper.first_line, paper.ui.origin()), 2);
+            paper.ui.set_background(&section.to_region(paper.first_line, paper.view.margin_width), 2);
             paper.noises.push(section);
         }
 
-        paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
+        paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
         None
     }
 }
@@ -531,7 +541,7 @@ impl Operation for AddToSketch {
 
         for mark in paper.marks.iter_mut() {
             mark.adjust(adjustment);
-            paper.ui.move_to(&mark.place.to_address(paper.first_line, paper.ui.origin()));
+            paper.ui.move_to(&mark.place.to_address(paper.first_line, paper.view.margin_width));
 
             for edit in mark.add(&self.0, &paper.view) {
                 match edit {
@@ -558,16 +568,16 @@ impl Operation for AddToSketch {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
                 for line in 0..paper.ui.window_height() {
-                    paper.ui.set_background(&Section::line(line).to_region(paper.first_line, paper.ui.origin()), 0);
+                    paper.ui.set_background(&Section::line(line).to_region(paper.first_line, paper.view.margin_width), 0);
                 }
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
-                    paper.ui.set_background(&noise.to_region(paper.first_line, paper.ui.origin()), 2);
+                    paper.ui.set_background(&noise.to_region(paper.first_line, paper.view.margin_width), 2);
                 }
 
                 for region in regions.iter() {
-                    paper.ui.set_background(&region.to_region(paper.first_line, paper.ui.origin()), 1);
+                    paper.ui.set_background(&region.to_region(paper.first_line, paper.view.margin_width), 1);
                 }
 
                 paper.signals = regions;
@@ -575,7 +585,7 @@ impl Operation for AddToSketch {
             None => {}
         }
 
-        paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
+        paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
         None
     }
 }
@@ -589,9 +599,11 @@ impl Operation for AddToView {
         }
 
         if paper.is_dirty {
+            paper.view.line_count = paper.view.data.lines().count();
+            paper.view.margin_width = digits_in_number(paper.view.line_count);
             paper.write_view();
             // write_view() moves cursor so move it back
-            paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.ui.origin()));
+            paper.ui.move_to(&paper.marks[0].place.to_address(paper.first_line, paper.view.margin_width));
             paper.is_dirty = false;
         }
 

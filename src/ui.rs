@@ -12,9 +12,6 @@ pub const ENTER: char = '\n';
 /// Character that represents the `Esc` key.
 pub const ESC: char = '';
 
-/// The number of spaces between the line numbers and the pane.
-const LINE_NUMBER_GAP: usize = 1;
-
 /// The interface with the user.
 ///
 /// All output is displayed in a grid. A cursor is tracked and used to specify where requested
@@ -23,8 +20,6 @@ const LINE_NUMBER_GAP: usize = 1;
 pub struct UserInterface {
     /// Interface to the terminal.
     window: pancurses::Window,
-    /// The number of characters used to output line numbers.
-    line_number_width: usize,
 }
 
 impl UserInterface {
@@ -33,18 +28,10 @@ impl UserInterface {
         UserInterface {
             // Must call initscr() first.
             window: pancurses::initscr(),
-            line_number_width: 0,
         }
     }
 
     /// Sets up the user interface for use.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// let ui = UserInterface::new();
-    ///
-    /// ui.init();
-    /// ```
     pub fn init(&self) {
         // Prevent curses from outputing keys.
         pancurses::noecho();
@@ -60,16 +47,6 @@ impl UserInterface {
     ///
     /// Returns an [`Option<char>`]. Returns [`None`] if no input is provided.
     ///
-    /// # Examples
-    /// ```ignore
-    /// # mod ui;
-    /// # let interface = ui::UserInterface::new();
-    /// match interface.get_input() {
-    ///     Some(c) => println!("Received '{}'", c),
-    ///     None => println!("Received nothing"),
-    /// }
-    /// ```
-    ///
     /// [`Option<char>`]: https://doc.rust-lang.org/std/option/enum.Option.html
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     pub fn get_input(&self) -> Option<char> {
@@ -77,17 +54,6 @@ impl UserInterface {
             Some(Input::Character(c)) => Some(c),
             _ => None,
         }
-    }
-
-    /// Sets the width needed to display line numbers for a given number of lines.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # let ui = UserInterface::new();
-    /// ui.calc_line_number_width(100);
-    /// ```
-    pub fn calc_line_number_width(&mut self, line_count: usize) {
-        self.line_number_width = ((line_count + 1) as f32).log10().ceil() as usize;
     }
 
     /// Closes the user interface.
@@ -165,12 +131,12 @@ impl UserInterface {
     /// # let ui = UserInterface::new();
     /// ui.set_line(1, 1, "foobar");
     /// ```
-    pub fn set_line(&self, row: usize, line_number: usize, line: &str) {
+    pub fn set_line(&self, margin_width: usize, row: usize, line_number: usize, line: &str) {
         self.window.mv(row as i32, 0);
         self.window.addstr(format!(
             "{:>width$} ",
             line_number,
-            width = self.line_number_width,
+            width = margin_width - 1,
         ));
         self.window.addstr(line);
     }
@@ -203,11 +169,6 @@ impl UserInterface {
     pub fn window_height(&self) -> usize {
         self.window.get_max_y() as usize
     }
-
-    /// Returns the column of the terminal grid at which the pane starts.
-    pub fn origin(&self) -> usize {
-        self.line_number_width + LINE_NUMBER_GAP
-    }
 }
 
 impl Default for UserInterface {
@@ -232,19 +193,6 @@ impl Region {
             start: address,
             length,
         }
-    }
-
-    /// Creates a Region that equals an entire line.
-    pub fn line(row: usize) -> Region {
-        Region::with_address_length(Address::with_row_column(row, 0), EOL)
-    }
-
-    pub fn start(&self) -> Address {
-        self.start
-    }
-
-    pub fn length(&self) -> Length {
-        self.length
     }
 
     fn y(&self) -> i32 {
@@ -277,23 +225,8 @@ pub struct Address {
 
 impl Address {
     /// Creates a new Address at a given row and column.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let address = Address::with_row_column(1, 2);
-    ///
-    /// assert_eq!(address.row, 1);
-    /// assert_eq!(address.column, 2);
-    /// ```
     pub fn with_row_column(row: usize, column: usize) -> Address {
         Address { row, column }
-    }
-
-    /// Resets address to default values
-    pub fn reset(&mut self) {
-        self.row = Default::default();
-        self.column = Default::default();
     }
 
     /// Returns the column of address.
