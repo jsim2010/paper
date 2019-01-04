@@ -30,9 +30,9 @@
 
 #![doc(html_root_url = "https://docs.rs/paper/0.1.0")]
 
+extern crate rec;
 extern crate regex;
 
-mod rec;
 mod ui;
 
 use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
@@ -93,7 +93,7 @@ impl Paper {
                 "see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path"),
             ),
             first_feature_pattern: Pattern::define(
-                ChCls::AllBut("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
+                ChCls::None("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
             ),
             filters: vec![Box::new(LineFilter::new()), Box::new(KeyFilter::new())],
             ..Default::default()
@@ -766,7 +766,7 @@ impl LineFilter {
                         + "."
                         + ChCls::Digit.rpt(SOME).name("end")
                     | ChCls::Digit.rpt(SOME).name("origin")
-                        + (("+".rec() | "-") + ChCls::Digit.rpt(SOME)).name("movement")),
+                        + (("+".to_rec() | "-") + ChCls::Digit.rpt(SOME)).name("movement")),
             ),
         }
     }
