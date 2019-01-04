@@ -95,7 +95,7 @@ impl Paper {
             first_feature_pattern: Pattern::define(
                 ChCls::None("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
             ),
-            filters: vec![Box::new(LineFilter::new()), Box::new(KeyFilter::new())],
+            filters: vec![Box::new(LineFilter::new()), Box::new(PatternFilter::new())],
             ..Default::default()
         }
     }
@@ -129,7 +129,7 @@ impl Paper {
     fn write_view(&mut self) {
         self.ui.clear();
         self.ui
-            .calc_line_number_width(self.view.data.lines().count());
+            .calc_line_number_width(self.view.line_count());
 
         for (index, line) in self
             .view
@@ -163,6 +163,10 @@ impl View {
 
     fn line_length(&self, address: &Address) -> usize {
         self.data.lines().nth(address.row).unwrap().len()
+    }
+
+    fn line_count(&self) -> usize {
+        self.data.lines().count()
     }
 
     fn add(&mut self, c: char, index: Index) {
@@ -420,7 +424,7 @@ impl Operation for ExecuteCommand {
                     paper.first_line = 0;
                     paper.noises.clear();
 
-                    for row in 0..paper.view.data.lines().count() {
+                    for row in 0..paper.view.line_count() {
                         paper.noises.push(Region::line(row));
                     }
                 }
@@ -443,7 +447,7 @@ impl Operation for IdentifyNoise {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         let mut regions = Vec::new();
 
-        for row in 0..paper.view.data.lines().count() {
+        for row in 0..paper.view.line_count() {
             regions.push(Region::line(row));
         }
 
@@ -554,7 +558,7 @@ impl Operation for ScrollDown {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         paper.first_line = cmp::min(
             paper.first_line + paper.scroll_height(),
-            paper.view.data.lines().count() - 1,
+            paper.view.line_count() - 1,
         );
 
         paper.write_view();
@@ -820,25 +824,25 @@ impl Filter for LineFilter {
 }
 
 #[derive(Debug)]
-struct KeyFilter {
+struct PatternFilter {
     pattern: Pattern,
 }
 
-impl KeyFilter {
-    fn new() -> KeyFilter {
-        KeyFilter {
-            pattern: Pattern::define("/" + ChCls::Any.rpt(SOME).name("key")),
+impl PatternFilter {
+    fn new() -> PatternFilter {
+        PatternFilter {
+            pattern: Pattern::define("/" + ChCls::Any.rpt(SOME).name("pattern")),
         }
     }
 }
 
-impl Filter for KeyFilter {
+impl Filter for PatternFilter {
     fn id(&self) -> char {
         '/'
     }
 
     fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Region>, view: &String) {
-        if let Some(key) = self.pattern.tokenize(feature).get("key") {
+        if let Some(pattern) = self.pattern.tokenize(feature).get("pattern") {
             let noise = regions.clone();
             regions.clear();
 
@@ -851,7 +855,7 @@ impl Filter for KeyFilter {
                     .skip(region.start().column)
                     .collect::<String>();
 
-                for (key_index, key_match) in pre_filter.match_indices(key) {
+                for (key_index, key_match) in pre_filter.match_indices(pattern) {
                     regions.push(Region::with_address_length(
                         Address::with_row_column(
                             region.start().row,
