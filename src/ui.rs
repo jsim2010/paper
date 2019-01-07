@@ -86,7 +86,6 @@ impl UserInterface {
                     self.window.clear();
                 }
                 Change::Format(color) => {
-                    eprintln!("{:?} {}", edit.region, color);
                     if let Some(region) = edit.region {
                         self.window.chgat(region.n(), pancurses::A_NORMAL, color);
                     }
