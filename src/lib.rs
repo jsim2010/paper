@@ -125,10 +125,6 @@ impl Paper {
     }
 }
 
-fn digits_in_number(number: usize) -> usize {
-    ((number + 1) as f32).log10().ceil() as usize
-}
-
 #[derive(Clone, Debug, Default)]
 struct View {
     data: String,
@@ -214,7 +210,7 @@ impl View {
                 }
             }
 
-            edits.push(Edit::new(Some(Region::address(&address)), changes));
+            edits.push(Edit::new(Some(Region::address(address)), changes));
         }
 
         edits
@@ -271,7 +267,7 @@ impl View {
 
     fn clean(&mut self) {
         self.line_count = self.lines().count();
-        self.margin_width = digits_in_number(self.line_count) + 1;
+        self.margin_width = ((self.line_count + 1) as f32).log10().ceil() as usize + 1;
         self.is_dirty = false;
     }
 

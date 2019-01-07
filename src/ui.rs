@@ -154,17 +154,17 @@ pub struct Region {
 }
 
 impl Region {
-    /// Creates a Region with given address and length.
-    pub fn new(address: Address, length: Length) -> Region {
+    /// Creates a Region
+    pub fn new(start: Address, length: Length) -> Region {
         Region {
-            start: address,
+            start,
             length,
         }
     }
 
-    pub fn address(address: &Address) -> Region {
+    pub fn address(address: Address) -> Region {
         Region {
-            start: address.clone(),
+            start: address,
             length: Length::from(1),
         }
     }
@@ -229,30 +229,28 @@ impl fmt::Display for Address {
 
 /// Specifies the length of a Region.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub struct Length {
-    value: i32,
-}
+pub struct Length(i32);
 
 /// Value that represents the number of characters until the end of the line.
 const EOL_VALUE: i32 = -1;
 /// Length that represents the number of characters until the end of the line.
-pub const EOL: Length = Length { value: EOL_VALUE };
+pub const EOL: Length = Length(EOL_VALUE);
 
 impl Length {
     /// Converts to usize.
     pub fn to_usize(&self) -> usize {
-        self.value as usize
+        self.0 as usize
     }
 
     /// Converts to i32.
     pub fn as_i32(&self) -> &i32 {
-        &self.value
+        &self.0
     }
 }
 
 impl fmt::Display for Length {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.value {
+        match self.0 {
             EOL_VALUE => write!(f, "EOL"),
             x => write!(f, "{}", x),
         }
@@ -261,8 +259,6 @@ impl fmt::Display for Length {
 
 impl From<usize> for Length {
     fn from(value: usize) -> Length {
-        Length {
-            value: value as i32,
-        }
+        Length(value as i32)
     }
 }
