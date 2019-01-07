@@ -40,7 +40,6 @@ use std::cmp;
 use std::fmt;
 use std::fs;
 use std::ops::{Add, AddAssign, SubAssign};
-use std::vec::IntoIter;
 use ui::{Address, Length, Region, UserInterface};
 
 /// The paper application.
@@ -136,6 +135,10 @@ fn digits_in_number(number: usize) -> usize {
     ((number + 1) as f32).log10().ceil() as usize
 }
 
+fn margin_width(line_count: usize) -> usize {
+    digits_in_number(line_count) + 1
+}
+
 #[derive(Clone, Debug)]
 struct View {
     data: String,
@@ -144,19 +147,21 @@ struct View {
     /// The number of characters needed to output everything in margin (ex: line numbers).
     margin_width: usize,
     marks: Vec<Mark>,
+    path: String,
 }
 
 impl View {
-    fn with_file(filename: &String) -> View {
-        let data = fs::read_to_string(filename).unwrap().replace('\r', "");
+    fn with_file(path: String) -> View {
+        let data = fs::read_to_string(path.as_str()).unwrap().replace('\r', "");
         let line_count = data.lines().count();
 
         View {
             data,
             line_count,
             first_line: 1,
-            margin_width: digits_in_number(line_count) + 1,
+            margin_width: margin_width(line_count),
             marks: vec![Default::default()],
+            path: path,
         }
     }
 
@@ -164,14 +169,48 @@ impl View {
         let mut addresses = Vec::new();
         let mut edits = Vec::new();
         let mut adjustment = 0;
-        let view = self.clone();
 
         for mark in self.marks.iter_mut() {
             let mut new_edits = Vec::new();
             mark.adjust(adjustment);
-            addresses.push(mark.place.to_address(&view));
+            addresses.push(Address::new(
+                mark.place.line - self.first_line,
+                self.margin_width + mark.place.index,
+            ));
 
-            for edit in mark.add(addition, &view) {
+            let mut changes = Vec::new();
+
+            for c in addition.chars() {
+                match c {
+                    ui::BACKSPACE => {
+                        mark.pointer -= 1;
+
+                        if mark.place.index == 0 {
+                            mark.place.line -= 1;
+                            mark.place.index =
+                                self.data.lines().nth(&mark.place.line - 1).unwrap().len();
+                            changes.push(Edit::Wash(-1));
+                        }
+
+                        mark.place.index -= 1;
+                        changes.push(Edit::Backspace);
+                    }
+                    ui::ENTER => {
+                        mark.pointer += 1;
+                        mark.place.line += 1;
+                        mark.place.index = 0;
+                        changes.push(Edit::Wash(1));
+                    }
+                    _ => {
+                        mark.place.index += 1;
+                        mark.pointer += 1;
+
+                        changes.push(Edit::Add(c));
+                    }
+                }
+            }
+
+            for edit in changes {
                 match edit {
                     Edit::Backspace => {
                         adjustment -= 1;
@@ -212,7 +251,11 @@ impl View {
                 place,
                 pointer: place.index + Pointer(match place.line {
                     1 => Some(0),
-                    _ => self.data.match_indices(ui::ENTER).nth(place.line - 2).map(|x| x.0 + 1),
+                    _ => self
+                        .data
+                        .match_indices(ui::ENTER)
+                        .nth(place.line - 2)
+                        .map(|x| x.0 + 1),
                 }),
             });
         }
@@ -224,23 +267,49 @@ impl View {
     }
 
     fn address_at_mark(&self, index: usize) -> Address {
-        self.marks[index].place.to_address(&self)
+        self.address_at_place(&self.marks[index].place)
+    }
+
+    fn address_at_place(&self, place: &Place) -> Address {
+        Address::new(place.line - self.first_line, self.margin_width + place.index)
     }
 
     fn lines(&self) -> std::str::Lines {
         self.data.lines()
     }
 
-    fn rows(&self, line_count: usize) -> impl Iterator<Item=(usize, String)> + '_ {
-        self.lines().skip(self.first_line - 1).take(line_count).enumerate().map(move |x| (x.0, format!("{:>width$} {}", self.first_line + x.0, x.1, width = self.margin_width - 1)))
+    fn clean(&mut self) {
+        self.line_count = self.lines().count();
+        self.margin_width = margin_width(self.line_count);
+    }
+
+    fn rows(&self, line_count: usize) -> impl Iterator<Item = (usize, String)> + '_ {
+        self.lines()
+            .skip(self.first_line - 1)
+            .take(line_count)
+            .enumerate()
+            .map(move |x| {
+                (
+                    x.0,
+                    format!(
+                        "{:>width$} {}",
+                        self.first_line + x.0,
+                        x.1,
+                        width = self.margin_width - 1
+                    ),
+                )
+            })
+    }
+
+    fn scroll_down(&mut self, scroll: usize) {
+        self.first_line = cmp::min(
+            self.first_line + scroll,
+            self.line_count,
+        );
     }
 
     fn line_length(&self, place: &Place) -> usize {
         self.lines().nth(place.line - 1).unwrap().len()
-    }
-
-    fn line_count(&self) -> usize {
-        self.lines().count()
     }
 
     fn add(&mut self, c: char) {
@@ -258,6 +327,14 @@ impl View {
             }
         }
     }
+
+    fn region_at_section(&self, section: &Section) -> Region {
+        Region::new(self.address_at_place(&section.start), section.length)
+    }
+
+    fn put(&self) {
+        fs::write(&self.path, &self.data).unwrap();
+    }
 }
 
 impl Default for View {
@@ -268,6 +345,7 @@ impl Default for View {
             line_count: Default::default(),
             margin_width: Default::default(),
             marks: vec![Default::default()],
+            path: String::new(),
         }
     }
 }
@@ -323,45 +401,6 @@ impl Mark {
 
     fn adjust(&mut self, adjustment: isize) {
         self.pointer += adjustment;
-    }
-
-    /// Moves mark based on the added [`String`] and returns the appropriate [`Edit`].
-    ///
-    /// [`String`]: https://doc.rust-lang.org/std/string/struct.String.html
-    /// [`Edit`]: .enum.Edit.html
-    fn add(&mut self, s: &String, view: &View) -> IntoIter<Edit> {
-        let mut edits = Vec::new();
-
-        for c in s.chars() {
-            match c {
-                ui::BACKSPACE => {
-                    self.pointer -= 1;
-
-                    if self.place.index == 0 {
-                        self.place.line -= 1;
-                        self.place.index = view.line_length(&self.place);
-                        edits.push(Edit::Wash(-1));
-                    }
-
-                    self.place.index -= 1;
-                    edits.push(Edit::Backspace);
-                }
-                ui::ENTER => {
-                    self.pointer += 1;
-                    self.place.line += 1;
-                    self.place.index = 0;
-                    edits.push(Edit::Wash(1));
-                }
-                _ => {
-                    self.place.index += 1;
-                    self.pointer += 1;
-
-                    edits.push(Edit::Add(c));
-                }
-            }
-        }
-
-        edits.into_iter()
     }
 }
 
@@ -440,10 +479,6 @@ impl Section {
             length: ui::EOL,
         }
     }
-
-    pub fn to_region(&self, view: &View) -> Region {
-        Region::new(self.start.to_address(view), self.length)
-    }
 }
 
 impl fmt::Display for Section {
@@ -456,12 +491,6 @@ impl fmt::Display for Section {
 struct Place {
     line: usize,
     index: usize,
-}
-
-impl Place {
-    fn to_address(&self, view: &View) -> Address {
-        Address::new(self.line - view.first_line, view.margin_width + self.index)
-    }
 }
 
 impl fmt::Display for Place {
@@ -508,8 +537,7 @@ impl Operation for ExecuteCommand {
         match paper.command_pattern.tokenize(&paper.sketch).get("command") {
             Some("see") => match paper.see_pattern.tokenize(&paper.sketch).get("path") {
                 Some(path) => {
-                    paper.path = String::from(path);
-                    paper.view = View::with_file(&paper.path);
+                    paper.view = View::with_file(String::from(path));
                     paper.noises.clear();
 
                     for line in 1..=paper.view.line_count {
@@ -519,7 +547,7 @@ impl Operation for ExecuteCommand {
                 None => {}
             },
             Some("put") => {
-                fs::write(&paper.path, &paper.view.data).unwrap();
+                paper.view.put();
             }
             Some("end") => return Some(Notice::Quit),
             Some(_) | None => {}
@@ -535,7 +563,7 @@ impl Operation for IdentifyNoise {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         let mut sections = Vec::new();
 
-        for line in 1..=paper.view.line_count() {
+        for line in 1..=paper.view.line_count {
             sections.push(Section::line(line));
         }
 
@@ -544,7 +572,7 @@ impl Operation for IdentifyNoise {
                 if let Some(id) = feature.chars().nth(0) {
                     for filter in paper.filters.iter() {
                         if id == filter.id() {
-                            filter.extract(feature, &mut sections, &paper.view.data);
+                            filter.extract(feature, &mut sections, &paper.view);
                             break;
                         }
                     }
@@ -555,10 +583,9 @@ impl Operation for IdentifyNoise {
         paper.noises.clear();
 
         for section in sections {
-            paper.ui.set_background(
-                &section.to_region(&paper.view),
-                2,
-            );
+            paper
+                .ui
+                .set_background(&paper.view.region_at_section(&section), 2);
             paper.noises.push(section);
         }
 
@@ -582,7 +609,7 @@ impl Operation for AddToSketch {
             }
         }
 
-        match paper.mode.enhance(&paper, &paper.view.data, &paper.noises) {
+        match paper.mode.enhance(&paper, &paper.view, &paper.noises) {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
                 for row in 0..paper.ui.window_height() {
@@ -591,17 +618,15 @@ impl Operation for AddToSketch {
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
-                    paper.ui.set_background(
-                        &noise.to_region(&paper.view),
-                        2,
-                    );
+                    paper
+                        .ui
+                        .set_background(&paper.view.region_at_section(&noise), 2);
                 }
 
                 for region in regions.iter() {
-                    paper.ui.set_background(
-                        &region.to_region(&paper.view),
-                        1,
-                    );
+                    paper
+                        .ui
+                        .set_background(&paper.view.region_at_section(&region), 1);
                 }
 
                 paper.signals = regions;
@@ -642,8 +667,7 @@ impl Operation for AddToView {
         paper.view.add(self.0);
 
         if paper.is_dirty {
-            paper.view.line_count = paper.view.data.lines().count();
-            paper.view.margin_width = digits_in_number(paper.view.line_count);
+            paper.view.clean();
             paper.write_view();
             paper.is_dirty = false;
         }
@@ -657,8 +681,9 @@ struct ScrollDown;
 
 impl Operation for ScrollDown {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        paper.view.first_line = cmp::min(paper.view.first_line + paper.scroll_height(), paper.view.line_count());
-
+        // TODO: Convert this after updating to 2018 edition.
+        let height = paper.scroll_height();
+        paper.view.scroll_down(height);
         paper.write_view();
         None
     }
@@ -814,7 +839,7 @@ impl Mode {
     }
 
     /// Returns the Enhancement to be added.
-    fn enhance(&self, paper: &Paper, view: &String, noises: &Vec<Section>) -> Option<Enhancement> {
+    fn enhance(&self, paper: &Paper, view: &View, noises: &Vec<Section>) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
                 let mut regions = noises.clone();
@@ -844,7 +869,7 @@ impl Mode {
 
 trait Filter: fmt::Debug {
     fn id(&self) -> char;
-    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Section>, view: &String);
+    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Section>, view: &View);
 }
 
 #[derive(Debug)]
@@ -872,7 +897,7 @@ impl Filter for LineFilter {
         '#'
     }
 
-    fn extract<'a>(&self, feature: &'a str, sections: &mut Vec<Section>, _view: &String) {
+    fn extract<'a>(&self, feature: &'a str, sections: &mut Vec<Section>, _view: &View) {
         let tokens = self.pattern.tokenize(feature);
 
         if let Some(line) = tokens.get("line") {
@@ -881,10 +906,7 @@ impl Filter for LineFilter {
             });
         } else if let (Some(line_start), Some(line_end)) = (tokens.get("start"), tokens.get("end"))
         {
-            if let (Ok(start), Ok(end)) = (
-                line_start.parse::<usize>(),
-                line_end.parse::<usize>(),
-            ) {
+            if let (Ok(start), Ok(end)) = (line_start.parse::<usize>(), line_end.parse::<usize>()) {
                 let top = cmp::min(start, end);
                 let bottom = cmp::max(start, end);
 
@@ -896,10 +918,9 @@ impl Filter for LineFilter {
         } else if let (Some(line_origin), Some(line_movement)) =
             (tokens.get("origin"), tokens.get("movement"))
         {
-            if let (Ok(origin), Ok(movement)) = (
-                line_origin.parse::<usize>(),
-                line_movement.parse::<isize>(),
-            ) {
+            if let (Ok(origin), Ok(movement)) =
+                (line_origin.parse::<usize>(), line_movement.parse::<isize>())
+            {
                 let end = (origin as isize + movement) as usize;
                 let top = cmp::min(origin, end);
                 let bottom = cmp::max(origin, end);
@@ -931,7 +952,7 @@ impl Filter for PatternFilter {
         '/'
     }
 
-    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Section>, view: &String) {
+    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Section>, view: &View) {
         if let Some(pattern) = self.pattern.tokenize(feature).get("pattern") {
             let noise = regions.clone();
             regions.clear();
