@@ -1,9 +1,4 @@
-extern crate paper;
-
-#[macro_use]
-extern crate clap;
-
-use clap::App;
+use clap::{App, crate_version, crate_authors};
 use paper::Paper;
 
 fn main() {

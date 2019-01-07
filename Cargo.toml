@@ -8,6 +8,7 @@ repository = "https://github.com/jsim2010/paper"
 readme = "README.md"
 keywords = ["editor", "mode", "filter"]
 categories = ["command-line-utilities", "text-editors"]
+edition = "2018"
 
 [dependencies]
 clap = "2.32.0"

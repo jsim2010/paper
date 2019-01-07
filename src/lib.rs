@@ -30,9 +30,6 @@
 
 #![doc(html_root_url = "https://docs.rs/paper/0.1.0")]
 
-extern crate rec;
-extern crate regex;
-
 mod ui;
 
 use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
@@ -40,7 +37,7 @@ use std::cmp;
 use std::fmt;
 use std::fs;
 use std::ops::{Add, AddAssign, SubAssign};
-use ui::{Address, Length, Region, UserInterface};
+use crate::ui::{Address, Length, Region, UserInterface};
 
 /// The paper application.
 #[derive(Debug, Default)]

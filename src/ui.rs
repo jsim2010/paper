@@ -1,7 +1,5 @@
 //! The interface between the user and the application.
-extern crate pancurses;
-
-use self::pancurses::Input;
+use pancurses::Input;
 use std::fmt;
 
 /// Character that represents the `Backspace` key.
