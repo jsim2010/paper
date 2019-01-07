@@ -193,36 +193,38 @@ impl fmt::Display for Address {
 
 /// Specifies the length of a Region.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub struct Length(i32);
+pub struct Length {
+    value: i32,
+}
 
 /// Value that represents the number of characters until the end of the line.
 const EOL_VALUE: i32 = -1;
 /// Length that represents the number of characters until the end of the line.
-pub const EOL: Length = Length(EOL_VALUE);
+pub const EOL: Length = Length { value: EOL_VALUE };
 
 impl Length {
     /// Converts to usize.
     pub fn to_usize(&self) -> usize {
-        self.0 as usize
+        self.value as usize
     }
 
     /// Converts to i32.
     pub fn as_i32(&self) -> &i32 {
-        &self.0
+        &self.value
     }
 }
 
 impl fmt::Display for Length {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.0 {
+        match self.value {
             EOL_VALUE => write!(f, "EOL"),
-            _ => write!(f, "{}", self.0),
+            x => write!(f, "{}", x),
         }
     }
 }
 
 impl From<usize> for Length {
     fn from(value: usize) -> Length {
-        Length(value as i32)
+        Length { value: value as i32 }
     }
 }

@@ -614,7 +614,7 @@ impl Operation for AddToSketch {
             }
         }
 
-        match paper.mode.enhance(&paper, &paper.noises) {
+        match paper.mode.enhance(&paper) {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
                 for row in 0..paper.ui.window_height() {
@@ -835,10 +835,10 @@ impl Mode {
     }
 
     /// Returns the Enhancement to be added.
-    fn enhance(&self, paper: &Paper, noises: &Vec<Section>) -> Option<Enhancement> {
+    fn enhance(&self, paper: &Paper) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
-                let mut regions = noises.clone();
+                let mut regions = paper.noises.clone();
 
                 if let Some(last_feature) = paper
                     .first_feature_pattern
