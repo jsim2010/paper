@@ -92,8 +92,8 @@ impl UserInterface {
         );
     }
 
-    /// Outputs a line.
-    pub fn set_line(&self, row: usize, line: String) {
+    /// Outputs a row.
+    pub fn set_row(&self, row: usize, line: String) {
         self.window.mv(row as i32, 0);
         self.window.addstr(line);
     }
@@ -132,6 +132,13 @@ impl Region {
         Region {
             start: address,
             length,
+        }
+    }
+
+    pub fn row(row: usize) -> Region {
+        Region {
+            start: Address::new(row, 0),
+            length: EOL,
         }
     }
 
