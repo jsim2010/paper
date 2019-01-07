@@ -37,7 +37,9 @@ use std::cmp;
 use std::fmt;
 use std::fs;
 use std::ops::{Add, AddAssign, SubAssign};
-use crate::ui::{Address, Length, Region, UserInterface};
+use crate::ui::{Address, Length, Region, UserInterface, Change, Edit};
+
+const ORIGIN_POINTER: Pointer = Pointer(Some(0));
 
 /// The paper application.
 #[derive(Debug, Default)]
@@ -61,7 +63,6 @@ pub struct Paper {
     noises: Vec<Section>,
     /// Path of the file being edited.
     path: String,
-    is_dirty: bool,
 }
 
 impl Paper {
@@ -100,9 +101,7 @@ impl Paper {
         self.ui.init();
 
         'main: loop {
-            let operations = self.mode.handle_input(self.ui.receive_input());
-
-            for operation in operations {
+            for operation in self.mode.handle_input(self.ui.receive_input()) {
                 match operation.operate(self) {
                     Some(Notice::Quit) => break 'main,
                     None => (),
@@ -114,7 +113,7 @@ impl Paper {
     }
 
     /// Displays the view on the user interface.
-    fn write_view(&mut self) {
+    fn display_view(&self) {
         self.ui.clear();
 
         for (row, s) in self.view.rows(self.ui.window_height()) {
@@ -132,10 +131,6 @@ fn digits_in_number(number: usize) -> usize {
     ((number + 1) as f32).log10().ceil() as usize
 }
 
-fn margin_width(line_count: usize) -> usize {
-    digits_in_number(line_count) + 1
-}
-
 #[derive(Clone, Debug)]
 struct View {
     data: String,
@@ -145,88 +140,74 @@ struct View {
     margin_width: usize,
     marks: Vec<Mark>,
     path: String,
+    is_dirty: bool,
 }
 
 impl View {
     fn with_file(path: String) -> View {
-        let data = fs::read_to_string(path.as_str()).unwrap().replace('\r', "");
-        let line_count = data.lines().count();
-
-        View {
-            data,
-            line_count,
+        let mut view = View {
+            data: fs::read_to_string(path.as_str()).unwrap().replace('\r', ""),
             first_line: 1,
-            margin_width: margin_width(line_count),
-            marks: vec![Default::default()],
             path: path,
-        }
+            ..Default::default()
+        };
+
+        view.clean();
+        view
     }
 
-    fn add_to_marks(&mut self, addition: &String) -> (Vec<Address>, Vec<Vec<Edit>>) {
-        let mut addresses = Vec::new();
+    fn add_to_marks(&mut self, addition: &String) -> Vec<Edit> {
         let mut edits = Vec::new();
         let mut adjustment = 0;
 
         for mark in self.marks.iter_mut() {
-            let mut new_edits = Vec::new();
+            let mut changes = Vec::new();
             mark.adjust(adjustment);
-            addresses.push(Address::new(
+            let address = Address::new(
                 mark.place.line - self.first_line,
                 self.margin_width + mark.place.index,
-            ));
-
-            let mut changes = Vec::new();
+            );
 
             for c in addition.chars() {
                 match c {
                     ui::BACKSPACE => {
-                        mark.pointer -= 1;
+                        if mark.pointer != ORIGIN_POINTER {
+                            mark.pointer -= 1;
 
-                        if mark.place.index == 0 {
-                            mark.place.line -= 1;
-                            mark.place.index =
-                                self.data.lines().nth(&mark.place.line - 1).unwrap().len();
-                            changes.push(Edit::Wash(-1));
+                            if mark.place.index == 0 {
+                                mark.place.line -= 1;
+                                mark.place.index =
+                                    self.data.lines().nth(&mark.place.line - 1).unwrap().len();
+                                adjustment -= 1;
+                                self.is_dirty = true;
+                            } else {
+                                mark.place.index -= 1;
+                            }
+
+                            adjustment -= 1;
+                            changes.push(Change::Backspace);
                         }
-
-                        mark.place.index -= 1;
-                        changes.push(Edit::Backspace);
                     }
                     ui::ENTER => {
                         mark.pointer += 1;
                         mark.place.line += 1;
                         mark.place.index = 0;
-                        changes.push(Edit::Wash(1));
+                        adjustment += 1;
+                        self.is_dirty = true;
                     }
                     _ => {
                         mark.place.index += 1;
                         mark.pointer += 1;
-
-                        changes.push(Edit::Add(c));
-                    }
-                }
-            }
-
-            for edit in changes {
-                match edit {
-                    Edit::Backspace => {
-                        adjustment -= 1;
-                    }
-                    Edit::Wash(x) => {
-                        adjustment += x;
-                    }
-                    Edit::Add(_) => {
                         adjustment += 1;
+                        changes.push(Change::Insert(c));
                     }
                 }
-
-                new_edits.push(edit);
             }
 
-            edits.push(new_edits);
+            edits.push(Edit::new(address, changes));
         }
 
-        (addresses, edits)
+        edits
     }
 
     fn set_marks(&mut self, edge: Edge, signals: &Vec<Section>) {
@@ -277,7 +258,8 @@ impl View {
 
     fn clean(&mut self) {
         self.line_count = self.lines().count();
-        self.margin_width = margin_width(self.line_count);
+        self.margin_width = digits_in_number(self.line_count) + 1;
+        self.is_dirty = false;
     }
 
     fn rows(&self, line_count: usize) -> impl Iterator<Item = (usize, String)> + '_ {
@@ -351,6 +333,7 @@ impl Default for View {
             margin_width: Default::default(),
             marks: vec![Default::default()],
             path: String::new(),
+            is_dirty: Default::default(),
         }
     }
 }
@@ -365,23 +348,6 @@ enum Edge {
 }
 
 impl fmt::Display for Edge {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-/// Indicates changes to the sketch and view to be made.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-enum Edit {
-    /// Removes the previous character from the sketch.
-    Backspace,
-    /// Clears the sketch and redraws the view.
-    Wash(isize),
-    /// Adds a character to the view.
-    Add(char),
-}
-
-impl fmt::Display for Edit {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self)
     }
@@ -500,7 +466,7 @@ struct Place {
 
 impl fmt::Display for Place {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ln {}, idx {}>", self.line, self.index)
+        write!(f, "ln {}, idx {}", self.line, self.index)
     }
 }
 
@@ -516,7 +482,7 @@ impl Operation for ChangeMode {
 
         match paper.mode {
             Mode::Display => {
-                paper.write_view();
+                paper.display_view();
             }
             Mode::Command | Mode::Filter => {
                 paper.view.reset_marks();
@@ -525,7 +491,7 @@ impl Operation for ChangeMode {
             }
             Mode::Action => {}
             Mode::Edit => {
-                paper.write_view();
+                paper.display_view();
                 paper.ui.move_to(&paper.view.address_at_mark(0));
                 paper.sketch.clear();
             }
@@ -639,25 +605,8 @@ impl Operation for AddToSketch {
             None => {}
         }
 
-        let (addresses, all_edits) = paper.view.add_to_marks(&self.0);
-        paper.is_dirty = false;
-
-        for (address, edits) in addresses.into_iter().zip(all_edits.into_iter()) {
-            paper.ui.move_to(&address);
-
-            for edit in edits {
-                match edit {
-                    Edit::Backspace => {
-                        paper.ui.delete_back();
-                    }
-                    Edit::Wash(_) => {
-                        paper.is_dirty = true;
-                    }
-                    Edit::Add(c) => {
-                        paper.ui.insert_char(c);
-                    }
-                }
-            }
+        for edit in paper.view.add_to_marks(&self.0) {
+            paper.ui.apply(edit);
         }
 
         paper.ui.move_to(&paper.view.address_at_mark(0));
@@ -671,10 +620,9 @@ impl Operation for AddToView {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         paper.view.add(self.0);
 
-        if paper.is_dirty {
+        if paper.view.is_dirty {
             paper.view.clean();
-            paper.write_view();
-            paper.is_dirty = false;
+            paper.display_view();
         }
 
         paper.ui.move_to(&paper.view.address_at_mark(0));
@@ -687,7 +635,7 @@ struct ScrollDown;
 impl Operation for ScrollDown {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         paper.view.scroll_down(paper.scroll_height());
-        paper.write_view();
+        paper.display_view();
         None
     }
 }
@@ -697,7 +645,7 @@ struct ScrollUp;
 impl Operation for ScrollUp {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         paper.view.scroll_up(paper.scroll_height());
-        paper.write_view();
+        paper.display_view();
         None
     }
 }

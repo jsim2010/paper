@@ -64,17 +64,23 @@ impl UserInterface {
         self.window.clear();
     }
 
-    /// Moves back 1 block and deletes the character there.
-    ///
-    /// All subsequent characters move one block to the left.
-    pub fn delete_back(&self) {
-        self.window.addch(BACKSPACE);
-        self.window.delch();
-    }
+    /// Applies edit to display.
+    pub fn apply(&self, edit: Edit) {
+        self.move_to(&edit.address);
 
-    /// Outputs a char, moving all subsequent characters to the right.
-    pub fn insert_char(&self, c: char) {
-        self.window.insch(c);
+        for change in edit.changes {
+            match change {
+                Change::Backspace => {
+                    // Adding BACKSPACE moves cursor 1 cell to the left but does not delete any
+                    // characters.
+                    self.window.addch(BACKSPACE);
+                    self.window.delch();
+                }
+                Change::Insert(c) => {
+                    self.window.insch(c);
+                }
+            }
+        }
     }
 
     /// Changes the background color of a [`Region`].
@@ -112,6 +118,34 @@ impl UserInterface {
 impl Default for UserInterface {
     fn default() -> UserInterface {
         UserInterface::new()
+    }
+}
+
+/// Indicates [`Change`]s for the [`UserInterface`] to make at an [`Address`].
+pub struct Edit {
+    address: Address,
+    changes: Vec<Change>,
+}
+
+impl Edit {
+    /// Creates a new [`Edit`].
+    pub fn new(address: Address, changes: Vec<Change>) -> Edit {
+        Edit { address, changes}
+    }
+}
+
+/// Indicates a change for the [`UserInterface`] to make.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum Change {
+    /// Removes the previous character, moving all subsequent characters to the left.
+    Backspace,
+    /// Inserts a character, moving all subsequent characters to the right.
+    Insert(char),
+}
+
+impl fmt::Display for Change {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 
