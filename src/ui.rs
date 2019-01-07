@@ -47,7 +47,7 @@ impl UserInterface {
     ///
     /// [`Option<char>`]: https://doc.rust-lang.org/std/option/enum.Option.html
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    pub fn get_input(&self) -> Option<char> {
+    pub fn receive_input(&self) -> Option<char> {
         match self.window.getch() {
             Some(Input::Character(c)) => Some(c),
             _ => None,
@@ -91,9 +91,9 @@ impl UserInterface {
     }
 
     /// Outputs a row.
-    pub fn set_row(&self, row: usize, line: String) {
+    pub fn set_row(&self, row: usize, data: String) {
         self.window.mv(row as i32, 0);
-        self.window.addstr(line);
+        self.window.addstr(data);
     }
 
     /// Moves the cursor to an [`Address`].

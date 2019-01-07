@@ -100,7 +100,7 @@ impl Paper {
         self.ui.init();
 
         'main: loop {
-            let operations = self.mode.handle_input(self.ui.get_input());
+            let operations = self.mode.handle_input(self.ui.receive_input());
 
             for operation in operations {
                 match operation.operate(self) {
