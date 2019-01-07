@@ -195,12 +195,26 @@ impl View {
 
     fn set_marks(&mut self, edge: Edge, signals: &Vec<Section>) {
         self.marks.clear();
-        let view = self.clone();
 
         for signal in signals.iter() {
-            self
-                .marks
-                .push(Marker { section: *signal }.generate_mark(edge, &view));
+            let mut place = signal.start;
+
+            if edge == Edge::End {
+                let length = signal.length;
+
+                place.index += match length {
+                    ui::EOL => self.line_length(&signal.start),
+                    _ => length.to_usize(),
+                };
+            }
+
+            self.marks.push(Mark {
+                place,
+                pointer: place.index + Pointer(match place.line {
+                    1 => Some(0),
+                    _ => self.data.match_indices(ui::ENTER).nth(place.line - 2).map(|x| x.0 + 1),
+                }),
+            });
         }
     }
 
@@ -290,32 +304,6 @@ impl fmt::Display for Edit {
     }
 }
 
-struct Marker {
-    section: Section,
-}
-
-impl Marker {
-    fn generate_mark(&self, edge: Edge, view: &View) -> Mark {
-        let mut place = self.section.start;
-
-        if edge == Edge::End {
-            place.index += self.length(view);
-        }
-
-        Mark::with_place(place, view)
-    }
-
-    /// Returns the number of characters included in the section of the marker.
-    fn length(&self, view: &View) -> usize {
-        let length = self.section.length;
-
-        match length {
-            ui::EOL => view.line_length(&self.section.start),
-            _ => length.to_usize(),
-        }
-    }
-}
-
 /// An address and its respective pointer in a view.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 struct Mark {
@@ -326,14 +314,6 @@ struct Mark {
 }
 
 impl Mark {
-    /// Creates a new mark at the given place.
-    fn with_place(place: Place, view: &View) -> Mark {
-        Mark {
-            place,
-            pointer: Pointer::with_place(place, view),
-        }
-    }
-
     /// Resets mark to default values.
     fn reset(&mut self) {
         self.pointer = Default::default();
@@ -395,22 +375,16 @@ impl fmt::Display for Mark {
 struct Pointer(Option<usize>);
 
 impl Pointer {
-    fn with_place(place: Place, view: &View) -> Pointer {
-        let p = match place.line {
-            1 => Default::default(),
-            _ => Pointer(
-                view.data
-                    .match_indices(ui::ENTER)
-                    .nth(place.line - 2)
-                    .map(|x| x.0 + 1),
-            ),
-        };
-
-        p + place.index
-    }
-
     fn to_usize(&self) -> Result<usize, ()> {
         self.0.ok_or(())
+    }
+}
+
+impl Add<Pointer> for usize {
+    type Output = Pointer;
+
+    fn add(self, other: Pointer) -> Pointer {
+        Pointer(other.0.map(|x| x + self))
     }
 }
 
