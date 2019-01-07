@@ -59,14 +59,11 @@ impl UserInterface {
         pancurses::endwin();
     }
 
-    /// Clears the output.
-    pub fn clear(&self) {
-        self.window.clear();
-    }
-
     /// Applies edit to display.
     pub fn apply(&self, edit: Edit) {
-        self.move_to(&edit.address);
+        if let Some(region) = edit.region {
+            self.window.mv(region.y(), region.x());
+        }
 
         for change in edit.changes {
             match change {
@@ -79,40 +76,23 @@ impl UserInterface {
                 Change::Insert(c) => {
                     self.window.insch(c);
                 }
-                Change::Add(c) => {
-                    self.window.addch(c);
+                Change::Add(s) => {
+                    self.window.addstr(s);
                 }
                 Change::ClearEol => {
                     self.window.clrtoeol();
                 }
+                Change::ClearAll => {
+                    self.window.clear();
+                }
+                Change::Format(color) => {
+                    eprintln!("{:?} {}", edit.region, color);
+                    if let Some(region) = edit.region {
+                        self.window.chgat(region.n(), pancurses::A_NORMAL, color);
+                    }
+                }
             }
         }
-    }
-
-    /// Changes the background color of a [`Region`].
-    ///
-    /// [`Region`]: struct.Region.html
-    pub fn set_background(&self, region: &Region, color_pair: i16) {
-        self.window.mvchgat(
-            region.y(),
-            region.x(),
-            region.n(),
-            pancurses::A_NORMAL,
-            color_pair,
-        );
-    }
-
-    /// Outputs a row.
-    pub fn set_row(&self, row: usize, data: String) {
-        self.window.mv(row as i32, 0);
-        self.window.addstr(data);
-    }
-
-    /// Moves the cursor to an [`Address`].
-    ///
-    /// [`Address`]: .struct.Address.html
-    pub fn move_to(&self, address: &Address) {
-        self.window.mv(address.y(), address.x());
     }
 
     /// Returns the height of the pane.
@@ -129,28 +109,34 @@ impl Default for UserInterface {
 
 /// Indicates [`Change`]s for the [`UserInterface`] to make at an [`Address`].
 pub struct Edit {
-    address: Address,
+    region: Option<Region>,
     changes: Vec<Change>,
 }
 
 impl Edit {
     /// Creates a new [`Edit`].
-    pub fn new(address: Address, changes: Vec<Change>) -> Edit {
-        Edit { address, changes}
+    pub fn new(region: Option<Region>, changes: Vec<Change>) -> Edit {
+        Edit { region, changes }
     }
 }
 
 /// Indicates a change for the [`UserInterface`] to make.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Change {
     /// Removes the previous character, moving all subsequent characters to the left.
     Backspace,
     /// Inserts a character, moving all subsequent characters to the right.
     Insert(char),
-    /// Adds a character at the current position, moving cursor to the right.
-    Add(char),
+    /// Adds a string at the current position, moving cursor to the right.
+    Add(String),
     /// Clears from cursor to the end of the line.
     ClearEol,
+    /// Clears the entire window.
+    ClearAll,
+    /// Sets formatting of region.
+    ///
+    /// For now, this just handles color.
+    Format(i16),
 }
 
 impl fmt::Display for Change {
@@ -174,6 +160,13 @@ impl Region {
         Region {
             start: address,
             length,
+        }
+    }
+
+    pub fn address(address: &Address) -> Region {
+        Region {
+            start: address.clone(),
+            length: Length::from(1),
         }
     }
 
@@ -269,6 +262,8 @@ impl fmt::Display for Length {
 
 impl From<usize> for Length {
     fn from(value: usize) -> Length {
-        Length { value: value as i32 }
+        Length {
+            value: value as i32,
+        }
     }
 }

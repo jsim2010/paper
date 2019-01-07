@@ -32,12 +32,12 @@
 
 mod ui;
 
+use crate::ui::{Address, Change, Edit, Length, Region, UserInterface};
 use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
 use std::cmp;
 use std::fmt;
 use std::fs;
 use std::ops::{Add, AddAssign, SubAssign};
-use crate::ui::{Address, Length, Region, UserInterface, Change, Edit};
 
 const ORIGIN_POINTER: Pointer = Pointer(Some(0));
 
@@ -63,7 +63,6 @@ pub struct Paper {
     noises: Vec<Section>,
     /// Path of the file being edited.
     path: String,
-    sketch_address: Address,
 }
 
 impl Paper {
@@ -115,10 +114,8 @@ impl Paper {
 
     /// Displays the view on the user interface.
     fn display_view(&self) {
-        self.ui.clear();
-
-        for (row, s) in self.view.rows(self.ui.window_height()) {
-            self.ui.set_row(row, s);
+        for edit in self.view.redraw(self.ui.window_height()) {
+            self.ui.apply(edit);
         }
     }
 
@@ -132,7 +129,7 @@ fn digits_in_number(number: usize) -> usize {
     ((number + 1) as f32).log10().ceil() as usize
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct View {
     data: String,
     first_line: usize,
@@ -157,13 +154,23 @@ impl View {
         view
     }
 
+    fn redraw(&self, line_count: usize) -> Vec<Edit> {
+        let mut edits = vec![Edit::new(None, vec![Change::ClearAll])];
+
+        for (row, data) in self.lines().skip(self.first_line - 1).take(line_count).enumerate() {
+            edits.push(Edit::new(Some(Region::row(row)), vec![Change::Add(format!("{:>width$} {}", self.first_line + row, data, width = self.margin_width - 1))]));
+        }
+
+        edits
+    }
+
     fn add_to_marks(&mut self, c: char) -> Vec<Edit> {
         let mut edits = Vec::new();
         let mut adjustment = 0;
 
         for mark in self.marks.iter_mut() {
             let mut changes = Vec::new();
-            mark.adjust(adjustment);
+            *mark += adjustment;
             let address = Address::new(
                 mark.place.line - self.first_line,
                 self.margin_width + mark.place.index,
@@ -207,14 +214,14 @@ impl View {
                 }
             }
 
-            edits.push(Edit::new(address, changes));
+            edits.push(Edit::new(Some(Region::address(&address)), changes));
         }
 
         edits
     }
 
     fn set_marks(&mut self, edge: Edge, signals: &Vec<Section>) {
-        self.marks.clear();
+        self.clear_marks();
 
         for signal in signals.iter() {
             let mut place = signal.start;
@@ -230,29 +237,32 @@ impl View {
 
             self.marks.push(Mark {
                 place,
-                pointer: place.index + Pointer(match place.line {
-                    1 => Some(0),
-                    _ => self
-                        .data
-                        .match_indices(ui::ENTER)
-                        .nth(place.line - 2)
-                        .map(|x| x.0 + 1),
-                }),
+                pointer: place.index
+                    + Pointer(match place.line {
+                        1 => Some(0),
+                        _ => self
+                            .data
+                            .match_indices(ui::ENTER)
+                            .nth(place.line - 2)
+                            .map(|x| x.0 + 1),
+                    }),
             });
         }
     }
 
-    fn reset_marks(&mut self) {
-        self.marks.truncate(1);
-        self.marks[0].reset();
+    fn clear_marks(&mut self) {
+        self.marks.clear();
     }
 
-    fn address_at_mark(&self, index: usize) -> Address {
-        self.address_at_place(&self.marks[index].place)
-    }
-
-    fn address_at_place(&self, place: &Place) -> Address {
-        Address::new(place.line - self.first_line, self.margin_width + place.index)
+    fn address_at_place(&self, place: &Place) -> Option<Address> {
+        if place.line < self.first_line {
+            None
+        } else {
+            Some(Address::new(
+                place.line - self.first_line,
+                self.margin_width + place.index,
+            ))
+        }
     }
 
     fn lines(&self) -> std::str::Lines {
@@ -265,29 +275,8 @@ impl View {
         self.is_dirty = false;
     }
 
-    fn rows(&self, line_count: usize) -> impl Iterator<Item = (usize, String)> + '_ {
-        self.lines()
-            .skip(self.first_line - 1)
-            .take(line_count)
-            .enumerate()
-            .map(move |x| {
-                (
-                    x.0,
-                    format!(
-                        "{:>width$} {}",
-                        self.first_line + x.0,
-                        x.1,
-                        width = self.margin_width - 1
-                    ),
-                )
-            })
-    }
-
     fn scroll_down(&mut self, scroll: usize) {
-        self.first_line = cmp::min(
-            self.first_line + scroll,
-            self.line_count,
-        );
+        self.first_line = cmp::min(self.first_line + scroll, self.line_count);
     }
 
     fn scroll_up(&mut self, scroll: usize) {
@@ -302,26 +291,12 @@ impl View {
         self.lines().nth(place.line - 1).unwrap().len()
     }
 
-    fn region_at_section(&self, section: &Section) -> Region {
-        Region::new(self.address_at_place(&section.start), section.length)
+    fn region_at_section(&self, section: &Section) -> Option<Region> {
+        self.address_at_place(&section.start).map(|x| Region::new(x, section.length))
     }
 
     fn put(&self) {
         fs::write(&self.path, &self.data).unwrap();
-    }
-}
-
-impl Default for View {
-    fn default() -> View {
-        View {
-            data: Default::default(),
-            first_line: Default::default(),
-            line_count: Default::default(),
-            margin_width: Default::default(),
-            marks: vec![Default::default()],
-            path: String::new(),
-            is_dirty: Default::default(),
-        }
     }
 }
 
@@ -349,16 +324,9 @@ struct Mark {
     place: Place,
 }
 
-impl Mark {
-    /// Resets mark to default values.
-    fn reset(&mut self) {
-        self.pointer = Default::default();
-        self.place.line = 1;
-        self.place.index = 0;
-    }
-
-    fn adjust(&mut self, adjustment: isize) {
-        self.pointer += adjustment;
+impl AddAssign<isize> for Mark {
+    fn add_assign(&mut self, other: isize) {
+        self.pointer += other;
     }
 }
 
@@ -472,14 +440,12 @@ impl Operation for ChangeMode {
                 paper.display_view();
             }
             Mode::Command | Mode::Filter => {
-                paper.view.reset_marks();
-                paper.ui.move_to(&Address::new(0, 0));
+                paper.view.clear_marks();
                 paper.sketch.clear();
             }
             Mode::Action => {}
             Mode::Edit => {
                 paper.display_view();
-                paper.ui.move_to(&paper.view.address_at_mark(0));
                 paper.sketch.clear();
             }
         }
@@ -541,13 +507,10 @@ impl Operation for IdentifyNoise {
         paper.noises.clear();
 
         for section in sections {
-            paper
-                .ui
-                .set_background(&paper.view.region_at_section(&section), 2);
+            paper.ui.apply(Edit::new(paper.view.region_at_section(&section), vec![Change::Format(2)]));
             paper.noises.push(section);
         }
 
-        paper.ui.move_to(&paper.view.address_at_mark(0));
         None
     }
 }
@@ -571,20 +534,16 @@ impl Operation for AddToSketch {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
                 for row in 0..paper.ui.window_height() {
-                    paper.ui.set_background(&Region::row(row), 0);
+                    paper.ui.apply(Edit::new(Some(Region::row(row)), vec![Change::Format(0)]));
                 }
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
-                    paper
-                        .ui
-                        .set_background(&paper.view.region_at_section(&noise), 2);
+                    paper.ui.apply(Edit::new(paper.view.region_at_section(noise), vec![Change::Format(2)]));
                 }
 
                 for region in regions.iter() {
-                    paper
-                        .ui
-                        .set_background(&paper.view.region_at_section(&region), 1);
+                    paper.ui.apply(Edit::new(paper.view.region_at_section(region), vec![Change::Format(1)]));
                 }
 
                 paper.signals = regions;
@@ -600,9 +559,7 @@ struct DrawSketch;
 
 impl Operation for DrawSketch {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        let mut changes: Vec<Change> = paper.sketch.chars().map(|x| Change::Add(x)).collect();
-        changes.push(Change::ClearEol);
-        paper.ui.apply(Edit::new(Address::new(0, 0), changes));
+        paper.ui.apply(Edit::new(Some(Region::row(0)), vec![Change::Add(paper.sketch.clone()), Change::ClearEol]));
         None
     }
 }
@@ -620,7 +577,6 @@ impl Operation for UpdateView {
             paper.display_view();
         }
 
-        paper.ui.move_to(&paper.view.address_at_mark(0));
         None
     }
 }

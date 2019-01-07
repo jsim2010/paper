@@ -1,4 +1,4 @@
-use clap::{App, crate_version, crate_authors};
+use clap::{crate_authors, crate_version, App};
 use paper::Paper;
 
 fn main() {
