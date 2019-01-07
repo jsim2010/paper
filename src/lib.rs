@@ -305,6 +305,14 @@ impl View {
         );
     }
 
+    fn scroll_up(&mut self, scroll: usize) {
+        if self.first_line <= scroll {
+            self.first_line = 1;
+        } else {
+            self.first_line -= scroll;
+        }
+    }
+
     fn line_length(&self, place: &Place) -> usize {
         self.lines().nth(place.line - 1).unwrap().len()
     }
@@ -606,7 +614,7 @@ impl Operation for AddToSketch {
             }
         }
 
-        match paper.mode.enhance(&paper, &paper.view, &paper.noises) {
+        match paper.mode.enhance(&paper, &paper.noises) {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
                 for row in 0..paper.ui.window_height() {
@@ -678,9 +686,7 @@ struct ScrollDown;
 
 impl Operation for ScrollDown {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        // TODO: Convert this after updating to 2018 edition.
-        let height = paper.scroll_height();
-        paper.view.scroll_down(height);
+        paper.view.scroll_down(paper.scroll_height());
         paper.write_view();
         None
     }
@@ -690,14 +696,7 @@ struct ScrollUp;
 
 impl Operation for ScrollUp {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        let movement = paper.scroll_height();
-
-        if paper.view.first_line <= movement {
-            paper.view.first_line = 1;
-        } else {
-            paper.view.first_line -= movement;
-        }
-
+        paper.view.scroll_up(paper.scroll_height());
         paper.write_view();
         None
     }
@@ -836,7 +835,7 @@ impl Mode {
     }
 
     /// Returns the Enhancement to be added.
-    fn enhance(&self, paper: &Paper, view: &View, noises: &Vec<Section>) -> Option<Enhancement> {
+    fn enhance(&self, paper: &Paper, noises: &Vec<Section>) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
                 let mut regions = noises.clone();
@@ -850,7 +849,7 @@ impl Mode {
                     if let Some(id) = last_feature.chars().nth(0) {
                         for filter in paper.filters.iter() {
                             if id == filter.id() {
-                                filter.extract(last_feature, &mut regions, view);
+                                filter.extract(last_feature, &mut regions, &paper.view);
                                 break;
                             }
                         }
