@@ -63,6 +63,7 @@ pub struct Paper {
     noises: Vec<Section>,
     /// Path of the file being edited.
     path: String,
+    sketch_address: Address,
 }
 
 impl Paper {
@@ -156,7 +157,7 @@ impl View {
         view
     }
 
-    fn add_to_marks(&mut self, addition: &String) -> Vec<Edit> {
+    fn add_to_marks(&mut self, c: char) -> Vec<Edit> {
         let mut edits = Vec::new();
         let mut adjustment = 0;
 
@@ -168,39 +169,41 @@ impl View {
                 self.margin_width + mark.place.index,
             );
 
-            for c in addition.chars() {
-                match c {
-                    ui::BACKSPACE => {
-                        if mark.pointer != ORIGIN_POINTER {
-                            mark.pointer -= 1;
+            match c {
+                ui::BACKSPACE => {
+                    if mark.pointer != ORIGIN_POINTER {
+                        mark.pointer -= 1;
 
-                            if mark.place.index == 0 {
-                                mark.place.line -= 1;
-                                mark.place.index =
-                                    self.data.lines().nth(&mark.place.line - 1).unwrap().len();
-                                adjustment -= 1;
-                                self.is_dirty = true;
-                            } else {
-                                mark.place.index -= 1;
-                            }
-
+                        if mark.place.index == 0 {
+                            mark.place.line -= 1;
+                            mark.place.index =
+                                self.data.lines().nth(&mark.place.line - 1).unwrap().len();
                             adjustment -= 1;
-                            changes.push(Change::Backspace);
+                            self.is_dirty = true;
+                        } else {
+                            mark.place.index -= 1;
                         }
+
+                        adjustment -= 1;
+                        changes.push(Change::Backspace);
                     }
-                    ui::ENTER => {
-                        mark.pointer += 1;
-                        mark.place.line += 1;
-                        mark.place.index = 0;
-                        adjustment += 1;
-                        self.is_dirty = true;
-                    }
-                    _ => {
-                        mark.place.index += 1;
-                        mark.pointer += 1;
-                        adjustment += 1;
-                        changes.push(Change::Insert(c));
-                    }
+
+                    self.data.remove(mark.pointer.to_usize());
+                }
+                ui::ENTER => {
+                    mark.pointer += 1;
+                    mark.place.line += 1;
+                    mark.place.index = 0;
+                    adjustment += 1;
+                    self.is_dirty = true;
+                    self.data.insert(mark.pointer.to_usize() - 1, c);
+                }
+                _ => {
+                    mark.place.index += 1;
+                    mark.pointer += 1;
+                    adjustment += 1;
+                    changes.push(Change::Insert(c));
+                    self.data.insert(mark.pointer.to_usize() - 1, c);
                 }
             }
 
@@ -299,22 +302,6 @@ impl View {
         self.lines().nth(place.line - 1).unwrap().len()
     }
 
-    fn add(&mut self, c: char) {
-        for mark in self.marks.iter() {
-            // Ignore the case where pointer is not valid.
-            if let Ok(i) = mark.pointer.to_usize() {
-                match c {
-                    ui::BACKSPACE => {
-                        self.data.remove(i);
-                    }
-                    _ => {
-                        self.data.insert(i - 1, c);
-                    }
-                }
-            }
-        }
-    }
-
     fn region_at_section(&self, section: &Section) -> Region {
         Region::new(self.address_at_place(&section.start), section.length)
     }
@@ -385,8 +372,8 @@ impl fmt::Display for Mark {
 struct Pointer(Option<usize>);
 
 impl Pointer {
-    fn to_usize(&self) -> Result<usize, ()> {
-        self.0.ok_or(())
+    fn to_usize(&self) -> usize {
+        self.0.unwrap()
     }
 }
 
@@ -605,20 +592,28 @@ impl Operation for AddToSketch {
             None => {}
         }
 
-        for edit in paper.view.add_to_marks(&self.0) {
-            paper.ui.apply(edit);
-        }
-
-        paper.ui.move_to(&paper.view.address_at_mark(0));
         None
     }
 }
 
-struct AddToView(char);
+struct DrawSketch;
 
-impl Operation for AddToView {
+impl Operation for DrawSketch {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        paper.view.add(self.0);
+        let mut changes: Vec<Change> = paper.sketch.chars().map(|x| Change::Add(x)).collect();
+        changes.push(Change::ClearEol);
+        paper.ui.apply(Edit::new(Address::new(0, 0), changes));
+        None
+    }
+}
+
+struct UpdateView(char);
+
+impl Operation for UpdateView {
+    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+        for edit in paper.view.add_to_marks(self.0) {
+            paper.ui.apply(edit);
+        }
 
         if paper.view.is_dirty {
             paper.view.clean();
@@ -734,6 +729,7 @@ impl Mode {
                     '#' | '/' => {
                         operations.push(Box::new(ChangeMode(Mode::Filter)));
                         operations.push(Box::new(AddToSketch(c.to_string())));
+                        operations.push(Box::new(DrawSketch));
                     }
                     'j' => operations.push(Box::new(ScrollDown)),
                     'k' => operations.push(Box::new(ScrollUp)),
@@ -745,16 +741,23 @@ impl Mode {
                         operations.push(Box::new(ChangeMode(Mode::Display)));
                     }
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
-                    _ => operations.push(Box::new(AddToSketch(c.to_string()))),
+                    _ => {
+                        operations.push(Box::new(AddToSketch(c.to_string())));
+                        operations.push(Box::new(DrawSketch));
+                    }
                 },
                 Mode::Filter => match c {
                     ui::ENTER => operations.push(Box::new(ChangeMode(Mode::Action))),
                     '\t' => {
                         operations.push(Box::new(IdentifyNoise));
                         operations.push(Box::new(AddToSketch(String::from("&&"))));
+                        operations.push(Box::new(DrawSketch));
                     }
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
-                    _ => operations.push(Box::new(AddToSketch(c.to_string()))),
+                    _ => {
+                        operations.push(Box::new(AddToSketch(c.to_string())));
+                        operations.push(Box::new(DrawSketch));
+                    }
                 },
                 Mode::Action => match c {
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
@@ -772,7 +775,7 @@ impl Mode {
                     ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
                     _ => {
                         operations.push(Box::new(AddToSketch(c.to_string())));
-                        operations.push(Box::new(AddToView(c)));
+                        operations.push(Box::new(UpdateView(c)));
                     }
                 },
             },

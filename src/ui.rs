@@ -79,6 +79,12 @@ impl UserInterface {
                 Change::Insert(c) => {
                     self.window.insch(c);
                 }
+                Change::Add(c) => {
+                    self.window.addch(c);
+                }
+                Change::ClearEol => {
+                    self.window.clrtoeol();
+                }
             }
         }
     }
@@ -141,6 +147,10 @@ pub enum Change {
     Backspace,
     /// Inserts a character, moving all subsequent characters to the right.
     Insert(char),
+    /// Adds a character at the current position, moving cursor to the right.
+    Add(char),
+    /// Clears from cursor to the end of the line.
+    ClearEol,
 }
 
 impl fmt::Display for Change {
