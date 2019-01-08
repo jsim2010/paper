@@ -37,7 +37,7 @@ use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
 use std::cmp;
 use std::fmt;
 use std::fs;
-use std::ops::{Add, AddAssign, SubAssign};
+use std::ops::{Add, AddAssign, Shr, SubAssign};
 
 const ORIGIN_POINTER: Pointer = Pointer(Some(0));
 
@@ -413,6 +413,17 @@ impl fmt::Display for Section {
 struct Place {
     line: usize,
     index: usize,
+}
+
+impl Shr<usize> for Place {
+    type Output = Place;
+
+    fn shr(self, rhs: usize) -> Place {
+        Place {
+            index: self.index + rhs,
+            ..self
+        }
+    }
 }
 
 impl fmt::Display for Place {
@@ -851,28 +862,29 @@ impl Filter for PatternFilter {
         '/'
     }
 
-    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Section>, view: &View) {
-        if let Some(pattern) = self.pattern.tokenize(feature).get("pattern") {
-            let noise = regions.clone();
-            regions.clear();
+    fn extract<'a>(&self, feature: &'a str, sections: &mut Vec<Section>, view: &View) {
+        if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
+            eprintln!("{}", user_pattern);
+            if let Ok(search_pattern) = Pattern::load(user_pattern.to_rec()) {
+                eprintln!("p: {:?}", search_pattern);
+                let target_sections = sections.clone();
+                sections.clear();
 
-            for region in noise {
-                let pre_filter = view
-                    .lines()
-                    .nth(region.start.line - 1)
-                    .unwrap()
-                    .chars()
-                    .skip(region.start.index)
-                    .collect::<String>();
+                for target_section in target_sections {
+                    let target = view
+                        .lines()
+                        .nth(target_section.start.line - 1)
+                        .unwrap()
+                        .chars()
+                        .skip(target_section.start.index)
+                        .collect::<String>();
 
-                for (key_index, key_match) in pre_filter.match_indices(pattern) {
-                    regions.push(Section {
-                        start: Place {
-                            line: region.start.line,
-                            index: region.start.index + key_index,
-                        },
-                        length: Length::from(key_match.len()),
-                    });
+                    for location in search_pattern.locate_iter(&target) {
+                        sections.push(Section {
+                            start: target_section.start >> location.start(),
+                            length: Length::from(location.length()),
+                        });
+                    }
                 }
             }
         }
