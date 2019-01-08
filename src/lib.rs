@@ -39,8 +39,6 @@ use std::fmt;
 use std::fs;
 use std::ops::{Add, AddAssign, Shr, SubAssign};
 
-const ORIGIN_POINTER: Pointer = Pointer(Some(0));
-
 /// The paper application.
 #[derive(Debug, Default)]
 pub struct Paper {
@@ -61,6 +59,7 @@ pub struct Paper {
     /// [`Section`]: .struct.Section.html
     signals: Vec<Section>,
     noises: Vec<Section>,
+    marks: Vec<Mark>,
     /// Path of the file being edited.
     path: String,
 }
@@ -132,7 +131,6 @@ struct View {
     line_count: usize,
     /// The number of characters needed to output everything in margin (ex: line numbers).
     margin_width: usize,
-    marks: Vec<Mark>,
     path: String,
     is_dirty: bool,
 }
@@ -150,6 +148,36 @@ impl View {
         view
     }
 
+    fn get_adjustment(&mut self, place: &Place, c: char) -> Adjustment {
+        let mut adjustment: Adjustment = Default::default();
+
+        match c {
+            ui::BACKSPACE => {
+                adjustment.shift = -1;
+
+                if place.index == 0 {
+                    adjustment.vertical = -1;
+                    adjustment.horizontal = self.line_length(place) as isize;
+                    self.is_dirty = true;
+                } else {
+                    adjustment.horizontal = -1;
+                }
+            }
+            ui::ENTER => {
+                adjustment.shift = 1;
+                adjustment.vertical = 1;
+                adjustment.horizontal = -(place.index as isize);
+                self.is_dirty = true;
+            }
+            _ => {
+                adjustment.shift = 1;
+                adjustment.horizontal = 1;
+            }
+        }
+
+        adjustment
+    }
+
     fn redraw(&self, line_count: usize) -> Vec<Edit> {
         let mut edits = vec![Edit::new(None, vec![Change::ClearAll])];
 
@@ -158,96 +186,6 @@ impl View {
         }
 
         edits
-    }
-
-    fn add_to_marks(&mut self, c: char) -> Vec<Edit> {
-        let mut edits = Vec::new();
-        let mut adjustment = 0;
-
-        for mark in self.marks.iter_mut() {
-            let mut changes = Vec::new();
-            *mark += adjustment;
-            let address = Address::new(
-                mark.place.line - self.first_line,
-                self.margin_width + mark.place.index,
-            );
-
-            match c {
-                ui::BACKSPACE => {
-                    if mark.pointer != ORIGIN_POINTER {
-                        mark.pointer -= 1;
-
-                        if mark.place.index == 0 {
-                            mark.place.line -= 1;
-                            mark.place.index =
-                                self.data.lines().nth(&mark.place.line - 1).unwrap().len();
-                            adjustment -= 1;
-                            self.is_dirty = true;
-                        } else {
-                            mark.place.index -= 1;
-                        }
-
-                        adjustment -= 1;
-                        changes.push(Change::Backspace);
-                    }
-
-                    self.data.remove(mark.pointer.to_usize());
-                }
-                ui::ENTER => {
-                    mark.pointer += 1;
-                    mark.place.line += 1;
-                    mark.place.index = 0;
-                    adjustment += 1;
-                    self.is_dirty = true;
-                    self.data.insert(mark.pointer.to_usize() - 1, c);
-                }
-                _ => {
-                    mark.place.index += 1;
-                    mark.pointer += 1;
-                    adjustment += 1;
-                    changes.push(Change::Insert(c));
-                    self.data.insert(mark.pointer.to_usize() - 1, c);
-                }
-            }
-
-            edits.push(Edit::new(Some(Region::address(address)), changes));
-        }
-
-        edits
-    }
-
-    fn set_marks(&mut self, edge: Edge, signals: &Vec<Section>) {
-        self.clear_marks();
-
-        for signal in signals.iter() {
-            let mut place = signal.start;
-
-            if edge == Edge::End {
-                let length = signal.length;
-
-                place.index += match length {
-                    ui::EOL => self.line_length(&signal.start),
-                    _ => length.to_usize(),
-                };
-            }
-
-            self.marks.push(Mark {
-                place,
-                pointer: place.index
-                    + Pointer(match place.line {
-                        1 => Some(0),
-                        _ => self
-                            .data
-                            .match_indices(ui::ENTER)
-                            .nth(place.line - 2)
-                            .map(|x| x.0 + 1),
-                    }),
-            });
-        }
-    }
-
-    fn clear_marks(&mut self) {
-        self.marks.clear();
     }
 
     fn address_at_place(&self, place: &Place) -> Option<Address> {
@@ -296,6 +234,19 @@ impl View {
     }
 }
 
+#[derive(Default)]
+struct Adjustment {
+    shift: isize,
+    vertical: isize,
+    horizontal: isize,
+}
+
+impl AddAssign for Adjustment {
+    fn add_assign(&mut self, other: Adjustment) {
+        self.shift += other.shift;
+    }
+}
+
 /// Indicates a specific Place of a given Section.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 enum Edge {
@@ -320,9 +271,20 @@ struct Mark {
     place: Place,
 }
 
-impl AddAssign<isize> for Mark {
-    fn add_assign(&mut self, other: isize) {
-        self.pointer += other;
+impl Mark {
+    fn add_to_view(&mut self, c: char, view: &mut View) -> Adjustment {
+        let adjustment = view.get_adjustment(&self.place, c);
+        self.adjust(&adjustment);
+        adjustment
+    }
+
+    fn adjust(&mut self, adjustment: &Adjustment) {
+        if -adjustment.shift < self.pointer.to_isize() {
+            self.pointer += adjustment.shift;
+        }
+
+        self.place.line = (self.place.line as isize + adjustment.vertical) as usize;
+        self.place.index = (self.place.index as isize + adjustment.horizontal) as usize;
     }
 }
 
@@ -338,6 +300,10 @@ struct Pointer(Option<usize>);
 impl Pointer {
     fn to_usize(&self) -> usize {
         self.0.unwrap()
+    }
+
+    fn to_isize(&self) -> isize {
+        self.0.unwrap() as isize
     }
 }
 
@@ -447,7 +413,7 @@ impl Operation for ChangeMode {
                 paper.display_view();
             }
             Mode::Command | Mode::Filter => {
-                paper.view.clear_marks();
+                paper.marks.clear();
                 paper.sketch.clear();
             }
             Mode::Action => {}
@@ -575,8 +541,33 @@ struct UpdateView(char);
 
 impl Operation for UpdateView {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        for edit in paper.view.add_to_marks(self.0) {
-            paper.ui.apply(edit);
+        let mut total_adjustment = Adjustment { shift: 0, horizontal: 0, vertical: 0 };
+
+        for mark in paper.marks.iter_mut() {
+            mark.adjust(&total_adjustment);
+            let address = Address::new(
+                mark.place.line - paper.view.first_line,
+                paper.view.margin_width + mark.place.index,
+            );
+
+            total_adjustment += mark.add_to_view(self.0, &mut paper.view);
+            let mut changes = Vec::new();
+
+            match self.0 {
+                ui::BACKSPACE => {
+                    changes.push(Change::Backspace);
+                    paper.view.data.remove(mark.pointer.to_usize());
+                }
+                ui::ENTER => {
+                    paper.view.data.insert(mark.pointer.to_usize() - 1, self.0);
+                }
+                _ => {
+                    changes.push(Change::Insert(self.0));
+                    paper.view.data.insert(mark.pointer.to_usize() - 1, self.0);
+                }
+            }
+
+            paper.ui.apply(Edit::new(Some(Region::address(address)), changes));
         }
 
         if paper.view.is_dirty {
@@ -612,7 +603,34 @@ struct SetMarks(Edge);
 
 impl Operation for SetMarks {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        paper.view.set_marks(self.0, &paper.signals);
+        paper.marks.clear();
+
+        for signal in paper.signals.iter() {
+            let mut place = signal.start;
+
+            if self.0 == Edge::End {
+                let length = signal.length;
+
+                place.index += match length {
+                    ui::EOL => paper.view.line_length(&signal.start),
+                    _ => length.to_usize(),
+                };
+            }
+
+            paper.marks.push(Mark {
+                place,
+                pointer: place.index
+                    + Pointer(match place.line {
+                        1 => Some(0),
+                        _ => paper.view
+                            .data
+                            .match_indices(ui::ENTER)
+                            .nth(place.line - 2)
+                            .map(|x| x.0 + 1),
+                    }),
+            });
+        }
+
         None
     }
 }
@@ -864,9 +882,7 @@ impl Filter for PatternFilter {
 
     fn extract<'a>(&self, feature: &'a str, sections: &mut Vec<Section>, view: &View) {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
-            eprintln!("{}", user_pattern);
             if let Ok(search_pattern) = Pattern::load(user_pattern.to_rec()) {
-                eprintln!("p: {:?}", search_pattern);
                 let target_sections = sections.clone();
                 sections.clear();
 
