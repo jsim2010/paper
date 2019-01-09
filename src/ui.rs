@@ -65,30 +65,26 @@ impl UserInterface {
             self.window.mv(region.y(), region.x());
         }
 
-        for change in edit.changes {
-            match change {
-                Change::Backspace => {
-                    // Adding BACKSPACE moves cursor 1 cell to the left but does not delete any
-                    // characters.
-                    self.window.addch(BACKSPACE);
-                    self.window.delch();
-                }
-                Change::Insert(c) => {
-                    self.window.insch(c);
-                }
-                Change::Add(s) => {
-                    self.window.addstr(s);
-                }
-                Change::ClearEol => {
-                    self.window.clrtoeol();
-                }
-                Change::ClearAll => {
-                    self.window.clear();
-                }
-                Change::Format(color) => {
-                    if let Some(region) = edit.region {
-                        self.window.chgat(region.n(), pancurses::A_NORMAL, color);
-                    }
+        match edit.change {
+            Change::Backspace => {
+                // Adding BACKSPACE moves cursor 1 cell to the left but does not delete any
+                // characters.
+                self.window.addch(BACKSPACE);
+                self.window.delch();
+            }
+            Change::Insert(c) => {
+                self.window.insch(c);
+            }
+            Change::Row(s) => {
+                self.window.addstr(s);
+                self.window.clrtoeol();
+            }
+            Change::Clear => {
+                self.window.clear();
+            }
+            Change::Format(color) => {
+                if let Some(region) = edit.region {
+                    self.window.chgat(region.n(), pancurses::A_NORMAL, color);
                 }
             }
         }
@@ -106,16 +102,16 @@ impl Default for UserInterface {
     }
 }
 
-/// Indicates [`Change`]s for the [`UserInterface`] to make at an [`Address`].
+/// Indicates a [`Change`] for the [`UserInterface`] to make at an [`Address`].
 pub struct Edit {
     region: Option<Region>,
-    changes: Vec<Change>,
+    change: Change,
 }
 
 impl Edit {
     /// Creates a new [`Edit`].
-    pub fn new(region: Option<Region>, changes: Vec<Change>) -> Edit {
-        Edit { region, changes }
+    pub fn new(region: Option<Region>, change: Change) -> Edit {
+        Edit { region, change }
     }
 }
 
@@ -126,12 +122,10 @@ pub enum Change {
     Backspace,
     /// Inserts a character, moving all subsequent characters to the right.
     Insert(char),
-    /// Adds a string at the current position, moving cursor to the right.
-    Add(String),
-    /// Clears from cursor to the end of the line.
-    ClearEol,
+    /// Adds a string at the current position, removing all subsequent characters.
+    Row(String),
     /// Clears the entire window.
-    ClearAll,
+    Clear,
     /// Sets formatting of region.
     ///
     /// For now, this just handles color.
