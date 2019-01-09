@@ -49,10 +49,6 @@ pub struct Paper {
     mode: Mode,
     /// Data of the file being edited.
     view: View,
-    command_pattern: Pattern,
-    see_pattern: Pattern,
-    first_feature_pattern: Pattern,
-    filters: Vec<Box<dyn Filter>>,
     /// Characters being edited to be analyzed by the application.
     sketch: String,
     /// [`Section`]s of the view that match the current filter.
@@ -61,42 +57,20 @@ pub struct Paper {
     signals: Vec<Section>,
     noises: Vec<Section>,
     marks: Vec<Mark>,
-    /// Path of the file being edited.
-    path: String,
+    patterns: PaperPatterns,
+    filters: Vec<Box<dyn Filter>>,
 }
 
 impl Paper {
     /// Creates a new paper application.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # use paper::Paper;
-    /// let paper = Paper::new();
-    /// ```
     pub fn new() -> Paper {
         Paper {
-            command_pattern: Pattern::define(
-                ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End),
-            ),
-            see_pattern: Pattern::define(
-                "see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path"),
-            ),
-            first_feature_pattern: Pattern::define(
-                ChCls::None("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
-            ),
             filters: vec![Box::new(LineFilter::new()), Box::new(PatternFilter::new())],
             ..Default::default()
         }
     }
 
     /// Runs the application.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// # use paper::Paper;
-    /// let mut paper = Paper::new();
-    /// paper.run();
-    /// ```
     pub fn run(&mut self) {
         self.ui.init();
 
@@ -122,6 +96,27 @@ impl Paper {
     /// Returns the height used for scrolling.
     fn scroll_height(&self) -> usize {
         self.ui.window_height() / 4
+    }
+}
+
+#[derive(Debug)]
+struct PaperPatterns {
+    command: Pattern,
+    see: Pattern,
+    first_feature: Pattern,
+}
+
+impl Default for PaperPatterns {
+    fn default() -> PaperPatterns {
+        PaperPatterns {
+            command: Pattern::define(
+                ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End),
+            ),
+            see: Pattern::define("see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path")),
+            first_feature: Pattern::define(
+                ChCls::None("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
+            ),
+        }
     }
 }
 
@@ -189,7 +184,10 @@ impl View {
 
                 if place.index == 0 {
                     *adjustment.lines_changed.entry(place.line).or_default() -= 1;
-                    *adjustment.indexes_changed.entry(place.line - 1).or_default() += self.line_length(place) as isize;
+                    *adjustment
+                        .indexes_changed
+                        .entry(place.line - 1)
+                        .or_default() += self.line_length(place) as isize;
                     self.is_dirty = true;
                 } else {
                     *adjustment.indexes_changed.entry(place.line).or_default() -= 1;
@@ -198,7 +196,10 @@ impl View {
             ui::ENTER => {
                 adjustment.shift = 1;
                 *adjustment.lines_changed.entry(place.line).or_default() += 1;
-                *adjustment.indexes_changed.entry(place.line + 1).or_default() -= place.index as isize;
+                *adjustment
+                    .indexes_changed
+                    .entry(place.line + 1)
+                    .or_default() -= place.index as isize;
                 self.is_dirty = true;
             }
             _ => {
@@ -214,8 +215,21 @@ impl View {
     fn redraw(&self, line_count: usize) -> Vec<Edit> {
         let mut edits = vec![Edit::new(None, Change::Clear)];
 
-        for (row, data) in self.lines().skip(self.first_line - 1).take(line_count).enumerate() {
-            edits.push(Edit::new(Some(Region::row(row)), Change::Row(format!("{:>width$} {}", self.first_line + row, data, width = self.margin_width - 1))));
+        for (row, data) in self
+            .lines()
+            .skip(self.first_line - 1)
+            .take(line_count)
+            .enumerate()
+        {
+            edits.push(Edit::new(
+                Some(Region::row(row)),
+                Change::Row(format!(
+                    "{:>width$} {}",
+                    self.first_line + row,
+                    data,
+                    width = self.margin_width - 1
+                )),
+            ));
         }
 
         edits
@@ -259,7 +273,8 @@ impl View {
     }
 
     fn region_at_section(&self, section: &Section) -> Option<Region> {
-        self.address_at_place(&section.start).map(|x| Region::new(x, section.length))
+        self.address_at_place(&section.start)
+            .map(|x| Region::new(x, section.length))
     }
 
     fn put(&self) {
@@ -469,8 +484,13 @@ struct ExecuteCommand;
 
 impl Operation for ExecuteCommand {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        match paper.command_pattern.tokenize(&paper.sketch).get("command") {
-            Some("see") => match paper.see_pattern.tokenize(&paper.sketch).get("path") {
+        match paper
+            .patterns
+            .command
+            .tokenize(&paper.sketch)
+            .get("command")
+        {
+            Some("see") => match paper.patterns.see.tokenize(&paper.sketch).get("path") {
                 Some(path) => {
                     paper.view = View::with_file(String::from(path));
                     paper.noises.clear();
@@ -502,7 +522,7 @@ impl Operation for IdentifyNoise {
             sections.push(Section::line(line));
         }
 
-        for tokens in paper.first_feature_pattern.tokenize_iter(&paper.sketch) {
+        for tokens in paper.patterns.first_feature.tokenize_iter(&paper.sketch) {
             if let Some(feature) = tokens.get("feature") {
                 if let Some(id) = feature.chars().nth(0) {
                     for filter in paper.filters.iter() {
@@ -518,7 +538,10 @@ impl Operation for IdentifyNoise {
         paper.noises.clear();
 
         for section in sections {
-            paper.ui.apply(Edit::new(paper.view.region_at_section(&section), Change::Format(2)));
+            paper.ui.apply(Edit::new(
+                paper.view.region_at_section(&section),
+                Change::Format(2),
+            ));
             paper.noises.push(section);
         }
 
@@ -545,16 +568,24 @@ impl Operation for AddToSketch {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
                 for row in 0..paper.ui.window_height() {
-                    paper.ui.apply(Edit::new(Some(Region::row(row)), Change::Format(0)));
+                    paper
+                        .ui
+                        .apply(Edit::new(Some(Region::row(row)), Change::Format(0)));
                 }
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
-                    paper.ui.apply(Edit::new(paper.view.region_at_section(noise), Change::Format(2)));
+                    paper.ui.apply(Edit::new(
+                        paper.view.region_at_section(noise),
+                        Change::Format(2),
+                    ));
                 }
 
                 for region in regions.iter() {
-                    paper.ui.apply(Edit::new(paper.view.region_at_section(region), Change::Format(1)));
+                    paper.ui.apply(Edit::new(
+                        paper.view.region_at_section(region),
+                        Change::Format(1),
+                    ));
                 }
 
                 paper.signals = regions;
@@ -570,7 +601,10 @@ struct DrawSketch;
 
 impl Operation for DrawSketch {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        paper.ui.apply(Edit::new(Some(Region::row(0)), Change::Row(paper.sketch.clone())));
+        paper.ui.apply(Edit::new(
+            Some(Region::row(0)),
+            Change::Row(paper.sketch.clone()),
+        ));
         None
     }
 }
@@ -639,7 +673,8 @@ impl Operation for SetMarks {
                 pointer: place.index
                     + Pointer(match place.line {
                         1 => Some(0),
-                        _ => paper.view
+                        _ => paper
+                            .view
                             .data
                             .match_indices(ui::ENTER)
                             .nth(place.line - 2)
@@ -790,7 +825,8 @@ impl Mode {
                 let mut regions = paper.noises.clone();
 
                 if let Some(last_feature) = paper
-                    .first_feature_pattern
+                    .patterns
+                    .first_feature
                     .tokenize_iter(&paper.sketch)
                     .last()
                     .and_then(|x| x.get("feature"))

@@ -150,10 +150,7 @@ pub struct Region {
 impl Region {
     /// Creates a Region
     pub fn new(start: Address, length: Length) -> Region {
-        Region {
-            start,
-            length,
-        }
+        Region { start, length }
     }
 
     pub fn address(address: Address) -> Region {
