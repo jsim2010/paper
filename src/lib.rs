@@ -35,6 +35,7 @@ mod ui;
 use crate::ui::{Address, Change, Edit, Length, Region, UserInterface};
 use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
 use std::cmp;
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::ops::{Add, AddAssign, Shr, SubAssign};
@@ -187,22 +188,22 @@ impl View {
                 adjustment.shift = -1;
 
                 if place.index == 0 {
-                    adjustment.lines_changed.push((place.line, -1));
-                    adjustment.indexes_changed.push((place.line - 1, self.line_length(place) as isize));
+                    *adjustment.lines_changed.entry(place.line).or_default() -= 1;
+                    *adjustment.indexes_changed.entry(place.line - 1).or_default() += self.line_length(place) as isize;
                     self.is_dirty = true;
                 } else {
-                    adjustment.indexes_changed.push((place.line, -1));
+                    *adjustment.indexes_changed.entry(place.line).or_default() -= 1;
                 }
             }
             ui::ENTER => {
                 adjustment.shift = 1;
-                adjustment.lines_changed.push((place.line, 1));
-                adjustment.indexes_changed.push((place.line + 1, -(place.index as isize)));
+                *adjustment.lines_changed.entry(place.line).or_default() += 1;
+                *adjustment.indexes_changed.entry(place.line + 1).or_default() -= place.index as isize;
                 self.is_dirty = true;
             }
             _ => {
                 adjustment.shift = 1;
-                adjustment.indexes_changed.push((place.line, 1));
+                *adjustment.indexes_changed.entry(place.line).or_default() += 1;
             }
         }
 
@@ -266,21 +267,18 @@ impl View {
     }
 }
 
-// TODO: Needs better storage of where lines and chars are added/removed so that it knows if a
-// given place needs to change.
 #[derive(Clone, Default, Debug)]
 struct Adjustment {
     shift: isize,
-    // TODO: Make these maps
-    lines_changed: Vec<(usize, isize)>,
-    indexes_changed: Vec<(usize, isize)>,
+    lines_changed: HashMap<usize, isize>,
+    indexes_changed: HashMap<usize, isize>,
 }
 
 impl AddAssign<&mut Adjustment> for Adjustment {
     fn add_assign(&mut self, other: &mut Adjustment) {
         self.shift += other.shift;
-        self.lines_changed.append(&mut other.lines_changed.clone());
-        self.indexes_changed.append(&mut other.indexes_changed.clone());
+        self.lines_changed.extend(&other.lines_changed);
+        self.indexes_changed.extend(&other.indexes_changed);
     }
 }
 
@@ -314,13 +312,13 @@ impl Mark {
             self.pointer += adjustment.shift;
         }
 
-        for (line, change) in adjustment.lines_changed.iter() {
+        for (line, change) in &adjustment.lines_changed {
             if line <= &self.place.line {
                 self.place.line = (self.place.line as isize + change) as usize;
             }
         }
 
-        for (line, change) in adjustment.indexes_changed.iter() {
+        for (line, change) in &adjustment.indexes_changed {
             if line == &self.place.line {
                 self.place.index = (self.place.index as isize + change) as usize;
             }
