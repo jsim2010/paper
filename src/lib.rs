@@ -88,7 +88,7 @@ impl Paper {
     /// Displays the view on the user interface.
     fn display_view(&self) {
         for edit in self.view.redraw_edits().take(self.ui.pane_height()) {
-            self.ui.apply(&edit);
+            self.ui.apply(edit);
         }
     }
 
@@ -244,50 +244,46 @@ struct Adjustment {
     shift: isize,
     line_change: isize,
     indexes_changed: HashMap<usize, isize>,
-    edit: Edit,
+    change: Change,
 }
 
 impl Adjustment {
     fn new(c: char, place: &Place, view: &View) -> Adjustment {
-        if let Some(region) = place.to_region(&view.origin) {
-            match c {
-                ui::BACKSPACE => {
-                    if place.index == 0 {
-                        return Adjustment {
-                            shift: -1,
-                            line_change: -1,
-                            indexes_changed: [(place.line - 1, view.line_length(place) as isize)].iter().cloned().collect(),
-                            edit: Edit::new(region, Change::Clear),
-                        }
-                    } else {
-                        return Adjustment {
-                            shift: -1,
-                            indexes_changed: [(place.line, -1)].iter().cloned().collect(),
-                            edit: Edit::new(region, Change::Backspace),
-                            ..Default::default()
-                        }
+        match c {
+            ui::BACKSPACE => {
+                if place.index == 0 {
+                    Adjustment {
+                        shift: -1,
+                        line_change: -1,
+                        indexes_changed: [(place.line - 1, view.line_length(place) as isize)].iter().cloned().collect(),
+                        change: Change::Clear,
                     }
-                }
-                ui::ENTER => {
-                    return Adjustment {
-                        shift: 1,
-                        line_change: 1,
-                        indexes_changed: [(place.line + 1, -(place.index as isize))].iter().cloned().collect(),
-                        edit: Edit::new(region, Change::Clear),
-                    }
-                }
-                _ => {
-                    return Adjustment {
-                        shift: 1,
-                        indexes_changed: [(place.line, 1)].iter().cloned().collect(),
-                        edit: Edit::new(region, Change::Insert(c)),
+                } else {
+                    Adjustment {
+                        shift: -1,
+                        indexes_changed: [(place.line, -1)].iter().cloned().collect(),
+                        change: Change::Backspace,
                         ..Default::default()
                     }
                 }
             }
+            ui::ENTER => {
+                Adjustment {
+                    shift: 1,
+                    line_change: 1,
+                    indexes_changed: [(place.line + 1, -(place.index as isize))].iter().cloned().collect(),
+                    change: Change::Clear,
+                }
+            }
+            _ => {
+                Adjustment {
+                    shift: 1,
+                    indexes_changed: [(place.line, 1)].iter().cloned().collect(),
+                    change: Change::Insert(c),
+                    ..Default::default()
+                }
+            }
         }
-
-        Default::default()
     }
 
     fn change_index(&mut self, line: usize, change: isize) {
@@ -304,8 +300,8 @@ impl AddAssign for Adjustment {
             self.change_index(*line, *change);
         }
 
-        if self.edit.change != Change::Clear {
-            self.edit = other.edit;
+        if self.change != Change::Clear {
+            self.change = other.change
         }
     }
 }
@@ -575,7 +571,7 @@ impl Operation for IdentifyNoise {
 
         for section in sections {
             if let Some(region) = section.to_region(&paper.view.origin) {
-                paper.ui.apply(&Edit::new(region, Change::Format(2)));
+                paper.ui.apply(Edit::new(region, Change::Format(2)));
             }
 
             paper.noises.push(section);
@@ -606,19 +602,19 @@ impl Operation for AddToSketch {
                 for row in 0..paper.ui.pane_height() {
                     paper
                         .ui
-                        .apply(&Edit::new(Region::row(row), Change::Format(0)));
+                        .apply(Edit::new(Region::row(row), Change::Format(0)));
                 }
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
                     if let Some(region) = noise.to_region(&paper.view.origin) {
-                        paper.ui.apply(&Edit::new(region, Change::Format(2)));
+                        paper.ui.apply(Edit::new(region, Change::Format(2)));
                     }
                 }
 
                 for section in sections.iter() {
                     if let Some(region) = section.to_region(&paper.view.origin) {
-                        paper.ui.apply(&Edit::new(region, Change::Format(1)));
+                        paper.ui.apply(Edit::new(region, Change::Format(1)));
                     }
                 }
 
@@ -635,7 +631,7 @@ struct DrawSketch;
 
 impl Operation for DrawSketch {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        paper.ui.apply(&Edit::new(
+        paper.ui.apply(Edit::new(
             Region::row(0),
             Change::Row(paper.sketch.clone()),
         ));
@@ -653,10 +649,10 @@ impl Operation for UpdateView {
         for mark in paper.marks.iter_mut() {
             adjustment += Adjustment::new(self.0, &mark.place, &paper.view);
 
-            if adjustment.edit.change == Change::Clear {
+            if adjustment.change == Change::Clear {
                 paper.view.is_dirty = true;
-            } else {
-                paper.ui.apply(&adjustment.edit);
+            } else if let Some(region) = mark.place.to_region(&paper.view.origin) {
+                paper.ui.apply(Edit::new(region, adjustment.change.clone()));
             }
 
             mark.adjust(&adjustment);
