@@ -159,14 +159,13 @@ struct View {
     origin: RelativePlace,
     line_count: usize,
     path: String,
-    is_dirty: bool,
 }
 
 impl View {
     fn with_file(path: String) -> View {
         let mut view = View {
             data: fs::read_to_string(path.as_str()).unwrap().replace('\r', ""),
-            origin: RelativePlace {line: 1, index: 0},
+            origin: RelativePlace { line: 1, index: 0 },
             path: path,
             ..Default::default()
         };
@@ -189,7 +188,7 @@ impl View {
     }
 
     fn redraw_edits<'a>(&'a self) -> impl Iterator<Item = Edit> + 'a {
-        // Start by clearing the screen.
+        // Clear the screen, then add each row.
         once(Edit::new(Default::default(), Change::Clear)).chain(
             self.lines()
                 .skip(self.origin.line - 1)
@@ -212,10 +211,13 @@ impl View {
         self.data.lines()
     }
 
+    fn line(&self, line_number: usize) -> Option<&str> {
+        self.lines().nth(line_number - 1)
+    }
+
     fn clean(&mut self) {
         self.line_count = self.lines().count();
         self.origin.index = -(((self.line_count + 1) as f32).log10().ceil() as isize + 1);
-        self.is_dirty = false;
     }
 
     fn scroll_down(&mut self, scroll: usize) {
@@ -231,7 +233,7 @@ impl View {
     }
 
     fn line_length(&self, place: &Place) -> usize {
-        self.lines().nth(place.line - 1).unwrap().len()
+        self.line(place.line).unwrap().len()
     }
 
     fn put(&self) {
@@ -248,46 +250,37 @@ struct Adjustment {
 }
 
 impl Adjustment {
-    fn new(c: char, place: &Place, view: &View) -> Adjustment {
-        match c {
-            ui::BACKSPACE => {
-                if place.index == 0 {
-                    Adjustment {
-                        shift: -1,
-                        line_change: -1,
-                        indexes_changed: [(place.line - 1, view.line_length(place) as isize)].iter().cloned().collect(),
-                        change: Change::Clear,
-                    }
-                } else {
-                    Adjustment {
-                        shift: -1,
-                        indexes_changed: [(place.line, -1)].iter().cloned().collect(),
-                        change: Change::Backspace,
-                        ..Default::default()
-                    }
-                }
-            }
-            ui::ENTER => {
-                Adjustment {
-                    shift: 1,
-                    line_change: 1,
-                    indexes_changed: [(place.line + 1, -(place.index as isize))].iter().cloned().collect(),
-                    change: Change::Clear,
-                }
-            }
-            _ => {
-                Adjustment {
-                    shift: 1,
-                    indexes_changed: [(place.line, 1)].iter().cloned().collect(),
-                    change: Change::Insert(c),
-                    ..Default::default()
-                }
-            }
+    fn new(line: usize, shift: isize, index_change: isize, change: Change) -> Adjustment {
+        let line_change = if change == Change::Clear { shift } else { 0 };
+
+        Adjustment {
+            shift,
+            line_change,
+            indexes_changed: [((line as isize + line_change) as usize, index_change)]
+                .iter()
+                .cloned()
+                .collect(),
+            change,
         }
     }
 
-    fn change_index(&mut self, line: usize, change: isize) {
-        *self.indexes_changed.entry(line).or_default() += change;
+    fn create(c: char, place: &Place, view: &View) -> Adjustment {
+        match c {
+            ui::BACKSPACE => {
+                if place.index == 0 {
+                    Adjustment::new(
+                        place.line,
+                        -1,
+                        view.line_length(place) as isize,
+                        Change::Clear,
+                    )
+                } else {
+                    Adjustment::new(place.line, -1, -1, Change::Backspace)
+                }
+            }
+            ui::ENTER => Adjustment::new(place.line, 1, -(place.index as isize), Change::Clear),
+            _ => Adjustment::new(place.line, 1, 1, Change::Insert(c)),
+        }
     }
 }
 
@@ -296,8 +289,8 @@ impl AddAssign for Adjustment {
         self.shift += other.shift;
         self.line_change += other.line_change;
 
-        for (line, change) in &other.indexes_changed {
-            self.change_index(*line, *change);
+        for (line, change) in other.indexes_changed {
+            *self.indexes_changed.entry(line).or_default() += change;
         }
 
         if self.change != Change::Clear {
@@ -334,15 +327,15 @@ impl Mark {
     fn adjust(&mut self, adjustment: &Adjustment) {
         if -adjustment.shift < self.pointer.to_isize() {
             self.pointer += adjustment.shift;
-        }
+            self.place.line = (self.place.line as isize + adjustment.line_change) as usize;
 
-        self.place.line = (self.place.line as isize + adjustment.line_change) as usize;
-
-        for (line, change) in &adjustment.indexes_changed {
-            if line == &self.place.line {
-                self.place.index = (self.place.index as isize + change) as usize;
+            for (&line, &change) in adjustment.indexes_changed.iter() {
+                if line == self.place.line {
+                    self.place.index = (self.place.index as isize + change) as usize;
+                }
             }
         }
+
     }
 }
 
@@ -427,7 +420,9 @@ impl Section {
     }
 
     fn to_region(&self, origin: &RelativePlace) -> Option<Region> {
-        self.start.to_address(origin).map(|x| Region::new(x, self.length))
+        self.start
+            .to_address(origin)
+            .map(|x| Region::new(x, self.length))
     }
 }
 
@@ -462,7 +457,8 @@ impl Place {
     }
 
     fn to_region(&self, origin: &RelativePlace) -> Option<Region> {
-        self.to_address(origin).map(|x| Region::new(x, Length::from(1)))
+        self.to_address(origin)
+            .map(|x| Region::new(x, Length::from(1)))
     }
 }
 
@@ -631,10 +627,9 @@ struct DrawSketch;
 
 impl Operation for DrawSketch {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        paper.ui.apply(Edit::new(
-            Region::row(0),
-            Change::Row(paper.sketch.clone()),
-        ));
+        paper
+            .ui
+            .apply(Edit::new(Region::row(0), Change::Row(paper.sketch.clone())));
         None
     }
 }
@@ -644,22 +639,21 @@ struct UpdateView(char);
 impl Operation for UpdateView {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         let mut adjustment: Adjustment = Default::default();
-        paper.view.is_dirty = false;
 
         for mark in paper.marks.iter_mut() {
-            adjustment += Adjustment::new(self.0, &mark.place, &paper.view);
+            adjustment += Adjustment::create(self.0, &mark.place, &paper.view);
 
             if adjustment.change == Change::Clear {
-                paper.view.is_dirty = true;
-            } else if let Some(region) = mark.place.to_region(&paper.view.origin) {
-                paper.ui.apply(Edit::new(region, adjustment.change.clone()));
+                if let Some(region) = mark.place.to_region(&paper.view.origin) {
+                    paper.ui.apply(Edit::new(region, adjustment.change.clone()));
+                }
             }
 
             mark.adjust(&adjustment);
             paper.view.add(mark, self.0);
         }
 
-        if paper.view.is_dirty {
+        if adjustment.change == Change::Clear {
             paper.view.clean();
             paper.display_view();
         }
@@ -979,8 +973,7 @@ impl Filter for PatternFilter {
 
                 for target_section in target_sections {
                     let target = view
-                        .lines()
-                        .nth(target_section.start.line - 1)
+                        .line(target_section.start.line)
                         .unwrap()
                         .chars()
                         .skip(target_section.start.index)

@@ -12,7 +12,7 @@ pub const ESC: char = '';
 
 /// The interface with the user.
 ///
-/// All output is displayed in a grid. A cursor is tracked and used to specify where requested
+/// All output is displayed in a grid of blocks. A cursor is tracked and used to specify where requested
 /// outputs appear.
 #[derive(Debug)]
 pub struct UserInterface {
@@ -81,7 +81,8 @@ impl UserInterface {
                 self.window.clear();
             }
             Change::Format(color) => {
-                self.window.chgat(edit.region.n(), pancurses::A_NORMAL, color);
+                self.window
+                    .chgat(edit.region.n(), pancurses::A_NORMAL, color);
             }
             Change::Nothing => {}
         }
@@ -114,9 +115,11 @@ impl Edit {
     }
 }
 
-/// Indicates a change for the [`UserInterface`] to make.
+/// Describes a change to the grid of a [`UserInterface`].
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Change {
+    /// Does nothing.
+    Nothing,
     /// Removes the previous character, moving all subsequent characters to the left.
     Backspace,
     /// Inserts a character, moving all subsequent characters to the right.
@@ -125,12 +128,10 @@ pub enum Change {
     Row(String),
     /// Clears the entire window.
     Clear,
-    /// Sets formatting of region.
+    /// Sets the formatting of region.
     ///
     /// For now, this just handles color.
     Format(i16),
-    /// Does nothing.
-    Nothing,
 }
 
 impl Default for Change {
@@ -145,21 +146,22 @@ impl fmt::Display for Change {
     }
 }
 
-/// Specifies a group of adjacent Addresses.
+/// Specifies a group of adjacent [`Address`]s.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
 pub struct Region {
-    /// First Address in the region.
+    /// The first [`Address`].
     start: Address,
-    /// The number of included Addresses.
+    /// The number of [`Address`]s that are included.
     length: Length,
 }
 
 impl Region {
-    /// Creates a Region
+    /// Creates a [`Region`] with a given starting [`Address`] and [`Length`].
     pub fn new(start: Address, length: Length) -> Region {
         Region { start, length }
     }
 
+    /// Creates a [`Region`] that represents an entire row.
     pub fn row(row: usize) -> Region {
         Region {
             start: Address::new(row, 0),
@@ -167,14 +169,21 @@ impl Region {
         }
     }
 
-    fn y(&self) -> i32 {
-        self.start.y()
-    }
-
+    /// Returns the column at which `self` starts.
+    ///
+    /// Used with the [`pancurses`] API.
     fn x(&self) -> i32 {
         self.start.x()
     }
 
+    /// Returns the row at which `self` starts.
+    ///
+    /// Used with the [`pancurses`] API.
+    fn y(&self) -> i32 {
+        self.start.y()
+    }
+
+    /// Returns the length of the region as specified by the [`pancurses`] API.
     fn n(&self) -> i32 {
         *self.length.as_i32()
     }
@@ -186,27 +195,31 @@ impl fmt::Display for Region {
     }
 }
 
-/// Location of a block in the pane.
+/// Describes the location of a block in the grid.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Address {
-    /// Index of the row that contains the block (including 0).
+    /// The index of the row that contains the block (starts at 0).
     row: usize,
-    /// Index of the column that contains the block (including 0).
+    /// The index of the column that contains the block (starts at 0).
     column: usize,
 }
 
 impl Address {
-    /// Creates a new Address at a given row and column.
+    /// Creates an [`Address`] with a given row and column.
     pub fn new(row: usize, column: usize) -> Address {
         Address { row, column }
     }
 
-    /// Returns the column of address.
+    /// Returns the column of `self`.
+    ///
+    /// Used with the [`pancurses`] API.
     fn x(&self) -> i32 {
         self.column as i32
     }
 
-    /// Returns the row of address.
+    /// Returns the row of `self`.
+    ///
+    /// Used with the [`pancurses`] API.
     fn y(&self) -> i32 {
         self.row as i32
     }
@@ -218,7 +231,10 @@ impl fmt::Display for Address {
     }
 }
 
-/// Specifies the length of a Region.
+/// Specifies a number of [`Address`]s.
+///
+/// Generally this is just a number. However, the special [`Length`] "[`EOL`]" signifies the number
+/// of [`Address`]s between a start [`Address`] and the end of that row.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Length(i32);
 
