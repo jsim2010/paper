@@ -90,8 +90,9 @@ impl UserInterface {
         }
     }
 
+    // TODO: Store this value and update when size is changed.
     /// Returns the height of the pane.
-    pub fn window_height(&self) -> usize {
+    pub fn pane_height(&self) -> usize {
         self.window.get_max_y() as usize
     }
 }

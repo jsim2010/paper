@@ -38,6 +38,7 @@ use std::cmp;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
+use std::iter::once;
 use std::ops::{Add, AddAssign, Shr, SubAssign};
 
 /// The paper application.
@@ -58,16 +59,13 @@ pub struct Paper {
     noises: Vec<Section>,
     marks: Vec<Mark>,
     patterns: PaperPatterns,
-    filters: Vec<Box<dyn Filter>>,
+    filters: PaperFilters,
 }
 
 impl Paper {
     /// Creates a new paper application.
     pub fn new() -> Paper {
-        Paper {
-            filters: vec![Box::new(LineFilter::new()), Box::new(PatternFilter::new())],
-            ..Default::default()
-        }
+        Default::default()
     }
 
     /// Runs the application.
@@ -76,9 +74,10 @@ impl Paper {
 
         'main: loop {
             for operation in self.mode.handle_input(self.ui.receive_input()) {
-                match operation.operate(self) {
-                    Some(Notice::Quit) => break 'main,
-                    None => (),
+                if let Some(notice) = operation.operate(self) {
+                    match notice {
+                        Notice::Quit => break 'main,
+                    }
                 }
             }
         }
@@ -88,14 +87,48 @@ impl Paper {
 
     /// Displays the view on the user interface.
     fn display_view(&self) {
-        for edit in self.view.redraw(self.ui.window_height()) {
+        for edit in self.view.redraw_edits().take(self.ui.pane_height()) {
             self.ui.apply(edit);
         }
     }
 
     /// Returns the height used for scrolling.
     fn scroll_height(&self) -> usize {
-        self.ui.window_height() / 4
+        self.ui.pane_height() / 4
+    }
+}
+
+#[derive(Debug, Default)]
+struct PaperFilters {
+    line: LineFilter,
+    pattern: PatternFilter,
+}
+
+impl PaperFilters {
+    fn iter(&self) -> PaperFiltersIter {
+        PaperFiltersIter {
+            index: 0,
+            filters: self,
+        }
+    }
+}
+
+struct PaperFiltersIter<'a> {
+    index: usize,
+    filters: &'a PaperFilters,
+}
+
+impl<'a> Iterator for PaperFiltersIter<'a> {
+    type Item = &'a Filter;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.index += 1;
+
+        match self.index {
+            1 => Some(&self.filters.line),
+            2 => Some(&self.filters.pattern),
+            _ => None,
+        }
     }
 }
 
@@ -123,10 +156,8 @@ impl Default for PaperPatterns {
 #[derive(Clone, Debug, Default)]
 struct View {
     data: String,
-    first_line: usize,
+    origin: RelativePlace,
     line_count: usize,
-    /// The number of characters needed to output everything in margin (ex: line numbers).
-    margin_width: usize,
     path: String,
     is_dirty: bool,
     adjustment: Adjustment,
@@ -136,7 +167,7 @@ impl View {
     fn with_file(path: String) -> View {
         let mut view = View {
             data: fs::read_to_string(path.as_str()).unwrap().replace('\r', ""),
-            first_line: 1,
+            origin: RelativePlace {line: 1, index: 0},
             path: path,
             ..Default::default()
         };
@@ -149,12 +180,10 @@ impl View {
         self.adjustment = Default::default();
     }
 
-    fn add_to_mark(&mut self, c: char, mark: &mut Mark) -> Option<Edit> {
+    fn add_to_mark(&mut self, mark: &mut Mark, c: char) -> Option<Edit> {
         mark.adjust(&self.adjustment);
-        let region = Some(Region::address(Address::new(
-            mark.place.line - self.first_line,
-            self.margin_width + mark.place.index,
-        )));
+        // TODO: Make Ui accept Addressable objects so we can give addresses and regions.
+        let region = Some(Region::address(mark.place.to_address(&self.origin)));
 
         mark.adjust(&self.add_adjustment(&mark.place, c));
         let index = mark.pointer.to_usize();
@@ -183,65 +212,56 @@ impl View {
                 adjustment.shift = -1;
 
                 if place.index == 0 {
-                    *adjustment.lines_changed.entry(place.line).or_default() -= 1;
-                    *adjustment
-                        .indexes_changed
-                        .entry(place.line - 1)
-                        .or_default() += self.line_length(place) as isize;
+                    adjustment.change_line(place.line, -1);
+                    adjustment.change_index(place.line - 1, self.line_length(place) as isize);
                     self.is_dirty = true;
                 } else {
-                    *adjustment.indexes_changed.entry(place.line).or_default() -= 1;
+                    adjustment.change_index(place.line, -1);
                 }
             }
             ui::ENTER => {
                 adjustment.shift = 1;
-                *adjustment.lines_changed.entry(place.line).or_default() += 1;
-                *adjustment
-                    .indexes_changed
-                    .entry(place.line + 1)
-                    .or_default() -= place.index as isize;
+                adjustment.change_line(place.line, 1);
+                adjustment.change_index(place.line + 1, -(place.index as isize));
                 self.is_dirty = true;
             }
             _ => {
                 adjustment.shift = 1;
-                *adjustment.indexes_changed.entry(place.line).or_default() += 1;
+                adjustment.change_index(place.line, 1);
             }
         }
 
-        self.adjustment += &mut adjustment;
+        self.adjustment += &adjustment;
         adjustment
     }
 
-    fn redraw(&self, line_count: usize) -> Vec<Edit> {
-        let mut edits = vec![Edit::new(None, Change::Clear)];
-
-        for (row, data) in self
-            .lines()
-            .skip(self.first_line - 1)
-            .take(line_count)
-            .enumerate()
-        {
-            edits.push(Edit::new(
-                Some(Region::row(row)),
-                Change::Row(format!(
-                    "{:>width$} {}",
-                    self.first_line + row,
-                    data,
-                    width = self.margin_width - 1
-                )),
-            ));
-        }
-
-        edits
+    fn redraw_edits<'a>(&'a self) -> impl Iterator<Item = Edit> + 'a {
+        // Start by clearing the screen.
+        once(Edit::new(None, Change::Clear)).chain(
+            self.lines()
+                .skip(self.origin.line - 1)
+                .enumerate()
+                .map(move |x| {
+                    Edit::new(
+                        Some(Region::row(x.0)),
+                        Change::Row(format!(
+                            "{:>width$} {}",
+                            self.origin.line + x.0,
+                            x.1,
+                            width = (-self.origin.index - 1) as usize
+                        )),
+                    )
+                }),
+        )
     }
 
     fn address_at_place(&self, place: &Place) -> Option<Address> {
-        if place.line < self.first_line {
+        if place.line < self.origin.line {
             None
         } else {
             Some(Address::new(
-                place.line - self.first_line,
-                self.margin_width + place.index,
+                place.line - self.origin.line,
+                (place.index as isize - self.origin.index) as usize,
             ))
         }
     }
@@ -252,19 +272,19 @@ impl View {
 
     fn clean(&mut self) {
         self.line_count = self.lines().count();
-        self.margin_width = ((self.line_count + 1) as f32).log10().ceil() as usize + 1;
+        self.origin.index = -(((self.line_count + 1) as f32).log10().ceil() as isize + 1);
         self.is_dirty = false;
     }
 
     fn scroll_down(&mut self, scroll: usize) {
-        self.first_line = cmp::min(self.first_line + scroll, self.line_count);
+        self.origin.line = cmp::min(self.origin.line + scroll, self.line_count);
     }
 
     fn scroll_up(&mut self, scroll: usize) {
-        if self.first_line <= scroll {
-            self.first_line = 1;
+        if self.origin.line <= scroll {
+            self.origin.line = 1;
         } else {
-            self.first_line -= scroll;
+            self.origin.line -= scroll;
         }
     }
 
@@ -289,11 +309,27 @@ struct Adjustment {
     indexes_changed: HashMap<usize, isize>,
 }
 
-impl AddAssign<&mut Adjustment> for Adjustment {
-    fn add_assign(&mut self, other: &mut Adjustment) {
+impl Adjustment {
+    fn change_line(&mut self, line: usize, change: isize) {
+        *self.lines_changed.entry(line).or_default() += change;
+    }
+
+    fn change_index(&mut self, line: usize, change: isize) {
+        *self.indexes_changed.entry(line).or_default() += change;
+    }
+}
+
+impl AddAssign<&Adjustment> for Adjustment {
+    fn add_assign(&mut self, other: &Adjustment) {
         self.shift += other.shift;
-        self.lines_changed.extend(&other.lines_changed);
-        self.indexes_changed.extend(&other.indexes_changed);
+
+        for (line, change) in &other.lines_changed {
+            self.change_line(*line, *change);
+        }
+
+        for (line, change) in &other.indexes_changed {
+            self.change_index(*line, *change);
+        }
     }
 }
 
@@ -428,10 +464,25 @@ impl fmt::Display for Section {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct RelativePlace {
+    line: usize,
+    index: isize,
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 struct Place {
     line: usize,
     index: usize,
+}
+
+impl Place {
+    fn to_address(&self, origin: &RelativePlace) -> Address {
+        Address::new(
+            self.line - origin.line,
+            (self.index as isize - origin.index) as usize,
+        )
+    }
 }
 
 impl Shr<usize> for Place {
@@ -567,7 +618,7 @@ impl Operation for AddToSketch {
         match paper.mode.enhance(&paper) {
             Some(Enhancement::FilterRegions(regions)) => {
                 // Clear filter background.
-                for row in 0..paper.ui.window_height() {
+                for row in 0..paper.ui.pane_height() {
                     paper
                         .ui
                         .apply(Edit::new(Some(Region::row(row)), Change::Format(0)));
@@ -616,7 +667,7 @@ impl Operation for UpdateView {
         paper.view.start();
 
         for mark in paper.marks.iter_mut() {
-            if let Some(edit) = paper.view.add_to_mark(self.0, mark) {
+            if let Some(edit) = paper.view.add_to_mark(mark, self.0) {
                 paper.ui.apply(edit);
             }
         }
@@ -751,12 +802,13 @@ impl Default for Mode {
 }
 
 impl Mode {
+    // TODO: Can this be converted to return an Iterator?
     /// Returns the operations to be executed based on user input.
     fn handle_input(&self, input: Option<char>) -> Vec<Box<dyn Operation>> {
         let mut operations: Vec<Box<dyn Operation>> = Vec::new();
 
-        match input {
-            Some(c) => match *self {
+        if let Some(c) = input {
+            match *self {
                 Mode::Display => match c {
                     '.' => operations.push(Box::new(ChangeMode(Mode::Command))),
                     '#' | '/' => {
@@ -811,8 +863,7 @@ impl Mode {
                         operations.push(Box::new(UpdateView(c)));
                     }
                 },
-            },
-            None => {}
+            }
         }
 
         operations
@@ -858,8 +909,8 @@ struct LineFilter {
     pattern: Pattern,
 }
 
-impl LineFilter {
-    fn new() -> LineFilter {
+impl Default for LineFilter {
+    fn default() -> LineFilter {
         LineFilter {
             pattern: Pattern::define(
                 "#" + (ChCls::Digit.rpt(SOME).name("line") + ChCls::End
@@ -920,8 +971,8 @@ struct PatternFilter {
     pattern: Pattern,
 }
 
-impl PatternFilter {
-    fn new() -> PatternFilter {
+impl Default for PatternFilter {
+    fn default() -> PatternFilter {
         PatternFilter {
             pattern: Pattern::define("/" + ChCls::Any.rpt(SOME).name("pattern")),
         }
