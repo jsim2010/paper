@@ -182,26 +182,28 @@ impl View {
 
     fn add_to_mark(&mut self, mark: &mut Mark, c: char) -> Option<Edit> {
         mark.adjust(&self.adjustment);
-        // TODO: Make Ui accept Addressable objects so we can give addresses and regions.
-        let region = Region::address(mark.place.to_address(&self.origin));
 
-        mark.adjust(&self.add_adjustment(&mark.place, c));
-        let index = mark.pointer.to_usize();
+        if let Some(region) = mark.place.to_region(&self.origin) {
+            mark.adjust(&self.add_adjustment(&mark.place, c));
+            let index = mark.pointer.to_usize();
 
-        match c {
-            ui::BACKSPACE => {
-                self.data.remove(index);
-                Some(Edit::new(region, Change::Backspace))
-            }
-            ui::ENTER => {
-                self.data.insert(index - 1, c);
-                None
-            }
-            _ => {
-                self.data.insert(index - 1, c);
-                Some(Edit::new(region, Change::Insert(c)))
+            match c {
+                ui::BACKSPACE => {
+                    self.data.remove(index);
+                    return Some(Edit::new(region, Change::Backspace))
+                }
+                ui::ENTER => {
+                    self.data.insert(index - 1, c);
+                    return None
+                }
+                _ => {
+                    self.data.insert(index - 1, c);
+                    return Some(Edit::new(region, Change::Insert(c)))
+                }
             }
         }
+
+        None
     }
 
     fn add_adjustment(&mut self, place: &Place, c: char) -> Adjustment {
@@ -255,17 +257,6 @@ impl View {
         )
     }
 
-    fn address_at_place(&self, place: &Place) -> Option<Address> {
-        if place.line < self.origin.line {
-            None
-        } else {
-            Some(Address::new(
-                place.line - self.origin.line,
-                (place.index as isize - self.origin.index) as usize,
-            ))
-        }
-    }
-
     fn lines(&self) -> std::str::Lines {
         self.data.lines()
     }
@@ -290,11 +281,6 @@ impl View {
 
     fn line_length(&self, place: &Place) -> usize {
         self.lines().nth(place.line - 1).unwrap().len()
-    }
-
-    fn region_at_section(&self, section: &Section) -> Option<Region> {
-        self.address_at_place(&section.start)
-            .map(|x| Region::new(x, section.length))
     }
 
     fn put(&self) {
@@ -456,6 +442,10 @@ impl Section {
             length: ui::EOL,
         }
     }
+
+    fn to_region(&self, origin: &RelativePlace) -> Option<Region> {
+        self.start.to_address(origin).map(|x| Region::new(x, self.length))
+    }
 }
 
 impl fmt::Display for Section {
@@ -477,11 +467,19 @@ struct Place {
 }
 
 impl Place {
-    fn to_address(&self, origin: &RelativePlace) -> Address {
-        Address::new(
-            self.line - origin.line,
-            (self.index as isize - origin.index) as usize,
-        )
+    fn to_address(&self, origin: &RelativePlace) -> Option<Address> {
+        if self.line < origin.line {
+            None
+        } else {
+            Some(Address::new(
+                self.line - origin.line,
+                (self.index as isize - origin.index) as usize,
+            ))
+        }
+    }
+
+    fn to_region(&self, origin: &RelativePlace) -> Option<Region> {
+        self.to_address(origin).map(|x| Region::new(x, Length::from(1)))
     }
 }
 
@@ -589,7 +587,7 @@ impl Operation for IdentifyNoise {
         paper.noises.clear();
 
         for section in sections {
-            if let Some(region) = paper.view.region_at_section(&section) {
+            if let Some(region) = section.to_region(&paper.view.origin) {
                 paper.ui.apply(Edit::new(region, Change::Format(2)));
             }
 
@@ -616,7 +614,7 @@ impl Operation for AddToSketch {
         }
 
         match paper.mode.enhance(&paper) {
-            Some(Enhancement::FilterRegions(regions)) => {
+            Some(Enhancement::FilterSections(sections)) => {
                 // Clear filter background.
                 for row in 0..paper.ui.pane_height() {
                     paper
@@ -626,18 +624,18 @@ impl Operation for AddToSketch {
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
-                    if let Some(region) = paper.view.region_at_section(noise) {
+                    if let Some(region) = noise.to_region(&paper.view.origin) {
                         paper.ui.apply(Edit::new(region, Change::Format(2)));
                     }
                 }
 
-                for region in regions.iter() {
-                    if let Some(region) = paper.view.region_at_section(region) {
+                for section in sections.iter() {
+                    if let Some(region) = section.to_region(&paper.view.origin) {
                         paper.ui.apply(Edit::new(region, Change::Format(1)));
                     }
                 }
 
-                paper.signals = regions;
+                paper.signals = sections;
             }
             None => {}
         }
@@ -740,14 +738,14 @@ impl Operation for SetMarks {
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 enum Enhancement {
     /// Highlights specified regions.
-    FilterRegions(Vec<Section>),
+    FilterSections(Vec<Section>),
 }
 
 impl fmt::Display for Enhancement {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Enhancement::FilterRegions(regions) => {
-                write!(f, "FilterRegions [")?;
+            Enhancement::FilterSections(regions) => {
+                write!(f, "FilterSections [")?;
 
                 for region in regions {
                     write!(f, "  {}", region)?;
@@ -871,7 +869,7 @@ impl Mode {
     fn enhance(&self, paper: &Paper) -> Option<Enhancement> {
         match *self {
             Mode::Filter => {
-                let mut regions = paper.noises.clone();
+                let mut sections = paper.noises.clone();
 
                 if let Some(last_feature) = paper
                     .patterns
@@ -883,14 +881,14 @@ impl Mode {
                     if let Some(id) = last_feature.chars().nth(0) {
                         for filter in paper.filters.iter() {
                             if id == filter.id() {
-                                filter.extract(last_feature, &mut regions, &paper.view);
+                                filter.extract(last_feature, &mut sections, &paper.view);
                                 break;
                             }
                         }
                     }
                 }
 
-                Some(Enhancement::FilterRegions(regions))
+                Some(Enhancement::FilterSections(sections))
             }
             Mode::Display | Mode::Command | Mode::Action | Mode::Edit => None,
         }
@@ -899,7 +897,7 @@ impl Mode {
 
 trait Filter: fmt::Debug {
     fn id(&self) -> char;
-    fn extract<'a>(&self, feature: &'a str, regions: &mut Vec<Section>, view: &View);
+    fn extract<'a>(&self, feature: &'a str, sections: &mut Vec<Section>, view: &View);
 }
 
 #[derive(Debug)]

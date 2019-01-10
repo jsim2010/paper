@@ -150,13 +150,6 @@ impl Region {
         Region { start, length }
     }
 
-    pub fn address(address: Address) -> Region {
-        Region {
-            start: address,
-            length: Length::from(1),
-        }
-    }
-
     pub fn row(row: usize) -> Region {
         Region {
             start: Address::new(row, 0),
