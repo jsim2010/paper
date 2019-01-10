@@ -60,10 +60,10 @@ impl UserInterface {
     }
 
     /// Applies edit to display.
-    pub fn apply(&self, edit: Edit) {
+    pub fn apply(&self, edit: &Edit) {
         self.window.mv(edit.region.y(), edit.region.x());
 
-        match edit.change {
+        match &edit.change {
             Change::Backspace => {
                 // Adding BACKSPACE moves cursor 1 cell to the left but does not delete any
                 // characters.
@@ -71,7 +71,7 @@ impl UserInterface {
                 self.window.delch();
             }
             Change::Insert(c) => {
-                self.window.insch(c);
+                self.window.insch(*c);
             }
             Change::Row(s) => {
                 self.window.addstr(s);
@@ -81,8 +81,9 @@ impl UserInterface {
                 self.window.clear();
             }
             Change::Format(color) => {
-                self.window.chgat(edit.region.n(), pancurses::A_NORMAL, color);
+                self.window.chgat(edit.region.n(), pancurses::A_NORMAL, *color);
             }
+            Change::Nothing => {}
         }
     }
 
@@ -100,9 +101,11 @@ impl Default for UserInterface {
 }
 
 /// Indicates a [`Change`] for the [`UserInterface`] to make on a [`Region`].
+#[derive(Clone, Debug, Default)]
 pub struct Edit {
     region: Region,
-    change: Change,
+    // TODO: This should go back to private.
+    pub change: Change,
 }
 
 impl Edit {
@@ -127,6 +130,14 @@ pub enum Change {
     ///
     /// For now, this just handles color.
     Format(i16),
+    /// Does nothing.
+    Nothing,
+}
+
+impl Default for Change {
+    fn default() -> Change {
+        Change::Nothing
+    }
 }
 
 impl fmt::Display for Change {

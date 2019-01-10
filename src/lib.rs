@@ -88,7 +88,7 @@ impl Paper {
     /// Displays the view on the user interface.
     fn display_view(&self) {
         for edit in self.view.redraw_edits().take(self.ui.pane_height()) {
-            self.ui.apply(edit);
+            self.ui.apply(&edit);
         }
     }
 
@@ -160,7 +160,6 @@ struct View {
     line_count: usize,
     path: String,
     is_dirty: bool,
-    adjustment: Adjustment,
 }
 
 impl View {
@@ -176,65 +175,17 @@ impl View {
         view
     }
 
-    fn start(&mut self) {
-        self.adjustment = Default::default();
-    }
-
-    fn add_to_mark(&mut self, mark: &mut Mark, c: char) -> Option<Edit> {
-        mark.adjust(&self.adjustment);
-
-        if let Some(region) = mark.place.to_region(&self.origin) {
-            mark.adjust(&self.add_adjustment(&mark.place, c));
-            let index = mark.pointer.to_usize();
-
-            match c {
-                ui::BACKSPACE => {
-                    self.data.remove(index);
-                    return Some(Edit::new(region, Change::Backspace))
-                }
-                ui::ENTER => {
-                    self.data.insert(index - 1, c);
-                    return None
-                }
-                _ => {
-                    self.data.insert(index - 1, c);
-                    return Some(Edit::new(region, Change::Insert(c)))
-                }
-            }
-        }
-
-        None
-    }
-
-    fn add_adjustment(&mut self, place: &Place, c: char) -> Adjustment {
-        let mut adjustment: Adjustment = Default::default();
+    fn add(&mut self, mark: &Mark, c: char) {
+        let index = mark.pointer.to_usize();
 
         match c {
             ui::BACKSPACE => {
-                adjustment.shift = -1;
-
-                if place.index == 0 {
-                    adjustment.change_line(place.line, -1);
-                    adjustment.change_index(place.line - 1, self.line_length(place) as isize);
-                    self.is_dirty = true;
-                } else {
-                    adjustment.change_index(place.line, -1);
-                }
-            }
-            ui::ENTER => {
-                adjustment.shift = 1;
-                adjustment.change_line(place.line, 1);
-                adjustment.change_index(place.line + 1, -(place.index as isize));
-                self.is_dirty = true;
+                self.data.remove(index);
             }
             _ => {
-                adjustment.shift = 1;
-                adjustment.change_index(place.line, 1);
+                self.data.insert(index - 1, c);
             }
         }
-
-        self.adjustment += &adjustment;
-        adjustment
     }
 
     fn redraw_edits<'a>(&'a self) -> impl Iterator<Item = Edit> + 'a {
@@ -288,16 +239,55 @@ impl View {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug, Default)]
 struct Adjustment {
     shift: isize,
-    lines_changed: HashMap<usize, isize>,
+    line_change: isize,
     indexes_changed: HashMap<usize, isize>,
+    edit: Edit,
 }
 
 impl Adjustment {
-    fn change_line(&mut self, line: usize, change: isize) {
-        *self.lines_changed.entry(line).or_default() += change;
+    fn new(c: char, place: &Place, view: &View) -> Adjustment {
+        if let Some(region) = place.to_region(&view.origin) {
+            match c {
+                ui::BACKSPACE => {
+                    if place.index == 0 {
+                        return Adjustment {
+                            shift: -1,
+                            line_change: -1,
+                            indexes_changed: [(place.line - 1, view.line_length(place) as isize)].iter().cloned().collect(),
+                            edit: Edit::new(region, Change::Clear),
+                        }
+                    } else {
+                        return Adjustment {
+                            shift: -1,
+                            indexes_changed: [(place.line, -1)].iter().cloned().collect(),
+                            edit: Edit::new(region, Change::Backspace),
+                            ..Default::default()
+                        }
+                    }
+                }
+                ui::ENTER => {
+                    return Adjustment {
+                        shift: 1,
+                        line_change: 1,
+                        indexes_changed: [(place.line + 1, -(place.index as isize))].iter().cloned().collect(),
+                        edit: Edit::new(region, Change::Clear),
+                    }
+                }
+                _ => {
+                    return Adjustment {
+                        shift: 1,
+                        indexes_changed: [(place.line, 1)].iter().cloned().collect(),
+                        edit: Edit::new(region, Change::Insert(c)),
+                        ..Default::default()
+                    }
+                }
+            }
+        }
+
+        Default::default()
     }
 
     fn change_index(&mut self, line: usize, change: isize) {
@@ -305,16 +295,17 @@ impl Adjustment {
     }
 }
 
-impl AddAssign<&Adjustment> for Adjustment {
-    fn add_assign(&mut self, other: &Adjustment) {
+impl AddAssign for Adjustment {
+    fn add_assign(&mut self, other: Adjustment) {
         self.shift += other.shift;
-
-        for (line, change) in &other.lines_changed {
-            self.change_line(*line, *change);
-        }
+        self.line_change += other.line_change;
 
         for (line, change) in &other.indexes_changed {
             self.change_index(*line, *change);
+        }
+
+        if self.edit.change != Change::Clear {
+            self.edit = other.edit;
         }
     }
 }
@@ -349,11 +340,7 @@ impl Mark {
             self.pointer += adjustment.shift;
         }
 
-        for (line, change) in &adjustment.lines_changed {
-            if line <= &self.place.line {
-                self.place.line = (self.place.line as isize + change) as usize;
-            }
-        }
+        self.place.line = (self.place.line as isize + adjustment.line_change) as usize;
 
         for (line, change) in &adjustment.indexes_changed {
             if line == &self.place.line {
@@ -588,7 +575,7 @@ impl Operation for IdentifyNoise {
 
         for section in sections {
             if let Some(region) = section.to_region(&paper.view.origin) {
-                paper.ui.apply(Edit::new(region, Change::Format(2)));
+                paper.ui.apply(&Edit::new(region, Change::Format(2)));
             }
 
             paper.noises.push(section);
@@ -619,19 +606,19 @@ impl Operation for AddToSketch {
                 for row in 0..paper.ui.pane_height() {
                     paper
                         .ui
-                        .apply(Edit::new(Region::row(row), Change::Format(0)));
+                        .apply(&Edit::new(Region::row(row), Change::Format(0)));
                 }
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
                     if let Some(region) = noise.to_region(&paper.view.origin) {
-                        paper.ui.apply(Edit::new(region, Change::Format(2)));
+                        paper.ui.apply(&Edit::new(region, Change::Format(2)));
                     }
                 }
 
                 for section in sections.iter() {
                     if let Some(region) = section.to_region(&paper.view.origin) {
-                        paper.ui.apply(Edit::new(region, Change::Format(1)));
+                        paper.ui.apply(&Edit::new(region, Change::Format(1)));
                     }
                 }
 
@@ -648,7 +635,7 @@ struct DrawSketch;
 
 impl Operation for DrawSketch {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        paper.ui.apply(Edit::new(
+        paper.ui.apply(&Edit::new(
             Region::row(0),
             Change::Row(paper.sketch.clone()),
         ));
@@ -660,12 +647,20 @@ struct UpdateView(char);
 
 impl Operation for UpdateView {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
-        paper.view.start();
+        let mut adjustment: Adjustment = Default::default();
+        paper.view.is_dirty = false;
 
         for mark in paper.marks.iter_mut() {
-            if let Some(edit) = paper.view.add_to_mark(mark, self.0) {
-                paper.ui.apply(edit);
+            adjustment += Adjustment::new(self.0, &mark.place, &paper.view);
+
+            if adjustment.edit.change == Change::Clear {
+                paper.view.is_dirty = true;
+            } else {
+                paper.ui.apply(&adjustment.edit);
             }
+
+            mark.adjust(&adjustment);
+            paper.view.add(mark, self.0);
         }
 
         if paper.view.is_dirty {
