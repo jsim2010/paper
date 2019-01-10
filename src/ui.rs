@@ -61,9 +61,7 @@ impl UserInterface {
 
     /// Applies edit to display.
     pub fn apply(&self, edit: Edit) {
-        if let Some(region) = edit.region {
-            self.window.mv(region.y(), region.x());
-        }
+        self.window.mv(edit.region.y(), edit.region.x());
 
         match edit.change {
             Change::Backspace => {
@@ -83,9 +81,7 @@ impl UserInterface {
                 self.window.clear();
             }
             Change::Format(color) => {
-                if let Some(region) = edit.region {
-                    self.window.chgat(region.n(), pancurses::A_NORMAL, color);
-                }
+                self.window.chgat(edit.region.n(), pancurses::A_NORMAL, color);
             }
         }
     }
@@ -103,15 +99,15 @@ impl Default for UserInterface {
     }
 }
 
-/// Indicates a [`Change`] for the [`UserInterface`] to make at an [`Address`].
+/// Indicates a [`Change`] for the [`UserInterface`] to make on a [`Region`].
 pub struct Edit {
-    region: Option<Region>,
+    region: Region,
     change: Change,
 }
 
 impl Edit {
     /// Creates a new [`Edit`].
-    pub fn new(region: Option<Region>, change: Change) -> Edit {
+    pub fn new(region: Region, change: Change) -> Edit {
         Edit { region, change }
     }
 }

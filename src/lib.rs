@@ -183,7 +183,7 @@ impl View {
     fn add_to_mark(&mut self, mark: &mut Mark, c: char) -> Option<Edit> {
         mark.adjust(&self.adjustment);
         // TODO: Make Ui accept Addressable objects so we can give addresses and regions.
-        let region = Some(Region::address(mark.place.to_address(&self.origin)));
+        let region = Region::address(mark.place.to_address(&self.origin));
 
         mark.adjust(&self.add_adjustment(&mark.place, c));
         let index = mark.pointer.to_usize();
@@ -237,13 +237,13 @@ impl View {
 
     fn redraw_edits<'a>(&'a self) -> impl Iterator<Item = Edit> + 'a {
         // Start by clearing the screen.
-        once(Edit::new(None, Change::Clear)).chain(
+        once(Edit::new(Default::default(), Change::Clear)).chain(
             self.lines()
                 .skip(self.origin.line - 1)
                 .enumerate()
                 .map(move |x| {
                     Edit::new(
-                        Some(Region::row(x.0)),
+                        Region::row(x.0),
                         Change::Row(format!(
                             "{:>width$} {}",
                             self.origin.line + x.0,
@@ -589,10 +589,10 @@ impl Operation for IdentifyNoise {
         paper.noises.clear();
 
         for section in sections {
-            paper.ui.apply(Edit::new(
-                paper.view.region_at_section(&section),
-                Change::Format(2),
-            ));
+            if let Some(region) = paper.view.region_at_section(&section) {
+                paper.ui.apply(Edit::new(region, Change::Format(2)));
+            }
+
             paper.noises.push(section);
         }
 
@@ -621,22 +621,20 @@ impl Operation for AddToSketch {
                 for row in 0..paper.ui.pane_height() {
                     paper
                         .ui
-                        .apply(Edit::new(Some(Region::row(row)), Change::Format(0)));
+                        .apply(Edit::new(Region::row(row), Change::Format(0)));
                 }
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
-                    paper.ui.apply(Edit::new(
-                        paper.view.region_at_section(noise),
-                        Change::Format(2),
-                    ));
+                    if let Some(region) = paper.view.region_at_section(noise) {
+                        paper.ui.apply(Edit::new(region, Change::Format(2)));
+                    }
                 }
 
                 for region in regions.iter() {
-                    paper.ui.apply(Edit::new(
-                        paper.view.region_at_section(region),
-                        Change::Format(1),
-                    ));
+                    if let Some(region) = paper.view.region_at_section(region) {
+                        paper.ui.apply(Edit::new(region, Change::Format(1)));
+                    }
                 }
 
                 paper.signals = regions;
@@ -653,7 +651,7 @@ struct DrawSketch;
 impl Operation for DrawSketch {
     fn operate(&self, paper: &mut Paper) -> Option<Notice> {
         paper.ui.apply(Edit::new(
-            Some(Region::row(0)),
+            Region::row(0),
             Change::Row(paper.sketch.clone()),
         ));
         None
