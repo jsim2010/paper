@@ -13,7 +13,7 @@ pub const ESC: char = '';
 
 /// The interface between the application and the user.
 ///
-/// All output is displayed in a grid of cells. 
+/// All output is displayed in a grid of cells.
 #[derive(Debug)]
 pub struct UserInterface {
     /// Interface to the terminal.
