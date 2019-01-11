@@ -32,7 +32,7 @@
 
 mod ui;
 
-use crate::ui::{Address, Change, Edit, Length, Region, UserInterface};
+use crate::ui::{Color, Address, Change, Edit, END, Length, Region, UserInterface};
 use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
 use std::cmp;
 use std::collections::HashMap;
@@ -335,7 +335,6 @@ impl Mark {
                 }
             }
         }
-
     }
 }
 
@@ -415,7 +414,7 @@ impl Section {
     pub fn line(line: usize) -> Section {
         Section {
             start: Place { line, index: 0 },
-            length: ui::EOL,
+            length: END,
         }
     }
 
@@ -567,7 +566,7 @@ impl Operation for IdentifyNoise {
 
         for section in sections {
             if let Some(region) = section.to_region(&paper.view.origin) {
-                paper.ui.apply(Edit::new(region, Change::Format(2)));
+                paper.ui.apply(Edit::new(region, Change::Format(Color::Blue)));
             }
 
             paper.noises.push(section);
@@ -598,19 +597,19 @@ impl Operation for AddToSketch {
                 for row in 0..paper.ui.pane_height() {
                     paper
                         .ui
-                        .apply(Edit::new(Region::row(row), Change::Format(0)));
+                        .apply(Edit::new(Region::row(row), Change::Format(Color::Black)));
                 }
 
                 // Add back in the noise
                 for noise in paper.noises.iter() {
                     if let Some(region) = noise.to_region(&paper.view.origin) {
-                        paper.ui.apply(Edit::new(region, Change::Format(2)));
+                        paper.ui.apply(Edit::new(region, Change::Format(Color::Blue)));
                     }
                 }
 
                 for section in sections.iter() {
                     if let Some(region) = section.to_region(&paper.view.origin) {
-                        paper.ui.apply(Edit::new(region, Change::Format(1)));
+                        paper.ui.apply(Edit::new(region, Change::Format(Color::Red)));
                     }
                 }
 
@@ -695,7 +694,7 @@ impl Operation for SetMarks {
                 let length = signal.length;
 
                 place.index += match length {
-                    ui::EOL => paper.view.line_length(&signal.start),
+                    END => paper.view.line_length(&signal.start),
                     _ => length.to_usize(),
                 };
             }
@@ -783,7 +782,6 @@ impl Default for Mode {
 }
 
 impl Mode {
-    // TODO: Can this be converted to return an Iterator?
     /// Returns the operations to be executed based on user input.
     fn handle_input(&self, input: Option<char>) -> Vec<Box<dyn Operation>> {
         let mut operations: Vec<Box<dyn Operation>> = Vec::new();
@@ -791,57 +789,76 @@ impl Mode {
         if let Some(c) = input {
             match *self {
                 Mode::Display => match c {
-                    '.' => operations.push(Box::new(ChangeMode(Mode::Command))),
-                    '#' | '/' => {
-                        operations.push(Box::new(ChangeMode(Mode::Filter)));
-                        operations.push(Box::new(AddToSketch(c.to_string())));
-                        operations.push(Box::new(DrawSketch));
+                    '.' => {
+                        operations = vec![Box::new(ChangeMode(Mode::Command))];
                     }
-                    'j' => operations.push(Box::new(ScrollDown)),
-                    'k' => operations.push(Box::new(ScrollUp)),
+                    '#' | '/' => {
+                        operations = vec![
+                            Box::new(ChangeMode(Mode::Filter)),
+                            Box::new(AddToSketch(c.to_string())),
+                            Box::new(DrawSketch),
+                        ];
+                    }
+                    'j' => {
+                        operations = vec![Box::new(ScrollDown)];
+                    }
+                    'k' => {
+                        operations = vec![Box::new(ScrollUp)];
+                    }
                     _ => {}
                 },
                 Mode::Command => match c {
                     ui::ENTER => {
-                        operations.push(Box::new(ExecuteCommand));
-                        operations.push(Box::new(ChangeMode(Mode::Display)));
+                        operations = vec![
+                            Box::new(ExecuteCommand),
+                            Box::new(ChangeMode(Mode::Display)),
+                        ];
                     }
-                    ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
+                    ui::ESC => {
+                        operations = vec![Box::new(ChangeMode(Mode::Display))];
+                    }
                     _ => {
-                        operations.push(Box::new(AddToSketch(c.to_string())));
-                        operations.push(Box::new(DrawSketch));
+                        operations =
+                            vec![Box::new(AddToSketch(c.to_string())), Box::new(DrawSketch)];
                     }
                 },
                 Mode::Filter => match c {
-                    ui::ENTER => operations.push(Box::new(ChangeMode(Mode::Action))),
-                    '\t' => {
-                        operations.push(Box::new(IdentifyNoise));
-                        operations.push(Box::new(AddToSketch(String::from("&&"))));
-                        operations.push(Box::new(DrawSketch));
+                    ui::ENTER => {
+                        operations = vec![Box::new(ChangeMode(Mode::Action))];
                     }
-                    ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
+                    '\t' => {
+                        operations = vec![
+                            Box::new(IdentifyNoise),
+                            Box::new(AddToSketch(String::from("&&"))),
+                            Box::new(DrawSketch),
+                        ];
+                    }
+                    ui::ESC => {
+                        operations = vec![Box::new(ChangeMode(Mode::Display))];
+                    }
                     _ => {
-                        operations.push(Box::new(AddToSketch(c.to_string())));
-                        operations.push(Box::new(DrawSketch));
+                        operations =
+                            vec![Box::new(AddToSketch(c.to_string())), Box::new(DrawSketch)];
                     }
                 },
                 Mode::Action => match c {
-                    ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
+                    ui::ESC => {
+                        operations = vec![Box::new(ChangeMode(Mode::Display))];
+                    }
                     'i' => {
-                        operations.push(Box::new(SetMarks(Edge::Start)));
-                        operations.push(Box::new(ChangeMode(Mode::Edit)));
+                        operations = vec![Box::new(SetMarks(Edge::Start)), Box::new(ChangeMode(Mode::Edit))];
                     }
                     'I' => {
-                        operations.push(Box::new(SetMarks(Edge::End)));
-                        operations.push(Box::new(ChangeMode(Mode::Edit)));
+                        operations = vec![Box::new(SetMarks(Edge::End)), Box::new(ChangeMode(Mode::Edit))];
                     }
                     _ => {}
                 },
                 Mode::Edit => match c {
-                    ui::ESC => operations.push(Box::new(ChangeMode(Mode::Display))),
+                    ui::ESC => {
+                        operations = vec![Box::new(ChangeMode(Mode::Display))];
+                    }
                     _ => {
-                        operations.push(Box::new(AddToSketch(c.to_string())));
-                        operations.push(Box::new(UpdateView(c)));
+                        operations = vec![Box::new(AddToSketch(c.to_string())), Box::new(UpdateView(c))];
                     }
                 },
             }

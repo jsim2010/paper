@@ -6,14 +6,14 @@ use std::fmt;
 pub const BACKSPACE: char = '\u{08}';
 /// Character that represents the `Enter` key.
 pub const ENTER: char = '\n';
-// Currently Ctrl + C to allow manual testing within vim terminal where ESC is already mapped.
+// Currently ESC is set to Ctrl-C to allow manual testing within vim terminal where ESC is already
+// mapped.
 /// Character that represents the `Esc` key.
 pub const ESC: char = '';
 
-/// The interface with the user.
+/// The interface between the application and the user.
 ///
-/// All output is displayed in a grid of blocks. A cursor is tracked and used to specify where requested
-/// outputs appear.
+/// All output is displayed in a grid of cells. 
 #[derive(Debug)]
 pub struct UserInterface {
     /// Interface to the terminal.
@@ -36,9 +36,9 @@ impl UserInterface {
 
         pancurses::start_color();
         pancurses::use_default_colors();
-        pancurses::init_pair(0, -1, -1);
-        pancurses::init_pair(1, -1, pancurses::COLOR_RED);
-        pancurses::init_pair(2, -1, pancurses::COLOR_BLUE);
+        pancurses::init_pair(Color::Black.cp(), -1, -1);
+        pancurses::init_pair(Color::Red.cp(), -1, pancurses::COLOR_RED);
+        pancurses::init_pair(Color::Blue.cp(), -1, pancurses::COLOR_BLUE);
     }
 
     /// Gets input from the user.
@@ -65,8 +65,7 @@ impl UserInterface {
 
         match edit.change {
             Change::Backspace => {
-                // Adding BACKSPACE moves cursor 1 cell to the left but does not delete any
-                // characters.
+                // Add BACKSPACE (move cursor 1 cell to the left) and delete that character.
                 self.window.addch(BACKSPACE);
                 self.window.delch();
             }
@@ -82,7 +81,7 @@ impl UserInterface {
             }
             Change::Format(color) => {
                 self.window
-                    .chgat(edit.region.n(), pancurses::A_NORMAL, color);
+                    .chgat(edit.region.n(), pancurses::A_NORMAL, color.cp());
             }
             Change::Nothing => {}
         }
@@ -101,37 +100,49 @@ impl Default for UserInterface {
     }
 }
 
-/// Indicates a [`Change`] for the [`UserInterface`] to make on a [`Region`].
+/// Signifies a [`Change`] to make to a [`Region`].
+///
+/// [`Change`]s that act on an [`Address`] are executed on the starting [`Address`] of the
+/// [`Region`].
+///
+/// [`Change`]: enum.Change.html
+/// [`Region`]: struct.Region.html
+/// [`Address`]: struct.Address.html
 #[derive(Clone, Debug, Default)]
 pub struct Edit {
-    region: Region,
+    /// The [`Change`] to be made.
     change: Change,
+    /// The [`Region`] on which the [`Change`] is intended.
+    region: Region,
 }
 
 impl Edit {
-    /// Creates a new [`Edit`].
+    /// Creates a new `Edit` with a given [`Region`] and [`Change`].
+    ///
+    /// [`Region`]: struct.Region.html
+    /// [`Change`]: enum.Change.html
     pub fn new(region: Region, change: Change) -> Edit {
         Edit { region, change }
     }
 }
 
-/// Describes a change to the grid of a [`UserInterface`].
+/// Signifies a modification to the grid.
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Change {
     /// Does nothing.
     Nothing,
-    /// Removes the previous character, moving all subsequent characters to the left.
+    /// Removes the previous cell, moving all subsequent cells to the left.
     Backspace,
-    /// Inserts a character, moving all subsequent characters to the right.
+    /// Inserts a cell containing a character, moving all subsequent cells to the right.
     Insert(char),
-    /// Adds a string at the current position, removing all subsequent characters.
+    /// Writes the characters of a string in sequence and clears all subsequent cells.
     Row(String),
-    /// Clears the entire window.
+    /// Clears all cells.
     Clear,
-    /// Sets the formatting of region.
+    /// Sets the color of all cells in a [`Region`].
     ///
-    /// For now, this just handles color.
-    Format(i16),
+    /// [`Region`]: struct.Region.html
+    Format(Color),
 }
 
 impl Default for Change {
@@ -146,46 +157,78 @@ impl fmt::Display for Change {
     }
 }
 
-/// Specifies a group of adjacent [`Address`]s.
+/// Signifies a color.
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub enum Color {
+    Black,
+    Red,
+    Blue,
+}
+
+impl Color {
+    /// Converts `self` to a `color-pair` as specified in [`pancurses`].
+    ///
+    /// [`pancurses`]: ../../pancurses/index.html
+    fn cp(self) -> i16 {
+        self as i16
+    }
+}
+
+/// Signifies a group of adjacent [`Address`]es.
+///
+/// [`Address`]: struct.Address.html
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
 pub struct Region {
     /// The first [`Address`].
+    ///
+    /// [`Address`]: struct.Address.html
     start: Address,
-    /// The number of [`Address`]s that are included.
+    /// The [`Length`] of the `Region`.
+    ///
+    /// [`Length`]: struct.Length.html
     length: Length,
 }
 
 impl Region {
-    /// Creates a [`Region`] with a given starting [`Address`] and [`Length`].
+    /// Creates a new `Region` with a given starting [`Address`] and [`Length`].
+    ///
+    /// [`Address`]: struct.Address.html
+    /// [`Length`]: struct.Length.html
     pub fn new(start: Address, length: Length) -> Region {
         Region { start, length }
     }
 
-    /// Creates a [`Region`] that represents an entire row.
+    /// Creates a new `Region` that signifies an entire row.
     pub fn row(row: usize) -> Region {
         Region {
             start: Address::new(row, 0),
-            length: EOL,
+            length: END,
         }
     }
 
     /// Returns the column at which `self` starts.
     ///
-    /// Used with the [`pancurses`] API.
+    /// Used with [`pancurses`].
+    ///
+    /// [`pancurses`]: ../../pancurses/index.html
     fn x(&self) -> i32 {
         self.start.x()
     }
 
     /// Returns the row at which `self` starts.
     ///
-    /// Used with the [`pancurses`] API.
+    /// Used with [`pancurses`].
+    ///
+    /// [`pancurses`]: ../../pancurses/index.html
     fn y(&self) -> i32 {
         self.start.y()
     }
 
-    /// Returns the length of the region as specified by the [`pancurses`] API.
+    /// Returns the length of the region as specified by [`pancurses`].
+    ///
+    /// [`pancurses`]: ../../pancurses/index.html
     fn n(&self) -> i32 {
-        *self.length.as_i32()
+        self.length.0
     }
 }
 
@@ -195,31 +238,35 @@ impl fmt::Display for Region {
     }
 }
 
-/// Describes the location of a block in the grid.
+/// Signifies a specific cell in the grid.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Address {
-    /// The index of the row that contains the block (starts at 0).
+    /// The index of the row that contains the cell (starts at 0).
     row: usize,
-    /// The index of the column that contains the block (starts at 0).
+    /// The index of the column that contains the cell (starts at 0).
     column: usize,
 }
 
 impl Address {
-    /// Creates an [`Address`] with a given row and column.
+    /// Creates a new `Address` with a given row and column.
     pub fn new(row: usize, column: usize) -> Address {
         Address { row, column }
     }
 
     /// Returns the column of `self`.
     ///
-    /// Used with the [`pancurses`] API.
+    /// Used with [`pancurses`].
+    ///
+    /// [`pancurses`]: ../../pancurses/index.html
     fn x(&self) -> i32 {
         self.column as i32
     }
 
     /// Returns the row of `self`.
     ///
-    /// Used with the [`pancurses`] API.
+    /// Used with [`pancurses`].
+    ///
+    /// [`pancurses`]: ../../pancurses/index.html
     fn y(&self) -> i32 {
         self.row as i32
     }
@@ -231,39 +278,48 @@ impl fmt::Display for Address {
     }
 }
 
-/// Specifies a number of [`Address`]s.
+/// Signifies a number of adjacent [`Address`]es.
 ///
-/// Generally this is just a number. However, the special [`Length`] "[`EOL`]" signifies the number
-/// of [`Address`]s between a start [`Address`] and the end of that row.
+/// Generally this is an unsigned number. However, there is a special `Length` called [`END`] that
+/// signifies the number of [`Address`]es between a start [`Address`] and the end of that row.
+///
+/// To ensure safe behavior, `Length` should only be created by using [`from`].
+///
+/// [`Address`]: struct.Address.html
+/// [`END`]: constant.END.html
+/// [`from`]: struct.Length.html#method.from
+
+// Use a tuple instead of a type so that a custom Display trait can be implemented.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Length(i32);
 
-/// Value that represents the number of characters until the end of the line.
-const EOL_VALUE: i32 = -1;
-/// Length that represents the number of characters until the end of the line.
-pub const EOL: Length = Length(EOL_VALUE);
+/// The internal value that represents the number of characters until the end of the row.
+///
+/// Specified by [`pancurses`].
+///
+/// [`pancurses`]: ../../pancurses/index.html
+const END_VALUE: i32 = -1;
+/// The `Length` that represents the number of characters until the end of the row.
+pub const END: Length = Length(END_VALUE);
 
 impl Length {
     /// Converts to usize.
     pub fn to_usize(&self) -> usize {
+        // Given that Length was created by from(), this conversion is safe.
         self.0 as usize
-    }
-
-    /// Converts to i32.
-    pub fn as_i32(&self) -> &i32 {
-        &self.0
     }
 }
 
 impl fmt::Display for Length {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.0 {
-            EOL_VALUE => write!(f, "EOL"),
+            END_VALUE => write!(f, "END"),
             x => write!(f, "{}", x),
         }
     }
 }
 
+// TODO: This should be changed to TryFrom once that has stablized.
 impl From<usize> for Length {
     fn from(value: usize) -> Length {
         Length(value as i32)
