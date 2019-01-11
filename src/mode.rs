@@ -30,8 +30,12 @@ impl Default for Controller {
 }
 
 impl Controller {
-    pub fn process_input(&self, input: char) -> Vec<Rc<Operation>> {
-        self.mode().process_input(input)
+    pub fn process_input(&self, input: Option<char>) -> Vec<Rc<Operation>> {
+        if let Some(c) = input {
+            return self.mode().process_input(c)
+        }
+        
+        Vec::new()
     }
 
     pub fn enhance(&self, paper: &Paper) -> Option<Enhancement> {

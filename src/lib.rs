@@ -75,12 +75,10 @@ impl Paper {
         self.ui.init();
 
         'main: loop {
-            if let Some(input) = self.ui.receive_input() {
-                for operation in self.controller.process_input(input) {
-                    match operation.operate(self) {
-                        Some(Notice::Quit) => break 'main,
-                        None => {}
-                    }
+            for operation in self.controller.process_input(self.ui.receive_input()) {
+                match operation.operate(self) {
+                    Some(Notice::Quit) => break 'main,
+                    None => {}
                 }
             }
         }
