@@ -709,7 +709,7 @@ impl Operation for AddToSketch {
                 for row in 0..paper.ui.pane_height() {
                     paper
                         .ui
-                        .apply(Edit::new(Region::row(row), Change::Format(Color::Black)))?;
+                        .apply(Edit::new(Region::row(row), Change::Format(Color::Default)))?;
                 }
 
                 // Add back in the noise
@@ -760,7 +760,7 @@ impl Operation for UpdateView {
         for mark in paper.marks.iter_mut() {
             adjustment += Adjustment::create(self.0, &mark.place, &paper.view);
 
-            if adjustment.change == Change::Clear {
+            if adjustment.change != Change::Clear {
                 if let Some(region) = mark.place.to_region(&paper.view.origin) {
                     paper.ui.apply(Edit::new(region, adjustment.change.clone()))?;
                 }

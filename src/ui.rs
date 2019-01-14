@@ -31,6 +31,15 @@ impl UserInterface {
 
     /// Sets up the user interface for use.
     pub(crate) fn init(&self) -> Result<(), String> {
+        // start_color must be called before any other color manipulation routine is called.
+        if pancurses::start_color() != pancurses::OK {
+            return Err(String::from("Failed while calling start_color()."))
+        }
+
+        if pancurses::use_default_colors() != pancurses::OK {
+            return Err(String::from("Failed while calling use_default_colors()."))
+        }
+
         // Prevent curses from outputing keys.
         if pancurses::noecho() != pancurses::OK {
             return Err(String::from("Failed while calling noecho()."))
@@ -40,14 +49,6 @@ impl UserInterface {
             return Err(String::from("Failed while calling start_color()."))
         }
 
-        if pancurses::use_default_colors() != pancurses::OK {
-            return Err(String::from("Failed while calling use_default_colors()."))
-        }
-
-        if pancurses::init_pair(Color::Black.cp(), -1, -1) != pancurses::OK {
-            return Err(String::from("Failed while calling init_pair()."))
-        }
-        
         if pancurses::init_pair(Color::Red.cp(), -1, pancurses::COLOR_RED) != pancurses::OK {
             return Err(String::from("Failed while calling init_pair()."))
         }
@@ -207,7 +208,7 @@ impl fmt::Display for Change {
 /// Signifies a color.
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) enum Color {
-    Black,
+    Default,
     Red,
     Blue,
 }
