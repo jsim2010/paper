@@ -40,9 +40,11 @@ use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
 use std::cmp;
 use std::collections::HashMap;
 use std::fmt;
+use std::fmt::Display;
 use std::fs;
 use std::iter::once;
-use std::ops::{Add, AddAssign, Shr, SubAssign};
+use std::num::NonZeroUsize;
+use std::ops::{Sub, Add, AddAssign, Shr, SubAssign};
 
 use crate::mode::{Controller, Mode};
 
@@ -170,7 +172,6 @@ impl View {
     fn with_file(path: String) -> View {
         let mut view = View {
             data: fs::read_to_string(path.as_str()).unwrap().replace('\r', ""),
-            origin: RelativePlace { line: 1, index: 0 },
             path: path,
             ..Default::default()
         };
@@ -200,7 +201,7 @@ impl View {
         // Clear the screen, then add each row.
         once(Edit::new(Default::default(), Change::Clear)).chain(
             self.lines()
-                .skip(self.origin.line - 1)
+                .skip(self.origin.line.index())
                 .enumerate()
                 .map(move |x| {
                     Edit::new(
@@ -220,8 +221,8 @@ impl View {
         self.data.lines()
     }
 
-    fn line(&self, line_number: usize) -> Option<&str> {
-        self.lines().nth(line_number - 1)
+    fn line(&self, line_number: LineNumber) -> Option<&str> {
+        self.lines().nth(line_number.index())
     }
 
     fn clean(&mut self) {
@@ -230,12 +231,12 @@ impl View {
     }
 
     fn scroll_down(&mut self, scroll: usize) {
-        self.origin.line = cmp::min(self.origin.line + scroll, self.line_count);
+        self.origin.line = cmp::min(self.origin.line + scroll, LineNumber::new(self.line_count).unwrap_or(Default::default()));
     }
 
     fn scroll_up(&mut self, scroll: usize) {
         if self.origin.line <= scroll {
-            self.origin.line = 1;
+            self.origin.line = Default::default();
         } else {
             self.origin.line -= scroll;
         }
@@ -254,18 +255,18 @@ impl View {
 struct Adjustment {
     shift: isize,
     line_change: isize,
-    indexes_changed: HashMap<usize, isize>,
+    indexes_changed: HashMap<LineNumber, isize>,
     change: Change,
 }
 
 impl Adjustment {
-    fn new(line: usize, shift: isize, index_change: isize, change: Change) -> Adjustment {
+    fn new(line: LineNumber, shift: isize, index_change: isize, change: Change) -> Adjustment {
         let line_change = if change == Change::Clear { shift } else { 0 };
 
         Adjustment {
             shift,
             line_change,
-            indexes_changed: [((line as isize + line_change) as usize, index_change)]
+            indexes_changed: [(line + line_change, index_change)]
                 .iter()
                 .cloned()
                 .collect(),
@@ -317,7 +318,7 @@ enum Edge {
     End,
 }
 
-impl fmt::Display for Edge {
+impl Display for Edge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
     }
@@ -336,7 +337,7 @@ impl Mark {
     fn adjust(&mut self, adjustment: &Adjustment) {
         if -adjustment.shift < self.pointer.to_isize() {
             self.pointer += adjustment.shift;
-            self.place.line = (self.place.line as isize + adjustment.line_change) as usize;
+            self.place.line = self.place.line + adjustment.line_change;
 
             for (&line, &change) in adjustment.indexes_changed.iter() {
                 if line == self.place.line {
@@ -347,7 +348,7 @@ impl Mark {
     }
 }
 
-impl fmt::Display for Mark {
+impl Display for Mark {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}{}", self.place, self.pointer)
     }
@@ -400,7 +401,7 @@ impl Default for Pointer {
     }
 }
 
-impl fmt::Display for Pointer {
+impl Display for Pointer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -422,7 +423,7 @@ pub struct Section {
 
 impl Section {
     /// Creates a new `Section` that signifies an entire line.
-    pub fn line(line: usize) -> Section {
+    pub fn line(line: LineNumber) -> Section {
         Section {
             start: Place { line, index: 0 },
             length: END,
@@ -436,7 +437,7 @@ impl Section {
     }
 }
 
-impl fmt::Display for Section {
+impl Display for Section {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}->{}", self.start, self.length)
     }
@@ -444,15 +445,14 @@ impl fmt::Display for Section {
 
 #[derive(Clone, Debug, Default)]
 struct RelativePlace {
-    line: usize,
+    line: LineNumber,
     index: isize,
 }
 
 /// Signifies the location of a character within a view.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Place {
-    // TODO: Make line use std::num::NonZeroUsize.
-    line: usize,
+    line: LineNumber,
     index: usize,
 }
 
@@ -462,7 +462,7 @@ impl Place {
             None
         } else {
             Some(Address::new(
-                self.line - origin.line,
+                self.line.index() - origin.line.index(),
                 (self.index as isize - origin.index) as usize,
             ))
         }
@@ -485,9 +485,86 @@ impl Shr<usize> for Place {
     }
 }
 
-impl fmt::Display for Place {
+impl Display for Place {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ln {}, idx {}", self.line, self.index)
+    }
+}
+
+/// Signifies a line number.
+#[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Debug)]
+pub struct LineNumber(NonZeroUsize);
+
+impl LineNumber {
+    fn new(value: usize) -> Option<LineNumber> {
+        NonZeroUsize::new(value).map(|x| LineNumber(x))
+    }
+
+    fn index(self) -> usize {
+        self.0.get() - 1
+    }
+}
+
+impl Display for LineNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Default for LineNumber {
+    fn default() -> LineNumber {
+        // Safe to unwrap because 1 is a non-zero.
+        LineNumber(NonZeroUsize::new(1).unwrap())
+    }
+}
+
+impl Add<usize> for LineNumber {
+    type Output = LineNumber;
+
+    fn add(self, other: usize) -> LineNumber {
+        // Safe to unwrap because self.0.get() > 0 and other >= 0.
+        LineNumber::new(self.0.get() + other).unwrap()
+    }
+}
+
+impl Add<isize> for LineNumber {
+    type Output = LineNumber;
+
+    fn add(self, other: isize) -> LineNumber {
+        if other < 0 {
+            self - (-other) as usize
+        } else {
+            self + other as usize
+        }
+    }
+}
+
+impl Sub<usize> for LineNumber {
+    type Output = LineNumber;
+
+    fn sub(self, other: usize) -> LineNumber {
+        match LineNumber::new(self.0.get() - other) {
+            Some(x) => x,
+            None => panic!("LineNumber cannot be '0'."),
+        }
+    }
+}
+
+impl SubAssign<usize> for LineNumber {
+    fn sub_assign(&mut self, other: usize) {
+        *self = *self - other
+    }
+}
+
+impl PartialEq<usize> for LineNumber {
+    fn eq(&self, other: &usize) -> bool {
+        self.0.get() == *other
+    }
+}
+
+impl PartialOrd<usize> for LineNumber {
+    fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
+        Some(self.0.get().cmp(other))
     }
 }
 
@@ -550,7 +627,8 @@ impl Operation for ExecuteCommand {
                     paper.noises.clear();
 
                     for line in 1..=paper.view.line_count {
-                        paper.noises.push(Section::line(line));
+                        // Safe to unwrap because line >= 1.
+                        paper.noises.push(Section::line(LineNumber::new(line).unwrap()));
                     }
                 }
                 None => {}
@@ -574,7 +652,8 @@ impl Operation for IdentifyNoise {
         let mut sections = Vec::new();
 
         for line in 1..=paper.view.line_count {
-            sections.push(Section::line(line));
+            // Safe to unwrap because line >= 1.
+            sections.push(Section::line(LineNumber::new(line).unwrap()));
         }
 
         for tokens in paper.patterns.first_feature.tokenize_iter(&paper.sketch) {
@@ -744,13 +823,13 @@ impl Operation for SetMarks {
             paper.marks.push(Mark {
                 place,
                 pointer: place.index
-                    + Pointer(match place.line {
-                        1 => Some(0),
-                        _ => paper
+                    + Pointer(match place.line.index() {
+                        0 => Some(0),
+                        index => paper
                             .view
                             .data
                             .match_indices(ui::ENTER)
-                            .nth(place.line - 2)
+                            .nth(index - 1)
                             .map(|x| x.0 + 1),
                     }),
             });
@@ -767,7 +846,7 @@ pub enum Enhancement {
     FilterSections(Vec<Section>),
 }
 
-impl fmt::Display for Enhancement {
+impl Display for Enhancement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Enhancement::FilterSections(regions) => {
@@ -794,7 +873,7 @@ pub enum Notice {
     Flash,
 }
 
-impl fmt::Display for Notice {
+impl Display for Notice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
     }
