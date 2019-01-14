@@ -9,5 +9,7 @@ fn main() {
 
     let mut paper = Paper::new();
 
-    paper.run();
+    if let Err(s) = paper.run() {
+        eprintln!("{}", s);
+    }
 }

@@ -28,6 +28,8 @@
 //! }
 //! ```
 
+// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
+#![warn(rust_2018_idioms, future_incompatible, unused, box_pointers, macro_use_extern_crate, missing_copy_implementations, missing_debug_implementations, missing_docs, single_use_lifetimes, trivial_casts, trivial_numeric_casts, unreachable_pub, unsafe_code, unused_import_braces, unused_lifetimes, unused_qualifications, unused_results)]
 #![doc(html_root_url = "https://docs.rs/paper/0.1.0")]
 
 mod mode;
@@ -71,26 +73,32 @@ impl Paper {
     }
 
     /// Runs the application.
-    pub fn run(&mut self) {
-        self.ui.init();
+    pub fn run(&mut self) -> Result<(), String> {
+        self.ui.init()?;
 
         'main: loop {
             for operation in self.controller.process_input(self.ui.receive_input()) {
-                match operation.operate(self) {
+                match operation.operate(self)? {
                     Some(Notice::Quit) => break 'main,
+                    Some(Notice::Flash) => {
+                        self.ui.flash()?;
+                    }
                     None => {}
                 }
             }
         }
 
-        self.ui.close();
+        self.ui.close()?;
+        Ok(())
     }
 
     /// Displays the view on the user interface.
-    fn display_view(&self) {
+    fn display_view(&self) -> Result<(), String> {
         for edit in self.view.redraw_edits().take(self.ui.pane_height()) {
-            self.ui.apply(edit);
+            self.ui.apply(edit)?;
         }
+
+        Ok(())
     }
 
     /// Returns the height used for scrolling.
@@ -99,6 +107,8 @@ impl Paper {
     }
 }
 
+type Outcome = Result<Option<Notice>, String>;
+
 #[derive(Debug, Default)]
 struct PaperFilters {
     line: LineFilter,
@@ -106,7 +116,7 @@ struct PaperFilters {
 }
 
 impl PaperFilters {
-    fn iter(&self) -> PaperFiltersIter {
+    fn iter(&self) -> PaperFiltersIter<'_> {
         PaperFiltersIter {
             index: 0,
             filters: self,
@@ -120,7 +130,7 @@ struct PaperFiltersIter<'a> {
 }
 
 impl<'a> Iterator for PaperFiltersIter<'a> {
-    type Item = &'a Filter;
+    type Item = &'a dyn Filter;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.index += 1;
@@ -174,7 +184,11 @@ impl View {
 
         match c {
             ui::BACKSPACE => {
-                self.data.remove(index);
+                // For now, do not care to check what is removed. But this may become important for
+                // multi-byte characters.
+                match self.data.remove(index) {
+                    _ => {},
+                }
             }
             _ => {
                 self.data.insert(index - 1, c);
@@ -182,7 +196,7 @@ impl View {
         }
     }
 
-    fn redraw_edits<'a>(&'a self) -> impl Iterator<Item = Edit> + 'a {
+    fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
         // Clear the screen, then add each row.
         once(Edit::new(Default::default(), Change::Clear)).chain(
             self.lines()
@@ -202,7 +216,7 @@ impl View {
         )
     }
 
-    fn lines(&self) -> std::str::Lines {
+    fn lines(&self) -> std::str::Lines<'_> {
         self.data.lines()
     }
 
@@ -304,7 +318,7 @@ enum Edge {
 }
 
 impl fmt::Display for Edge {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
     }
 }
@@ -334,7 +348,7 @@ impl Mark {
 }
 
 impl fmt::Display for Mark {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}{}", self.place, self.pointer)
     }
 }
@@ -387,7 +401,7 @@ impl Default for Pointer {
 }
 
 impl fmt::Display for Pointer {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "[{}]",
@@ -399,6 +413,7 @@ impl fmt::Display for Pointer {
     }
 }
 
+/// Signifies adjacent [`Place`]s.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
 pub struct Section {
     start: Place,
@@ -406,6 +421,7 @@ pub struct Section {
 }
 
 impl Section {
+    /// Creates a new `Section` that signifies an entire line.
     pub fn line(line: usize) -> Section {
         Section {
             start: Place { line, index: 0 },
@@ -421,7 +437,7 @@ impl Section {
 }
 
 impl fmt::Display for Section {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}->{}", self.start, self.length)
     }
 }
@@ -432,6 +448,7 @@ struct RelativePlace {
     index: isize,
 }
 
+/// Signifies the location of a character within a view.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Place {
     line: usize,
@@ -468,23 +485,25 @@ impl Shr<usize> for Place {
 }
 
 impl fmt::Display for Place {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ln {}, idx {}", self.line, self.index)
     }
 }
 
+/// Signifies a command that [`Paper`] can execute.
 pub trait Operation: fmt::Debug {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice>;
+    /// Executes the command signified by `self`.
+    fn operate(&self, paper: &mut Paper) -> Outcome;
 }
 
 #[derive(Debug)]
 struct ChangeMode(Mode);
 
 impl Operation for ChangeMode {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
         match self.0 {
             Mode::Display => {
-                paper.display_view();
+                paper.display_view()?;
             }
             Mode::Command | Mode::Filter => {
                 paper.marks.clear();
@@ -492,13 +511,13 @@ impl Operation for ChangeMode {
             }
             Mode::Action => {}
             Mode::Edit => {
-                paper.display_view();
+                paper.display_view()?;
                 paper.sketch.clear();
             }
         }
 
         paper.controller.set_mode(self.0);
-        None
+        Ok(None)
     }
 }
 
@@ -522,7 +541,7 @@ impl ExecuteCommand {
 }
 
 impl Operation for ExecuteCommand {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
         match self.command_pattern.tokenize(&paper.sketch).get("command") {
             Some("see") => match self.see_pattern.tokenize(&paper.sketch).get("path") {
                 Some(path) => {
@@ -538,11 +557,11 @@ impl Operation for ExecuteCommand {
             Some("put") => {
                 paper.view.put();
             }
-            Some("end") => return Some(Notice::Quit),
+            Some("end") => return Ok(Some(Notice::Quit)),
             Some(_) | None => {}
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -550,7 +569,7 @@ impl Operation for ExecuteCommand {
 struct IdentifyNoise;
 
 impl Operation for IdentifyNoise {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
         let mut sections = Vec::new();
 
         for line in 1..=paper.view.line_count {
@@ -576,13 +595,13 @@ impl Operation for IdentifyNoise {
             if let Some(region) = section.to_region(&paper.view.origin) {
                 paper
                     .ui
-                    .apply(Edit::new(region, Change::Format(Color::Blue)));
+                    .apply(Edit::new(region, Change::Format(Color::Blue)))?;
             }
 
             paper.noises.push(section);
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -590,11 +609,13 @@ impl Operation for IdentifyNoise {
 struct AddToSketch(String);
 
 impl Operation for AddToSketch {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
         for c in self.0.chars() {
             match c {
                 ui::BACKSPACE => {
-                    paper.sketch.pop();
+                    if let None = paper.sketch.pop() {
+                        return Ok(Some(Notice::Flash))
+                    }
                 }
                 _ => {
                     paper.sketch.push(c);
@@ -608,7 +629,7 @@ impl Operation for AddToSketch {
                 for row in 0..paper.ui.pane_height() {
                     paper
                         .ui
-                        .apply(Edit::new(Region::row(row), Change::Format(Color::Black)));
+                        .apply(Edit::new(Region::row(row), Change::Format(Color::Black)))?;
                 }
 
                 // Add back in the noise
@@ -616,7 +637,7 @@ impl Operation for AddToSketch {
                     if let Some(region) = noise.to_region(&paper.view.origin) {
                         paper
                             .ui
-                            .apply(Edit::new(region, Change::Format(Color::Blue)));
+                            .apply(Edit::new(region, Change::Format(Color::Blue)))?;
                     }
                 }
 
@@ -624,7 +645,7 @@ impl Operation for AddToSketch {
                     if let Some(region) = section.to_region(&paper.view.origin) {
                         paper
                             .ui
-                            .apply(Edit::new(region, Change::Format(Color::Red)));
+                            .apply(Edit::new(region, Change::Format(Color::Red)))?;
                     }
                 }
 
@@ -633,7 +654,7 @@ impl Operation for AddToSketch {
             None => {}
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -641,11 +662,11 @@ impl Operation for AddToSketch {
 struct DrawSketch;
 
 impl Operation for DrawSketch {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
         paper
             .ui
-            .apply(Edit::new(Region::row(0), Change::Row(paper.sketch.clone())));
-        None
+            .apply(Edit::new(Region::row(0), Change::Row(paper.sketch.clone())))?;
+        Ok(None)
     }
 }
 
@@ -653,7 +674,7 @@ impl Operation for DrawSketch {
 struct UpdateView(char);
 
 impl Operation for UpdateView {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
         let mut adjustment: Adjustment = Default::default();
 
         for mark in paper.marks.iter_mut() {
@@ -661,7 +682,7 @@ impl Operation for UpdateView {
 
             if adjustment.change == Change::Clear {
                 if let Some(region) = mark.place.to_region(&paper.view.origin) {
-                    paper.ui.apply(Edit::new(region, adjustment.change.clone()));
+                    paper.ui.apply(Edit::new(region, adjustment.change.clone()))?;
                 }
             }
 
@@ -671,10 +692,10 @@ impl Operation for UpdateView {
 
         if adjustment.change == Change::Clear {
             paper.view.clean();
-            paper.display_view();
+            paper.display_view()?;
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -682,10 +703,10 @@ impl Operation for UpdateView {
 struct ScrollDown;
 
 impl Operation for ScrollDown {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
         paper.view.scroll_down(paper.scroll_height());
-        paper.display_view();
-        None
+        paper.display_view()?;
+        Ok(None)
     }
 }
 
@@ -693,10 +714,10 @@ impl Operation for ScrollDown {
 struct ScrollUp;
 
 impl Operation for ScrollUp {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
         paper.view.scroll_up(paper.scroll_height());
-        paper.display_view();
-        None
+        paper.display_view()?;
+        Ok(None)
     }
 }
 
@@ -704,7 +725,7 @@ impl Operation for ScrollUp {
 struct SetMarks(Edge);
 
 impl Operation for SetMarks {
-    fn operate(&self, paper: &mut Paper) -> Option<Notice> {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
         paper.marks.clear();
 
         for signal in paper.signals.iter() {
@@ -734,7 +755,7 @@ impl Operation for SetMarks {
             });
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -746,7 +767,7 @@ pub enum Enhancement {
 }
 
 impl fmt::Display for Enhancement {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Enhancement::FilterSections(regions) => {
                 write!(f, "FilterSections [")?;
@@ -766,17 +787,21 @@ impl fmt::Display for Enhancement {
 pub enum Notice {
     /// Ends the application.
     Quit,
+    /// Flashes the screen.
+    ///
+    /// Used as a brief indicator that the current input is having no effect.
+    Flash,
 }
 
 impl fmt::Display for Notice {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
     }
 }
 
 trait Filter: fmt::Debug {
     fn id(&self) -> char;
-    fn extract<'a>(&self, feature: &'a str, sections: &mut Vec<Section>, view: &View);
+    fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View);
 }
 
 #[derive(Debug)]
@@ -804,13 +829,11 @@ impl Filter for LineFilter {
         '#'
     }
 
-    fn extract<'a>(&self, feature: &'a str, sections: &mut Vec<Section>, _view: &View) {
+    fn extract(&self, feature: &str, sections: &mut Vec<Section>, _view: &View) {
         let tokens = self.pattern.tokenize(feature);
 
-        if let Some(line) = tokens.get("line") {
-            line.parse::<usize>().ok().map(|row| {
-                sections.retain(|&x| x.start.line == row);
-            });
+        if let Some(Ok(line)) = tokens.get("line").map(|x| x.parse::<usize>()) {
+            sections.retain(|&x| x.start.line == line);
         } else if let (Some(line_start), Some(line_end)) = (tokens.get("start"), tokens.get("end"))
         {
             if let (Ok(start), Ok(end)) = (line_start.parse::<usize>(), line_end.parse::<usize>()) {
@@ -859,7 +882,7 @@ impl Filter for PatternFilter {
         '/'
     }
 
-    fn extract<'a>(&self, feature: &'a str, sections: &mut Vec<Section>, view: &View) {
+    fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
             if let Ok(search_pattern) = Pattern::load(user_pattern.to_rec()) {
                 let target_sections = sections.clone();

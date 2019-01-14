@@ -7,13 +7,13 @@ use std::fmt;
 use std::rc::Rc;
 
 #[derive(Debug)]
-pub struct Controller {
+pub(crate) struct Controller {
     mode: Mode,
-    display: Rc<ModeHandler>,
-    command: Rc<ModeHandler>,
-    filter: Rc<ModeHandler>,
-    action: Rc<ModeHandler>,
-    edit: Rc<ModeHandler>,
+    display: Rc<dyn ModeHandler>,
+    command: Rc<dyn ModeHandler>,
+    filter: Rc<dyn ModeHandler>,
+    action: Rc<dyn ModeHandler>,
+    edit: Rc<dyn ModeHandler>,
 }
 
 impl Default for Controller {
@@ -30,7 +30,7 @@ impl Default for Controller {
 }
 
 impl Controller {
-    pub fn process_input(&self, input: Option<char>) -> Vec<Rc<Operation>> {
+    pub(crate) fn process_input(&self, input: Option<char>) -> Vec<Rc<dyn Operation>> {
         if let Some(c) = input {
             return self.mode().process_input(c)
         }
@@ -38,15 +38,15 @@ impl Controller {
         Vec::new()
     }
 
-    pub fn enhance(&self, paper: &Paper) -> Option<Enhancement> {
+    pub(crate) fn enhance(&self, paper: &Paper) -> Option<Enhancement> {
         self.mode().enhance(paper)
     }
 
-    pub fn set_mode(&mut self, mode: Mode) {
+    pub(crate) fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
     }
 
-    fn mode(&self) -> Rc<ModeHandler> {
+    fn mode(&self) -> Rc<dyn ModeHandler> {
         Rc::clone(match self.mode {
             Mode::Display => &self.display,
             Mode::Command => &self.command,
@@ -59,7 +59,7 @@ impl Controller {
 
 /// Specifies the functionality of the editor for a given state.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub enum Mode {
+pub(crate) enum Mode {
     /// Displays the current view.
     Display,
     /// Displays the current command.
@@ -73,7 +73,7 @@ pub enum Mode {
 }
 
 impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
     }
 }
@@ -85,7 +85,7 @@ impl Default for Mode {
 }
 
 trait ModeHandler: fmt::Debug {
-    fn process_input(&self, input: char) -> Vec<Rc<Operation>>;
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>>;
     fn enhance(&self, paper: &Paper) -> Option<Enhancement>;
 }
 
@@ -93,7 +93,7 @@ trait ModeHandler: fmt::Debug {
 struct EditMode;
 
 impl ModeHandler for EditMode {
-    fn process_input(&self, input: char) -> Vec<Rc<Operation>> {
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
             ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
             _ => vec![
@@ -112,7 +112,7 @@ impl ModeHandler for EditMode {
 struct ActionMode;
 
 impl ModeHandler for ActionMode {
-    fn process_input(&self, input: char) -> Vec<Rc<Operation>> {
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
             ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
             'i' => vec![
@@ -136,7 +136,7 @@ impl ModeHandler for ActionMode {
 struct FilterMode;
 
 impl ModeHandler for FilterMode {
-    fn process_input(&self, input: char) -> Vec<Rc<Operation>> {
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
             ui::ENTER => vec![Rc::new(ChangeMode(Mode::Action))],
             '\t' => vec![
@@ -175,8 +175,8 @@ impl ModeHandler for FilterMode {
 
 #[derive(Debug)]
 struct CommandMode {
-    execute_command: Rc<Operation>,
-    change_to_display: Rc<Operation>,
+    execute_command: Rc<dyn Operation>,
+    change_to_display: Rc<dyn Operation>,
 }
 
 impl CommandMode {
@@ -189,7 +189,7 @@ impl CommandMode {
 }
 
 impl ModeHandler for CommandMode {
-    fn process_input(&self, input: char) -> Vec<Rc<Operation>> {
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
             ui::ENTER => vec![
                 Rc::clone(&self.execute_command),
@@ -209,7 +209,7 @@ impl ModeHandler for CommandMode {
 struct DisplayMode;
 
 impl ModeHandler for DisplayMode {
-    fn process_input(&self, input: char) -> Vec<Rc<Operation>> {
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
             '.' => vec![Rc::new(ChangeMode(Mode::Command))],
             '#' | '/' => vec![
