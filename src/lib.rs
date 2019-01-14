@@ -451,6 +451,7 @@ struct RelativePlace {
 /// Signifies the location of a character within a view.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Place {
+    // TODO: Make line use std::num::NonZeroUsize.
     line: usize,
     index: usize,
 }
