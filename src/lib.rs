@@ -96,7 +96,7 @@ impl Paper {
 
     /// Displays the view on the user interface.
     fn display_view(&self) -> Result<(), String> {
-        for edit in self.view.redraw_edits().take(self.ui.pane_height()) {
+        for edit in self.view.redraw_edits().take(self.ui.grid_height()) {
             self.ui.apply(edit)?;
         }
 
@@ -105,7 +105,7 @@ impl Paper {
 
     /// Returns the height used for scrolling.
     fn scroll_height(&self) -> usize {
-        self.ui.pane_height() / 4
+        self.ui.grid_height() / 4
     }
 }
 
@@ -706,7 +706,7 @@ impl Operation for AddToSketch {
         match paper.controller.enhance(&paper) {
             Some(Enhancement::FilterSections(sections)) => {
                 // Clear filter background.
-                for row in 0..paper.ui.pane_height() {
+                for row in 0..paper.ui.grid_height() {
                     paper
                         .ui
                         .apply(Edit::new(Region::row(row), Change::Format(Color::Default)))?;

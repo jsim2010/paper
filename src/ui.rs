@@ -1,70 +1,45 @@
-//! The interface between the user and the application.
+//! Implements how the user interfaces with the application.
 use pancurses::Input;
-use std::fmt;
+use std::fmt::{Display, Formatter};
+use std::fmt::Result as FmtResult;
 
-/// Character that represents the `Backspace` key.
+type UiResult = Result<(), String>;
+
+/// The character that represents the `Backspace` key.
 pub(crate) const BACKSPACE: char = '\u{08}';
-/// Character that represents the `Enter` key.
+/// The character that represents the `Enter` key.
 pub(crate) const ENTER: char = '\n';
 // Currently ESC is set to Ctrl-C to allow manual testing within vim terminal where ESC is already
 // mapped.
-/// Character that represents the `Esc` key.
+/// The character that represents the `Esc` key.
 pub(crate) const ESC: char = '';
 
-/// The interface between the application and the user.
+/// The interface between the user and the application.
 ///
-/// All output is displayed in a grid of cells.
+/// All output is displayed in a grid of cells. Each cell contains one character and can change its
+/// background color.
 #[derive(Debug)]
 pub(crate) struct UserInterface {
-    /// Interface to the terminal.
+    /// The window that interfaces with the application.
     window: pancurses::Window,
 }
 
 impl UserInterface {
-    /// Creates a new UserInterface.
-    pub(crate) fn new() -> UserInterface {
-        UserInterface {
-            // Must call initscr() first.
-            window: pancurses::initscr(),
-        }
-    }
-
     /// Sets up the user interface for use.
-    pub(crate) fn init(&self) -> Result<(), String> {
-        // start_color must be called before any other color manipulation routine is called.
-        if pancurses::start_color() != pancurses::OK {
-            return Err(String::from("Failed while calling start_color()."))
-        }
-
-        if pancurses::use_default_colors() != pancurses::OK {
-            return Err(String::from("Failed while calling use_default_colors()."))
-        }
-
-        // Prevent curses from outputing keys.
-        if pancurses::noecho() != pancurses::OK {
-            return Err(String::from("Failed while calling noecho()."))
-        }
-
-        if pancurses::start_color() != pancurses::OK {
-            return Err(String::from("Failed while calling start_color()."))
-        }
-
-        if pancurses::init_pair(Color::Red.cp(), -1, pancurses::COLOR_RED) != pancurses::OK {
-            return Err(String::from("Failed while calling init_pair()."))
-        }
-        
-        if pancurses::init_pair(Color::Blue.cp(), -1, pancurses::COLOR_BLUE) != pancurses::OK {
-            return Err(String::from("Failed while calling init_pair()."))
-        }
+    pub(crate) fn init(&self) -> UiResult {
+        self.start_color()?;
+        self.use_default_colors()?;
+        self.noecho()?;
+        self.define_color(Color::Red, pancurses::COLOR_RED)?;
+        self.define_color(Color::Blue, pancurses::COLOR_BLUE)?;
 
         Ok(())
     }
 
     /// Gets input from the user.
     ///
-    /// Returns an [`Option<char>`]. Returns [`None`] if no input is provided.
+    /// Returns [`None`] if no character input is provided.
     ///
-    /// [`Option<char>`]: https://doc.rust-lang.org/std/option/enum.Option.html
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     pub(crate) fn receive_input(&self) -> Option<char> {
         match self.window.getch() {
@@ -74,53 +49,32 @@ impl UserInterface {
     }
 
     /// Closes the user interface.
-    pub(crate) fn close(&self) -> Result<(), String> {
-        match pancurses::endwin() {
-            pancurses::OK => Ok(()),
-            _ => Err(String::from("Failed while calling endwin().")),
-        }
+    pub(crate) fn close(&self) -> UiResult {
+        UserInterface::check_result(pancurses::endwin(), "endwin")
     }
 
-    /// Applies edit to display.
-    pub(crate) fn apply(&self, edit: Edit) -> Result<(), String> {
-        if self.window.mv(edit.region.y(), edit.region.x()) != pancurses::OK {
-            return Err(String::from("Failed while calling wmove()"));
-        }
+    /// Applies the edit to the output.
+    pub(crate) fn apply(&self, edit: Edit) -> UiResult {
+        self.move_to(edit.region.start)?;
 
         match edit.change {
             Change::Backspace => {
                 // Add BACKSPACE (move cursor 1 cell to the left) and delete that character.
-                if self.window.addch(BACKSPACE) != pancurses::OK {
-                    return Err(String::from("Failed while calling waddch()."));
-                }
-
-                if self.window.delch() != pancurses::OK {
-                    return Err(String::from("Failed while calling wdelch()."));
-                }
+                self.add_char(BACKSPACE)?;
+                self.delete_char()?;
             }
             Change::Insert(c) => {
-                if self.window.insch(c) != pancurses::OK {
-                    return Err(String::from("Failed while calling winsch()."));
-                }
+                self.insert_char(c)?;
             }
             Change::Row(s) => {
-                if self.window.addstr(s) != pancurses::OK {
-                    return Err(String::from("Failed while calling waddstr()."));
-                }
-
-                if self.window.clrtoeol() != pancurses::OK {
-                    return Err(String::from("Failed while calling wcleartoeol()."));
-                }
+                self.add_str(s)?;
+                self.clear_to_row_end()?;
             }
             Change::Clear => {
-                if self.window.clear() != pancurses::OK {
-                    return Err(String::from("Failed while calling wclear()."))
-                }
+                self.clear_all()?;
             }
             Change::Format(color) => {
-                if self.window.chgat(edit.region.n(), pancurses::A_NORMAL, color.cp()) != pancurses::OK {
-                    return Err(String::from("Failed while calling chgat()."))
-                }
+                self.format(edit.region.length, color)?;
             }
             Change::Nothing => {}
         }
@@ -128,29 +82,88 @@ impl UserInterface {
         Ok(())
     }
 
-    pub(crate) fn flash(&self) -> Result<(), String> {
-        match pancurses::flash() {
-            pancurses::OK => Ok(()),
-            _ => Err(String::from("Failed while calling flash().")),
-        }
+    /// Flashes the output.
+    pub(crate) fn flash(&self) -> UiResult {
+        UserInterface::check_result(pancurses::flash(), "flash")
     }
 
     // TODO: Store this value and update when size is changed.
-    /// Returns the height of the pane.
-    pub(crate) fn pane_height(&self) -> usize {
+    /// Returns the number of cells that make up the height of the grid.
+    pub(crate) fn grid_height(&self) -> usize {
         self.window.get_max_y() as usize
+    }
+
+    /// Initializes color processing.
+    ///
+    /// Must be called before any other color manipulation routine is called.
+    fn start_color(&self) -> UiResult {
+        UserInterface::check_result(pancurses::start_color(), "start_color")
+    }
+
+    fn use_default_colors(&self) -> UiResult {
+        UserInterface::check_result(pancurses::use_default_colors(), "use_default_colors")
+    }
+
+    fn noecho(&self) -> UiResult {
+        UserInterface::check_result(pancurses::noecho(), "noecho")
+    }
+
+    fn define_color(&self, color: Color, background: i16) -> UiResult {
+        UserInterface::check_result(pancurses::init_pair(color.cp(), -1, background), "init_pair")
+    }
+
+    fn move_to(&self, address: Address) -> UiResult {
+        UserInterface::check_result(self.window.mv(address.y(), address.x()), "wmove")
+    }
+
+    fn add_char(&self, c: char) -> UiResult {
+        UserInterface::check_result(self.window.addch(c), "waddch")
+    }
+
+    fn delete_char(&self) -> UiResult {
+        UserInterface::check_result(self.window.delch(), "wdelch")
+    }
+
+    fn insert_char(&self, c: char) -> UiResult {
+        UserInterface::check_result(self.window.insch(c), "winsch")
+    }
+
+    fn add_str(&self, s: String) -> UiResult {
+        UserInterface::check_result(self.window.addstr(s), "waddstr")
+    }
+
+    fn clear_to_row_end(&self) -> UiResult {
+        UserInterface::check_result(self.window.clrtoeol(), "wcleartoeol")
+    }
+
+    fn clear_all(&self) -> UiResult {
+        UserInterface::check_result(self.window.clear(), "wclear")
+    }
+
+    fn format(&self, length: Length, color: Color) -> UiResult {
+        UserInterface::check_result(self.window.chgat(length.0, pancurses::A_NORMAL, color.cp()), "wchgat")
+    }
+
+    fn check_result(result: i32, call: &str) -> UiResult {
+        match result {
+            pancurses::OK => Ok(()),
+            _ => Err(format!("Failed while calling {}().", call)),
+        }
     }
 }
 
 impl Default for UserInterface {
     fn default() -> UserInterface {
-        UserInterface::new()
+        UserInterface {
+            // Must call initscr() first.
+            window: pancurses::initscr(),
+        }
     }
 }
 
 /// Signifies a [`Change`] to make to a [`Region`].
 ///
-/// [`Change`]s that act on an [`Address`] are executed on the starting [`Address`] of the
+/// [`Change`]s that act on a single [`Address`] are executed on the starting [`Address`] of the
 /// [`Region`].
 ///
 /// [`Change`]: enum.Change.html
@@ -199,8 +212,8 @@ impl Default for Change {
     }
 }
 
-impl fmt::Display for Change {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Change {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{:?}", self)
     }
 }
@@ -208,8 +221,11 @@ impl fmt::Display for Change {
 /// Signifies a color.
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) enum Color {
+    /// The default foreground on the default background.
     Default,
+    /// The default foreground on a red background.
     Red,
+    /// The default foreground on a blue background.
     Blue,
 }
 
@@ -253,35 +269,10 @@ impl Region {
             length: END,
         }
     }
-
-    /// Returns the column at which `self` starts.
-    ///
-    /// Used with [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
-    fn x(&self) -> i32 {
-        self.start.x()
-    }
-
-    /// Returns the row at which `self` starts.
-    ///
-    /// Used with [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
-    fn y(&self) -> i32 {
-        self.start.y()
-    }
-
-    /// Returns the length of the region as specified by [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
-    fn n(&self) -> i32 {
-        self.length.0
-    }
 }
 
-impl fmt::Display for Region {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Region {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}->{}", self.start, self.length)
     }
 }
@@ -320,8 +311,8 @@ impl Address {
     }
 }
 
-impl fmt::Display for Address {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Address {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "({}, {})", self.row, self.column)
     }
 }
@@ -358,8 +349,8 @@ impl Length {
     }
 }
 
-impl fmt::Display for Length {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Length {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self.0 {
             END_VALUE => write!(f, "END"),
             x => write!(f, "{}", x),
