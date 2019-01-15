@@ -1,7 +1,7 @@
 //! Implements how the user interfaces with the application.
 use pancurses::Input;
-use std::fmt::{Display, Formatter};
 use std::fmt::Result as FmtResult;
+use std::fmt::{Display, Formatter};
 
 type UiResult = Result<(), String>;
 
@@ -109,7 +109,10 @@ impl UserInterface {
     }
 
     fn define_color(&self, color: Color, background: i16) -> UiResult {
-        UserInterface::check_result(pancurses::init_pair(color.cp(), -1, background), "init_pair")
+        UserInterface::check_result(
+            pancurses::init_pair(color.cp(), -1, background),
+            "init_pair",
+        )
     }
 
     fn move_to(&self, address: Address) -> UiResult {
@@ -141,7 +144,10 @@ impl UserInterface {
     }
 
     fn format(&self, length: Length, color: Color) -> UiResult {
-        UserInterface::check_result(self.window.chgat(length.0, pancurses::A_NORMAL, color.cp()), "wchgat")
+        UserInterface::check_result(
+            self.window.chgat(length.0, pancurses::A_NORMAL, color.cp()),
+            "wchgat",
+        )
     }
 
     fn check_result(result: i32, call: &str) -> UiResult {
