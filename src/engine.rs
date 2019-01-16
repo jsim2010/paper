@@ -1,6 +1,6 @@
 use crate::ui;
 use crate::{
-    Notice, DrawSketch, Edge, IdentifyNoise,
+    Notice, DrawSketch, Edge, 
     Outcome, Operation, Paper, SetMarks, UpdateView,
 };
 use std::fmt;
@@ -135,12 +135,34 @@ impl ModeHandler for CommandMode {
                 Rc::clone(&self.change_to_display),
             ],
             ui::ESC => vec![Rc::clone(&self.change_to_display)],
+            _ => vec![Rc::new(AddToSketch(input.to_string()))],
+        }
+    }
+
+    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
+        vec![Rc::new(DrawPopup)]
+    }
+}
+
+#[derive(Debug)]
+struct FilterMode;
+
+impl ModeHandler for FilterMode {
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
+        match input {
+            ui::ENTER => vec![Rc::new(ChangeMode(Mode::Action))],
+            '\t' => vec![
+                Rc::new(ReduceNoise),
+                Rc::new(AddToSketch(String::from("&&"))),
+                Rc::new(DrawSketch),
+            ],
+            ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
             _ => vec![Rc::new(AddToSketch(input.to_string())), Rc::new(DrawSketch)],
         }
     }
 
     fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        Vec::new()
+        vec![Rc::new(FilterSignals), Rc::new(DrawPopup)]
     }
 }
 
@@ -184,28 +206,6 @@ impl ModeHandler for ActionMode {
 
     fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
         Vec::new()
-    }
-}
-
-#[derive(Debug)]
-struct FilterMode;
-
-impl ModeHandler for FilterMode {
-    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
-        match input {
-            ui::ENTER => vec![Rc::new(ChangeMode(Mode::Action))],
-            '\t' => vec![
-                Rc::new(IdentifyNoise),
-                Rc::new(AddToSketch(String::from("&&"))),
-                Rc::new(DrawSketch),
-            ],
-            ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
-            _ => vec![Rc::new(AddToSketch(input.to_string())), Rc::new(DrawSketch)],
-        }
-    }
-
-    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        vec![Rc::new(FilterNoise), Rc::new(DrawPopup)]
     }
 }
 
@@ -273,6 +273,16 @@ impl Operation for ExecuteCommand {
 }
 
 #[derive(Debug)]
+struct ReduceNoise;
+
+impl Operation for ReduceNoise {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
+        paper.reduce_noise();
+        Ok(None)
+    }
+}
+
+#[derive(Debug)]
 struct AddToSketch(String);
 
 impl Operation for AddToSketch {
@@ -316,11 +326,11 @@ pub(crate) trait Enhancement {
     fn enhance(&self, paper: &mut Paper) -> Result<(), String>;
 }
 
-struct FilterNoise;
+struct FilterSignals;
 
-impl Enhancement for FilterNoise {
+impl Enhancement for FilterSignals {
     fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
-        paper.filter_noise();
+        paper.filter_signals();
         paper.clear_background()?;
         paper.draw_filter_backgrounds()
     }

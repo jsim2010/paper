@@ -122,7 +122,11 @@ impl Paper {
         self.controller.enhancements()
     }
 
-    fn filter_noise(&mut self) {
+    fn reduce_noise(&mut self) {
+        self.noises = self.signals.clone();
+    }
+
+    fn filter_signals(&mut self) {
         self.signals = self.noises.clone();
 
         if let Some(last_feature) = self.patterns.first_feature.tokenize_iter(&self.sketch).last().and_then(|x| x.get("feature")) {
@@ -672,47 +676,6 @@ impl PartialOrd<usize> for LineNumber {
 pub trait Operation: fmt::Debug {
     /// Executes the command signified by `self`.
     fn operate(&self, paper: &mut Paper) -> Outcome;
-}
-
-#[derive(Debug)]
-struct IdentifyNoise;
-
-impl Operation for IdentifyNoise {
-    fn operate(&self, paper: &mut Paper) -> Outcome {
-        let mut sections = Vec::new();
-
-        for line in 1..=paper.view.line_count {
-            // Safe to unwrap because line >= 1.
-            sections.push(Section::line(LineNumber::new(line).unwrap()));
-        }
-
-        for tokens in paper.patterns.first_feature.tokenize_iter(&paper.sketch) {
-            if let Some(feature) = tokens.get("feature") {
-                if let Some(id) = feature.chars().nth(0) {
-                    for filter in paper.filters.iter() {
-                        if id == filter.id() {
-                            filter.extract(feature, &mut sections, &paper.view);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        paper.noises.clear();
-
-        for section in sections {
-            if let Some(region) = section.to_region(&paper.view.origin) {
-                paper
-                    .ui
-                    .apply(Edit::new(region, Change::Format(Color::Blue)))?;
-            }
-
-            paper.noises.push(section);
-        }
-
-        Ok(None)
-    }
 }
 
 #[derive(Debug)]
