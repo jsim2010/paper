@@ -1,18 +1,27 @@
+//! Implements the state machine of the application.
 use crate::{Edge, Paper};
 use crate::ui::{ENTER, ESC};
 use rec::{Atom, ChCls, Pattern, Quantifier, SOME, VAR};
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::rc::Rc;
 
+/// Signifies the result of executing an [`Operation`].
 type Outcome = Result<Option<Notice>, String>;
 
+/// Manages the functionality of the different [`Mode`]s.
 #[derive(Debug)]
 pub(crate) struct Controller {
+    /// The current [`Mode`].
     mode: Mode,
+    /// The implementation of [`DisplayMode`].
     display: Rc<dyn ModeHandler>,
+    /// The implementation of [`CommandMode`].
     command: Rc<dyn ModeHandler>,
+    /// The implementation of [`FilterMode`].
     filter: Rc<dyn ModeHandler>,
+    /// The implementation of [`ActionMode`].
     action: Rc<dyn ModeHandler>,
+    /// The implementation of [`EditMode`].
     edit: Rc<dyn ModeHandler>,
 }
 
@@ -360,7 +369,7 @@ impl Enhancement for UpdateView {
     }
 }
 
-/// Specifies the result of an Op to be processed by the application.
+/// Signifies an action requested by an [`Operation`].
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) enum Notice {
     /// Ends the application.
