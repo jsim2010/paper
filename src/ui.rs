@@ -1,7 +1,6 @@
 //! Implements how the user interfaces with the application.
 use pancurses::Input;
-use std::fmt::Result as FmtResult;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Result as FmtResult};
 
 type UiResult = Result<(), String>;
 
