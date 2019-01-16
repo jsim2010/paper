@@ -1,7 +1,7 @@
 use crate::ui;
 use crate::{
-    Notice, DrawSketch, Edge, 
-    Outcome, Operation, Paper, SetMarks, UpdateView,
+    Notice, Edge, 
+    Outcome, Operation, Paper, UpdateView,
 };
 use std::fmt;
 use std::rc::Rc;
@@ -154,15 +154,38 @@ impl ModeHandler for FilterMode {
             '\t' => vec![
                 Rc::new(ReduceNoise),
                 Rc::new(AddToSketch(String::from("&&"))),
-                Rc::new(DrawSketch),
             ],
             ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
-            _ => vec![Rc::new(AddToSketch(input.to_string())), Rc::new(DrawSketch)],
+            _ => vec![Rc::new(AddToSketch(input.to_string()))],
         }
     }
 
     fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
         vec![Rc::new(FilterSignals), Rc::new(DrawPopup)]
+    }
+}
+
+#[derive(Debug)]
+struct ActionMode;
+
+impl ModeHandler for ActionMode {
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
+        match input {
+            ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
+            'i' => vec![
+                Rc::new(MarkAt(Edge::Start)),
+                Rc::new(ChangeMode(Mode::Edit)),
+            ],
+            'I' => vec![
+                Rc::new(MarkAt(Edge::End)),
+                Rc::new(ChangeMode(Mode::Edit)),
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
+        Vec::new()
     }
 }
 
@@ -177,30 +200,6 @@ impl ModeHandler for EditMode {
                 Rc::new(AddToSketch(input.to_string())),
                 Rc::new(UpdateView(input)),
             ],
-        }
-    }
-
-    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        Vec::new()
-    }
-}
-
-#[derive(Debug)]
-struct ActionMode;
-
-impl ModeHandler for ActionMode {
-    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
-        match input {
-            ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
-            'i' => vec![
-                Rc::new(SetMarks(Edge::Start)),
-                Rc::new(ChangeMode(Mode::Edit)),
-            ],
-            'I' => vec![
-                Rc::new(SetMarks(Edge::End)),
-                Rc::new(ChangeMode(Mode::Edit)),
-            ],
-            _ => Vec::new(),
         }
     }
 
@@ -229,6 +228,16 @@ impl Operation for ChangeMode {
         }
 
         paper.change_mode(self.0);
+        Ok(None)
+    }
+}
+
+#[derive(Debug)]
+struct MarkAt(Edge);
+
+impl Operation for MarkAt {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
+        paper.set_marks(&self.0);
         Ok(None)
     }
 }

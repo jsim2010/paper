@@ -176,6 +176,37 @@ impl Paper {
         Ok(())
     }
 
+    fn set_marks(&mut self, edge: &Edge) {
+        self.marks.clear();
+
+        for signal in self.signals.iter() {
+            let mut place = signal.start;
+
+            if *edge == Edge::End {
+                let length = signal.length;
+
+                place.index += match length {
+                    END => self.view.line_length(&signal.start),
+                    _ => length.to_usize(),
+                };
+            }
+
+            self.marks.push(Mark {
+                place,
+                pointer: place.index
+                    + Pointer(match place.line.index() {
+                        0 => Some(0),
+                        index => self
+                            .view
+                            .data
+                            .match_indices(ui::ENTER)
+                            .nth(index - 1)
+                            .map(|x| x.0 + 1),
+                    }),
+            });
+        }
+    }
+
     fn scroll(&mut self, movement: isize) {
         self.view.scroll(movement);
     }
@@ -679,18 +710,6 @@ pub trait Operation: fmt::Debug {
 }
 
 #[derive(Debug)]
-struct DrawSketch;
-
-impl Operation for DrawSketch {
-    fn operate(&self, paper: &mut Paper) -> Outcome {
-        paper
-            .ui
-            .apply(Edit::new(Region::row(0), Change::Row(paper.sketch.clone())))?;
-        Ok(None)
-    }
-}
-
-#[derive(Debug)]
 struct UpdateView(char);
 
 impl Operation for UpdateView {
@@ -713,44 +732,6 @@ impl Operation for UpdateView {
         if adjustment.change == Change::Clear {
             paper.view.clean();
             paper.display_view()?;
-        }
-
-        Ok(None)
-    }
-}
-
-#[derive(Debug)]
-struct SetMarks(Edge);
-
-impl Operation for SetMarks {
-    fn operate(&self, paper: &mut Paper) -> Outcome {
-        paper.marks.clear();
-
-        for signal in paper.signals.iter() {
-            let mut place = signal.start;
-
-            if self.0 == Edge::End {
-                let length = signal.length;
-
-                place.index += match length {
-                    END => paper.view.line_length(&signal.start),
-                    _ => length.to_usize(),
-                };
-            }
-
-            paper.marks.push(Mark {
-                place,
-                pointer: place.index
-                    + Pointer(match place.line.index() {
-                        0 => Some(0),
-                        index => paper
-                            .view
-                            .data
-                            .match_indices(ui::ENTER)
-                            .nth(index - 1)
-                            .map(|x| x.0 + 1),
-                    }),
-            });
         }
 
         Ok(None)
