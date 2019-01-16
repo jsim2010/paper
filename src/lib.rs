@@ -140,6 +140,12 @@ impl Paper {
         return true
     }
 
+    fn draw_popup(&self) -> Result<(), String> {
+        self
+            .ui
+            .apply(Edit::new(Region::row(0), Change::Row(self.sketch.clone())))
+    }
+
     fn clear_background(&self) -> Result<(), String> {
         for row in 0..self.ui.grid_height() {
             self.format_region(Region::row(row), Color::Default)?;

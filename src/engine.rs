@@ -99,7 +99,6 @@ impl ModeHandler for DisplayMode {
             '#' | '/' => vec![
                 Rc::new(ChangeMode(Mode::Filter)),
                 Rc::new(AddToSketch(input.to_string())),
-                Rc::new(DrawSketch),
             ],
             'j' => vec![Rc::new(ScrollDown)],
             'k' => vec![Rc::new(ScrollUp)],
@@ -173,7 +172,7 @@ impl ModeHandler for FilterMode {
     }
 
     fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        vec![Rc::new(FilterNoise)]
+        vec![Rc::new(FilterNoise), Rc::new(DrawPopup)]
     }
 }
 
@@ -260,7 +259,14 @@ impl Enhancement for FilterNoise {
     fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
         paper.filter_noise();
         paper.clear_background()?;
-        paper.draw_filter_backgrounds()?;
-        Ok(())
+        paper.draw_filter_backgrounds()
+    }
+}
+
+struct DrawPopup;
+
+impl Enhancement for DrawPopup {
+    fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
+        paper.draw_popup()
     }
 }
