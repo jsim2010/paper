@@ -46,7 +46,7 @@ use std::iter::once;
 use std::num::NonZeroUsize;
 use std::ops::{Sub, Add, AddAssign, Shr, SubAssign};
 
-use crate::engine::{Controller, Mode};
+use crate::engine::Controller;
 
 /// The paper application.
 #[derive(Debug, Default)]
@@ -101,6 +101,47 @@ impl Paper {
         }
 
         Ok(())
+    }
+
+    fn enhancements(&self) -> Option<Enhancement> {
+        self.controller.enhance(self)
+    }
+
+    fn add_to_sketch(&mut self, s: String) -> bool {
+        for c in s.chars() {
+            match c {
+                ui::BACKSPACE => {
+                    if let None = self.sketch.pop() {
+                        return false
+                    }
+                }
+                _ => {
+                    self.sketch.push(c);
+                }
+            }
+        }
+
+        return true
+    }
+
+    fn clear_background(&self) -> Result<(), String> {
+        for row in 0..self.ui.grid_height() {
+            self.format_region(Region::row(row), Color::Default)?;
+        }
+
+        Ok(())
+    }
+
+    fn format_region(&self, region: Region, color: Color) -> Result<(), String> {
+        self.ui.apply(Edit::new(region, Change::Format(color)))
+    }
+
+    fn reset_sketch(&mut self) {
+        self.sketch.clear();
+    }
+
+    fn change_mode(&mut self, mode: engine::Mode) {
+        self.controller.set_mode(mode);
     }
 
     /// Returns the height used for scrolling.
@@ -575,31 +616,6 @@ pub trait Operation: fmt::Debug {
 }
 
 #[derive(Debug)]
-struct ChangeMode(Mode);
-
-impl Operation for ChangeMode {
-    fn operate(&self, paper: &mut Paper) -> Outcome {
-        match self.0 {
-            Mode::Display => {
-                paper.display_view()?;
-            }
-            Mode::Command | Mode::Filter => {
-                paper.marks.clear();
-                paper.sketch.clear();
-            }
-            Mode::Action => {}
-            Mode::Edit => {
-                paper.display_view()?;
-                paper.sketch.clear();
-            }
-        }
-
-        paper.controller.set_mode(self.0);
-        Ok(None)
-    }
-}
-
-#[derive(Debug)]
 struct ExecuteCommand {
     command_pattern: Pattern,
     see_pattern: Pattern,
@@ -679,59 +695,6 @@ impl Operation for IdentifyNoise {
             }
 
             paper.noises.push(section);
-        }
-
-        Ok(None)
-    }
-}
-
-#[derive(Debug)]
-struct AddToSketch(String);
-
-impl Operation for AddToSketch {
-    fn operate(&self, paper: &mut Paper) -> Outcome {
-        for c in self.0.chars() {
-            match c {
-                ui::BACKSPACE => {
-                    if let None = paper.sketch.pop() {
-                        return Ok(Some(Notice::Flash))
-                    }
-                }
-                _ => {
-                    paper.sketch.push(c);
-                }
-            }
-        }
-
-        match paper.controller.enhance(&paper) {
-            Some(Enhancement::FilterSections(sections)) => {
-                // Clear filter background.
-                for row in 0..paper.ui.grid_height() {
-                    paper
-                        .ui
-                        .apply(Edit::new(Region::row(row), Change::Format(Color::Default)))?;
-                }
-
-                // Add back in the noise
-                for noise in paper.noises.iter() {
-                    if let Some(region) = noise.to_region(&paper.view.origin) {
-                        paper
-                            .ui
-                            .apply(Edit::new(region, Change::Format(Color::Blue)))?;
-                    }
-                }
-
-                for section in sections.iter() {
-                    if let Some(region) = section.to_region(&paper.view.origin) {
-                        paper
-                            .ui
-                            .apply(Edit::new(region, Change::Format(Color::Red)))?;
-                    }
-                }
-
-                paper.signals = sections;
-            }
-            None => {}
         }
 
         Ok(None)

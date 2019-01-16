@@ -1,7 +1,7 @@
 use crate::ui;
 use crate::{
-    AddToSketch, ChangeMode, DrawSketch, Edge, Enhancement, ExecuteCommand, IdentifyNoise,
-    Operation, Paper, ScrollDown, ScrollUp, SetMarks, UpdateView,
+    Notice, DrawSketch, Edge, Enhancement, ExecuteCommand, IdentifyNoise,
+    Outcome, Operation, Paper, ScrollDown, ScrollUp, SetMarks, UpdateView,
 };
 use std::fmt;
 use std::rc::Rc;
@@ -87,6 +87,29 @@ impl Default for Mode {
 trait ModeHandler: fmt::Debug {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>>;
     fn enhance(&self, paper: &Paper) -> Option<Enhancement>;
+}
+
+#[derive(Debug)]
+struct DisplayMode;
+
+impl ModeHandler for DisplayMode {
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
+        match input {
+            '.' => vec![Rc::new(ChangeMode(Mode::Command))],
+            '#' | '/' => vec![
+                Rc::new(ChangeMode(Mode::Filter)),
+                Rc::new(AddToSketch(input.to_string())),
+                Rc::new(DrawSketch),
+            ],
+            'j' => vec![Rc::new(ScrollDown)],
+            'k' => vec![Rc::new(ScrollUp)],
+            _ => Vec::new(),
+        }
+    }
+
+    fn enhance(&self, _paper: &Paper) -> Option<Enhancement> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -206,24 +229,64 @@ impl ModeHandler for CommandMode {
 }
 
 #[derive(Debug)]
-struct DisplayMode;
+struct ChangeMode(Mode);
 
-impl ModeHandler for DisplayMode {
-    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
-        match input {
-            '.' => vec![Rc::new(ChangeMode(Mode::Command))],
-            '#' | '/' => vec![
-                Rc::new(ChangeMode(Mode::Filter)),
-                Rc::new(AddToSketch(input.to_string())),
-                Rc::new(DrawSketch),
-            ],
-            'j' => vec![Rc::new(ScrollDown)],
-            'k' => vec![Rc::new(ScrollUp)],
-            _ => Vec::new(),
+impl Operation for ChangeMode {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
+        match self.0 {
+            Mode::Display => {
+                paper.display_view()?;
+            }
+            Mode::Command | Mode::Filter => {
+                paper.reset_sketch();
+            }
+            Mode::Action => {}
+            Mode::Edit => {
+                paper.display_view()?;
+                paper.reset_sketch();
+            }
         }
-    }
 
-    fn enhance(&self, _paper: &Paper) -> Option<Enhancement> {
-        None
+        paper.change_mode(self.0);
+        Ok(None)
+    }
+}
+
+#[derive(Debug)]
+struct AddToSketch(String);
+
+impl Operation for AddToSketch {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
+        if !paper.add_to_sketch(self.0) {
+            return Ok(Some(Notice::Flash))
+        }
+
+        match paper.enhancements() {
+            Some(Enhancement::FilterSections(sections)) => {
+                paper.clear_background()?;
+
+                // Add back in the noise
+                for noise in paper.noises.iter() {
+                    if let Some(region) = noise.to_region(&paper.view.origin) {
+                        paper
+                            .ui
+                            .apply(Edit::new(region, Change::Format(Color::Blue)))?;
+                    }
+                }
+
+                for section in sections.iter() {
+                    if let Some(region) = section.to_region(&paper.view.origin) {
+                        paper
+                            .ui
+                            .apply(Edit::new(region, Change::Format(Color::Red)))?;
+                    }
+                }
+
+                paper.signals = sections;
+            }
+            None => {}
+        }
+
+        Ok(None)
     }
 }
