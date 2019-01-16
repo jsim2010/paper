@@ -67,6 +67,7 @@ pub struct Paper {
     marks: Vec<Mark>,
     patterns: PaperPatterns,
     filters: PaperFilters,
+    sketch_additions: String,
 }
 
 impl Paper {
@@ -146,7 +147,9 @@ impl Paper {
     }
 
     fn add_to_sketch(&mut self, s: &String) -> bool {
-        for c in s.chars() {
+        self.sketch_additions = s.clone();
+
+        for c in self.sketch_additions.chars() {
             match c {
                 ui::BACKSPACE => {
                     if let None = self.sketch.pop() {
@@ -238,6 +241,32 @@ impl Paper {
 
     fn reset_sketch(&mut self) {
         self.sketch.clear();
+    }
+
+    fn update_view(&mut self) -> Result<(), String> {
+        let mut adjustment: Adjustment = Default::default();
+
+        for c in self.sketch_additions.chars() {
+            for mark in self.marks.iter_mut() {
+                adjustment += Adjustment::create(c, &mark.place, &self.view);
+
+                if adjustment.change != Change::Clear {
+                    if let Some(region) = mark.place.to_region(&self.view.origin) {
+                        self.ui.apply(Edit::new(region, adjustment.change.clone()))?;
+                    }
+                }
+
+                mark.adjust(&adjustment);
+                self.view.add(mark, c);
+            }
+        }
+
+        if adjustment.change == Change::Clear {
+            self.view.clean();
+            self.display_view()?;
+        }
+
+        Ok(())
     }
 
     fn change_mode(&mut self, mode: engine::Mode) {
@@ -700,64 +729,6 @@ impl PartialEq<usize> for LineNumber {
 impl PartialOrd<usize> for LineNumber {
     fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
         Some(self.0.get().cmp(other))
-    }
-}
-
-/// Signifies a command that [`Paper`] can execute.
-pub trait Operation: fmt::Debug {
-    /// Executes the command signified by `self`.
-    fn operate(&self, paper: &mut Paper) -> Outcome;
-}
-
-#[derive(Debug)]
-struct UpdateView(char);
-
-impl Operation for UpdateView {
-    fn operate(&self, paper: &mut Paper) -> Outcome {
-        let mut adjustment: Adjustment = Default::default();
-
-        for mark in paper.marks.iter_mut() {
-            adjustment += Adjustment::create(self.0, &mark.place, &paper.view);
-
-            if adjustment.change != Change::Clear {
-                if let Some(region) = mark.place.to_region(&paper.view.origin) {
-                    paper.ui.apply(Edit::new(region, adjustment.change.clone()))?;
-                }
-            }
-
-            mark.adjust(&adjustment);
-            paper.view.add(mark, self.0);
-        }
-
-        if adjustment.change == Change::Clear {
-            paper.view.clean();
-            paper.display_view()?;
-        }
-
-        Ok(None)
-    }
-}
-
-/// Specifies a procedure to enhance the current sketch.
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub enum Enhance {
-    /// Highlights specified regions.
-    FilterSections(Vec<Section>),
-}
-
-impl Display for Enhance {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Enhance::FilterSections(regions) => {
-                write!(f, "FilterSections [")?;
-
-                for region in regions {
-                    write!(f, "  {}", region)?;
-                }
-
-                write!(f, "]")
-            }
-        }
     }
 }
 

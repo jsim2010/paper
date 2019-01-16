@@ -1,7 +1,7 @@
 use crate::ui;
 use crate::{
     Notice, Edge, 
-    Outcome, Operation, Paper, UpdateView,
+    Outcome, Paper, 
 };
 use std::fmt;
 use std::rc::Rc;
@@ -198,14 +198,19 @@ impl ModeHandler for EditMode {
             ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
             _ => vec![
                 Rc::new(AddToSketch(input.to_string())),
-                Rc::new(UpdateView(input)),
             ],
         }
     }
 
     fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        Vec::new()
+        vec![Rc::new(UpdateView)]
     }
+}
+
+/// Signifies a command that [`Paper`] can execute.
+pub(crate) trait Operation: fmt::Debug {
+    /// Executes the command signified by `self`.
+    fn operate(&self, paper: &mut Paper) -> Outcome;
 }
 
 #[derive(Debug)]
@@ -350,5 +355,13 @@ struct DrawPopup;
 impl Enhancement for DrawPopup {
     fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
         paper.draw_popup()
+    }
+}
+
+struct UpdateView;
+
+impl Enhancement for UpdateView {
+    fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
+        paper.update_view()
     }
 }
