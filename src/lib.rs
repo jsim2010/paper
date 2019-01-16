@@ -36,7 +36,7 @@ mod engine;
 mod ui;
 
 use crate::ui::{Address, Change, Color, Edit, Length, Region, UserInterface, END};
-use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
+use rec::{Atom, ChCls, Pattern, OPT, SOME, VAR};
 use std::cmp;
 use std::collections::HashMap;
 use std::fmt;
@@ -104,6 +104,20 @@ impl Paper {
         Ok(())
     }
 
+    fn change_view(&mut self, path: &str) {
+        self.view = View::with_file(String::from(path));
+        self.noises.clear();
+
+        for line in 1..=self.view.line_count {
+            // Safe to unwrap because line >= 1.
+            self.noises.push(Section::line(LineNumber::new(line).unwrap()));
+        }
+    }
+
+    fn save_view(&self) {
+        self.view.put();
+    }
+
     fn enhancements(&self) -> Vec<Rc<dyn engine::Enhancement>> {
         self.controller.enhancements()
     }
@@ -121,6 +135,10 @@ impl Paper {
                 }
             }
         }
+    }
+
+    fn sketch(&self) -> &String {
+        &self.sketch
     }
 
     fn add_to_sketch(&mut self, s: &String) -> bool {
@@ -152,6 +170,10 @@ impl Paper {
         }
 
         Ok(())
+    }
+
+    fn scroll(&mut self, movement: isize) {
+        self.view.scroll(movement);
     }
 
     fn draw_filter_backgrounds(&self) -> Result<(), String> {
@@ -314,16 +336,8 @@ impl View {
         self.origin.index = -(((self.line_count + 1) as f32).log10().ceil() as isize + 1);
     }
 
-    fn scroll_down(&mut self, scroll: usize) {
-        self.origin.line = cmp::min(self.origin.line + scroll, LineNumber::new(self.line_count).unwrap_or(Default::default()));
-    }
-
-    fn scroll_up(&mut self, scroll: usize) {
-        if self.origin.line <= scroll {
-            self.origin.line = Default::default();
-        } else {
-            self.origin.line -= scroll;
-        }
+    fn scroll(&mut self, movement: isize) {
+        self.origin.line = cmp::min(self.origin.line + movement, LineNumber::new(self.line_count).unwrap_or(Default::default()));
     }
 
     fn line_length(&self, place: &Place) -> usize {
@@ -627,9 +641,11 @@ impl Sub<usize> for LineNumber {
     type Output = LineNumber;
 
     fn sub(self, other: usize) -> LineNumber {
-        match LineNumber::new(self.0.get() - other) {
-            Some(x) => x,
-            None => panic!("LineNumber cannot be '0'."),
+        if self.0.get() > other {
+            // Safe to unwrap because self.0.get() > other.
+            LineNumber::new(self.0.get() - other).unwrap()
+        } else {
+            Default::default()
         }
     }
 }
@@ -656,51 +672,6 @@ impl PartialOrd<usize> for LineNumber {
 pub trait Operation: fmt::Debug {
     /// Executes the command signified by `self`.
     fn operate(&self, paper: &mut Paper) -> Outcome;
-}
-
-#[derive(Debug)]
-struct ExecuteCommand {
-    command_pattern: Pattern,
-    see_pattern: Pattern,
-}
-
-impl ExecuteCommand {
-    fn new() -> ExecuteCommand {
-        ExecuteCommand {
-            command_pattern: Pattern::define(
-                ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End),
-            ),
-            see_pattern: Pattern::define(
-                "see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path"),
-            ),
-        }
-    }
-}
-
-impl Operation for ExecuteCommand {
-    fn operate(&self, paper: &mut Paper) -> Outcome {
-        match self.command_pattern.tokenize(&paper.sketch).get("command") {
-            Some("see") => match self.see_pattern.tokenize(&paper.sketch).get("path") {
-                Some(path) => {
-                    paper.view = View::with_file(String::from(path));
-                    paper.noises.clear();
-
-                    for line in 1..=paper.view.line_count {
-                        // Safe to unwrap because line >= 1.
-                        paper.noises.push(Section::line(LineNumber::new(line).unwrap()));
-                    }
-                }
-                None => {}
-            },
-            Some("put") => {
-                paper.view.put();
-            }
-            Some("end") => return Ok(Some(Notice::Quit)),
-            Some(_) | None => {}
-        }
-
-        Ok(None)
-    }
 }
 
 #[derive(Debug)]
@@ -781,28 +752,6 @@ impl Operation for UpdateView {
             paper.display_view()?;
         }
 
-        Ok(None)
-    }
-}
-
-#[derive(Debug)]
-struct ScrollDown;
-
-impl Operation for ScrollDown {
-    fn operate(&self, paper: &mut Paper) -> Outcome {
-        paper.view.scroll_down(paper.scroll_height());
-        paper.display_view()?;
-        Ok(None)
-    }
-}
-
-#[derive(Debug)]
-struct ScrollUp;
-
-impl Operation for ScrollUp {
-    fn operate(&self, paper: &mut Paper) -> Outcome {
-        paper.view.scroll_up(paper.scroll_height());
-        paper.display_view()?;
         Ok(None)
     }
 }

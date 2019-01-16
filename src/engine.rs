@@ -1,10 +1,11 @@
 use crate::ui;
 use crate::{
-    Notice, DrawSketch, Edge, ExecuteCommand, IdentifyNoise,
-    Outcome, Operation, Paper, ScrollDown, ScrollUp, SetMarks, UpdateView,
+    Notice, DrawSketch, Edge, IdentifyNoise,
+    Outcome, Operation, Paper, SetMarks, UpdateView,
 };
 use std::fmt;
 use std::rc::Rc;
+use rec::{Pattern, ChCls, SOME, VAR, Quantifier, Atom};
 
 #[derive(Debug)]
 pub(crate) struct Controller {
@@ -100,9 +101,41 @@ impl ModeHandler for DisplayMode {
                 Rc::new(ChangeMode(Mode::Filter)),
                 Rc::new(AddToSketch(input.to_string())),
             ],
-            'j' => vec![Rc::new(ScrollDown)],
-            'k' => vec![Rc::new(ScrollUp)],
+            'j' => vec![Rc::new(Scroll(Direction::Down))],
+            'k' => vec![Rc::new(Scroll(Direction::Up))],
             _ => Vec::new(),
+        }
+    }
+
+    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
+        Vec::new()
+    }
+}
+
+#[derive(Debug)]
+struct CommandMode {
+    execute_command: Rc<dyn Operation>,
+    change_to_display: Rc<dyn Operation>,
+}
+
+impl CommandMode {
+    fn new() -> CommandMode {
+        CommandMode {
+            execute_command: Rc::new(ExecuteCommand::new()),
+            change_to_display: Rc::new(ChangeMode(Mode::Display)),
+        }
+    }
+}
+
+impl ModeHandler for CommandMode {
+    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
+        match input {
+            ui::ENTER => vec![
+                Rc::clone(&self.execute_command),
+                Rc::clone(&self.change_to_display),
+            ],
+            ui::ESC => vec![Rc::clone(&self.change_to_display)],
+            _ => vec![Rc::new(AddToSketch(input.to_string())), Rc::new(DrawSketch)],
         }
     }
 
@@ -177,38 +210,6 @@ impl ModeHandler for FilterMode {
 }
 
 #[derive(Debug)]
-struct CommandMode {
-    execute_command: Rc<dyn Operation>,
-    change_to_display: Rc<dyn Operation>,
-}
-
-impl CommandMode {
-    fn new() -> CommandMode {
-        CommandMode {
-            execute_command: Rc::new(ExecuteCommand::new()),
-            change_to_display: Rc::new(ChangeMode(Mode::Display)),
-        }
-    }
-}
-
-impl ModeHandler for CommandMode {
-    fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
-        match input {
-            ui::ENTER => vec![
-                Rc::clone(&self.execute_command),
-                Rc::clone(&self.change_to_display),
-            ],
-            ui::ESC => vec![Rc::clone(&self.change_to_display)],
-            _ => vec![Rc::new(AddToSketch(input.to_string())), Rc::new(DrawSketch)],
-        }
-    }
-
-    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        Vec::new()
-    }
-}
-
-#[derive(Debug)]
 struct ChangeMode(Mode);
 
 impl Operation for ChangeMode {
@@ -233,6 +234,45 @@ impl Operation for ChangeMode {
 }
 
 #[derive(Debug)]
+struct ExecuteCommand {
+    command_pattern: Pattern,
+    see_pattern: Pattern,
+}
+
+impl ExecuteCommand {
+    fn new() -> ExecuteCommand {
+        ExecuteCommand {
+            command_pattern: Pattern::define(
+                ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End),
+            ),
+            see_pattern: Pattern::define(
+                "see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path"),
+            ),
+        }
+    }
+}
+
+impl Operation for ExecuteCommand {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
+        let command = paper.sketch().clone();
+
+        match self.command_pattern.tokenize(&command).get("command") {
+            Some("see") => match self.see_pattern.tokenize(&command).get("path") {
+                Some(path) => paper.change_view(path),
+                None => {}
+            },
+            Some("put") => {
+                paper.save_view();
+            }
+            Some("end") => return Ok(Some(Notice::Quit)),
+            Some(_) | None => {}
+        }
+
+        Ok(None)
+    }
+}
+
+#[derive(Debug)]
 struct AddToSketch(String);
 
 impl Operation for AddToSketch {
@@ -247,6 +287,29 @@ impl Operation for AddToSketch {
 
         Ok(None)
     }
+}
+
+#[derive(Debug)]
+struct Scroll(Direction);
+
+impl Operation for Scroll {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
+        let height = paper.scroll_height() as isize;
+
+        match self.0 {
+            Direction::Up => paper.scroll(-height),
+            Direction::Down => paper.scroll(height),
+        }
+
+        paper.display_view()?;
+        Ok(None)
+    }
+}
+
+#[derive(Debug)]
+enum Direction {
+    Up,
+    Down,
 }
 
 pub(crate) trait Enhancement {
