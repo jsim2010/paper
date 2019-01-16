@@ -1,11 +1,10 @@
-use crate::ui;
-use crate::{
-    Notice, Edge, 
-    Outcome, Paper, 
-};
-use std::fmt;
+use crate::{Edge, Paper};
+use crate::ui::{ENTER, ESC};
+use rec::{Atom, ChCls, Pattern, Quantifier, SOME, VAR};
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::rc::Rc;
-use rec::{Pattern, ChCls, SOME, VAR, Quantifier, Atom};
+
+type Outcome = Result<Option<Notice>, String>;
 
 #[derive(Debug)]
 pub(crate) struct Controller {
@@ -33,9 +32,9 @@ impl Default for Controller {
 impl Controller {
     pub(crate) fn process_input(&self, input: Option<char>) -> Vec<Rc<dyn Operation>> {
         if let Some(c) = input {
-            return self.mode().process_input(c)
+            return self.mode().process_input(c);
         }
-        
+
         Vec::new()
     }
 
@@ -73,8 +72,8 @@ pub(crate) enum Mode {
     Edit,
 }
 
-impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Mode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{:?}", self)
     }
 }
@@ -85,7 +84,7 @@ impl Default for Mode {
     }
 }
 
-trait ModeHandler: fmt::Debug {
+trait ModeHandler: Debug {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>>;
     fn enhancements(&self) -> Vec<Rc<dyn Enhancement>>;
 }
@@ -130,11 +129,11 @@ impl CommandMode {
 impl ModeHandler for CommandMode {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
-            ui::ENTER => vec![
+            ENTER => vec![
                 Rc::clone(&self.execute_command),
                 Rc::clone(&self.change_to_display),
             ],
-            ui::ESC => vec![Rc::clone(&self.change_to_display)],
+            ESC => vec![Rc::clone(&self.change_to_display)],
             _ => vec![Rc::new(AddToSketch(input.to_string()))],
         }
     }
@@ -150,12 +149,12 @@ struct FilterMode;
 impl ModeHandler for FilterMode {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
-            ui::ENTER => vec![Rc::new(ChangeMode(Mode::Action))],
+            ENTER => vec![Rc::new(ChangeMode(Mode::Action))],
             '\t' => vec![
                 Rc::new(ReduceNoise),
                 Rc::new(AddToSketch(String::from("&&"))),
             ],
-            ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
+            ESC => vec![Rc::new(ChangeMode(Mode::Display))],
             _ => vec![Rc::new(AddToSketch(input.to_string()))],
         }
     }
@@ -171,15 +170,12 @@ struct ActionMode;
 impl ModeHandler for ActionMode {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
-            ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
+            ESC => vec![Rc::new(ChangeMode(Mode::Display))],
             'i' => vec![
                 Rc::new(MarkAt(Edge::Start)),
                 Rc::new(ChangeMode(Mode::Edit)),
             ],
-            'I' => vec![
-                Rc::new(MarkAt(Edge::End)),
-                Rc::new(ChangeMode(Mode::Edit)),
-            ],
+            'I' => vec![Rc::new(MarkAt(Edge::End)), Rc::new(ChangeMode(Mode::Edit))],
             _ => Vec::new(),
         }
     }
@@ -195,10 +191,8 @@ struct EditMode;
 impl ModeHandler for EditMode {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
-            ui::ESC => vec![Rc::new(ChangeMode(Mode::Display))],
-            _ => vec![
-                Rc::new(AddToSketch(input.to_string())),
-            ],
+            ESC => vec![Rc::new(ChangeMode(Mode::Display))],
+            _ => vec![Rc::new(AddToSketch(input.to_string()))],
         }
     }
 
@@ -208,7 +202,7 @@ impl ModeHandler for EditMode {
 }
 
 /// Signifies a command that [`Paper`] can execute.
-pub(crate) trait Operation: fmt::Debug {
+pub(crate) trait Operation: Debug {
     /// Executes the command signified by `self`.
     fn operate(&self, paper: &mut Paper) -> Outcome;
 }
@@ -302,7 +296,7 @@ struct AddToSketch(String);
 impl Operation for AddToSketch {
     fn operate(&self, paper: &mut Paper) -> Outcome {
         if !paper.add_to_sketch(&self.0) {
-            return Ok(Some(Notice::Flash))
+            return Ok(Some(Notice::Flash));
         }
 
         for enhancement in paper.enhancements() {
@@ -363,5 +357,22 @@ struct UpdateView;
 impl Enhancement for UpdateView {
     fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
         paper.update_view()
+    }
+}
+
+/// Specifies the result of an Op to be processed by the application.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub(crate) enum Notice {
+    /// Ends the application.
+    Quit,
+    /// Flashes the screen.
+    ///
+    /// Used as a brief indicator that the current input is having no effect.
+    Flash,
+}
+
+impl Display for Notice {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "{:?}", self)
     }
 }

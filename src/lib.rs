@@ -29,7 +29,25 @@
 //! ```
 
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
-#![warn(rust_2018_idioms, future_incompatible, unused, box_pointers, macro_use_extern_crate, missing_copy_implementations, missing_debug_implementations, missing_docs, single_use_lifetimes, trivial_casts, trivial_numeric_casts, unreachable_pub, unsafe_code, unused_import_braces, unused_lifetimes, unused_qualifications, unused_results)]
+#![warn(
+    rust_2018_idioms,
+    future_incompatible,
+    unused,
+    box_pointers,
+    macro_use_extern_crate,
+    missing_copy_implementations,
+    missing_debug_implementations,
+    missing_docs,
+    single_use_lifetimes,
+    trivial_casts,
+    trivial_numeric_casts,
+    unreachable_pub,
+    unsafe_code,
+    unused_import_braces,
+    unused_lifetimes,
+    unused_qualifications,
+    unused_results
+)]
 #![doc(html_root_url = "https://docs.rs/paper/0.1.0")]
 
 mod engine;
@@ -44,10 +62,10 @@ use std::fmt::Display;
 use std::fs;
 use std::iter::once;
 use std::num::NonZeroUsize;
-use std::ops::{Sub, Add, AddAssign, Shr, SubAssign};
+use std::ops::{Add, AddAssign, Shr, Sub, SubAssign};
 
+use crate::engine::{Notice, Controller};
 use std::rc::Rc;
-use crate::engine::Controller;
 
 /// The paper application.
 #[derive(Debug, Default)]
@@ -111,7 +129,8 @@ impl Paper {
 
         for line in 1..=self.view.line_count {
             // Safe to unwrap because line >= 1.
-            self.noises.push(Section::line(LineNumber::new(line).unwrap()));
+            self.noises
+                .push(Section::line(LineNumber::new(line).unwrap()));
         }
     }
 
@@ -130,7 +149,13 @@ impl Paper {
     fn filter_signals(&mut self) {
         self.signals = self.noises.clone();
 
-        if let Some(last_feature) = self.patterns.first_feature.tokenize_iter(&self.sketch).last().and_then(|x| x.get("feature")) {
+        if let Some(last_feature) = self
+            .patterns
+            .first_feature
+            .tokenize_iter(&self.sketch)
+            .last()
+            .and_then(|x| x.get("feature"))
+        {
             if let Some(id) = last_feature.chars().nth(0) {
                 for filter in self.filters.iter() {
                     if id == filter.id() {
@@ -153,7 +178,7 @@ impl Paper {
             match c {
                 ui::BACKSPACE => {
                     if let None = self.sketch.pop() {
-                        return false
+                        return false;
                     }
                 }
                 _ => {
@@ -162,12 +187,11 @@ impl Paper {
             }
         }
 
-        return true
+        return true;
     }
 
     fn draw_popup(&self) -> Result<(), String> {
-        self
-            .ui
+        self.ui
             .apply(Edit::new(Region::row(0), Change::Row(self.sketch.clone())))
     }
 
@@ -230,7 +254,7 @@ impl Paper {
         if let Some(region) = section.to_region(&self.view.origin) {
             self.format_region(region, color)?;
         }
-        
+
         // Region is not displayable, which is generally not an error.
         Ok(())
     }
@@ -252,7 +276,8 @@ impl Paper {
 
                 if adjustment.change != Change::Clear {
                     if let Some(region) = mark.place.to_region(&self.view.origin) {
-                        self.ui.apply(Edit::new(region, adjustment.change.clone()))?;
+                        self.ui
+                            .apply(Edit::new(region, adjustment.change.clone()))?;
                     }
                 }
 
@@ -278,8 +303,6 @@ impl Paper {
         self.ui.grid_height() / 4
     }
 }
-
-type Outcome = Result<Option<Notice>, String>;
 
 #[derive(Debug, Default)]
 struct PaperFilters {
@@ -358,7 +381,7 @@ impl View {
                 // For now, do not care to check what is removed. But this may become important for
                 // multi-byte characters.
                 match self.data.remove(index) {
-                    _ => {},
+                    _ => {}
                 }
             }
             _ => {
@@ -401,7 +424,10 @@ impl View {
     }
 
     fn scroll(&mut self, movement: isize) {
-        self.origin.line = cmp::min(self.origin.line + movement, LineNumber::new(self.line_count).unwrap_or(Default::default()));
+        self.origin.line = cmp::min(
+            self.origin.line + movement,
+            LineNumber::new(self.line_count).unwrap_or(Default::default()),
+        );
     }
 
     fn line_length(&self, place: &Place) -> usize {
@@ -729,23 +755,6 @@ impl PartialEq<usize> for LineNumber {
 impl PartialOrd<usize> for LineNumber {
     fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
         Some(self.0.get().cmp(other))
-    }
-}
-
-/// Specifies the result of an Op to be processed by the application.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub enum Notice {
-    /// Ends the application.
-    Quit,
-    /// Flashes the screen.
-    ///
-    /// Used as a brief indicator that the current input is having no effect.
-    Flash,
-}
-
-impl Display for Notice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
     }
 }
 
