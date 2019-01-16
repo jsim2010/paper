@@ -46,6 +46,7 @@ use std::iter::once;
 use std::num::NonZeroUsize;
 use std::ops::{Sub, Add, AddAssign, Shr, SubAssign};
 
+use std::rc::Rc;
 use crate::engine::Controller;
 
 /// The paper application.
@@ -103,11 +104,26 @@ impl Paper {
         Ok(())
     }
 
-    fn enhancements(&self) -> Option<Enhancement> {
-        self.controller.enhance(self)
+    fn enhancements(&self) -> Vec<Rc<dyn engine::Enhancement>> {
+        self.controller.enhancements()
     }
 
-    fn add_to_sketch(&mut self, s: String) -> bool {
+    fn filter_noise(&mut self) {
+        self.signals = self.noises.clone();
+
+        if let Some(last_feature) = self.patterns.first_feature.tokenize_iter(&self.sketch).last().and_then(|x| x.get("feature")) {
+            if let Some(id) = last_feature.chars().nth(0) {
+                for filter in self.filters.iter() {
+                    if id == filter.id() {
+                        filter.extract(last_feature, &mut self.signals, &self.view);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn add_to_sketch(&mut self, s: &String) -> bool {
         for c in s.chars() {
             match c {
                 ui::BACKSPACE => {
@@ -129,6 +145,27 @@ impl Paper {
             self.format_region(Region::row(row), Color::Default)?;
         }
 
+        Ok(())
+    }
+
+    fn draw_filter_backgrounds(&self) -> Result<(), String> {
+        for noise in self.noises.iter() {
+            self.format_section(noise, Color::Blue)?;
+        }
+
+        for signal in self.signals.iter() {
+            self.format_section(signal, Color::Red)?;
+        }
+
+        Ok(())
+    }
+
+    fn format_section(&self, section: &Section, color: Color) -> Result<(), String> {
+        if let Some(region) = section.to_region(&self.view.origin) {
+            self.format_region(region, color)?;
+        }
+        
+        // Region is not displayable, which is generally not an error.
         Ok(())
     }
 
@@ -804,15 +841,15 @@ impl Operation for SetMarks {
 
 /// Specifies a procedure to enhance the current sketch.
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub enum Enhancement {
+pub enum Enhance {
     /// Highlights specified regions.
     FilterSections(Vec<Section>),
 }
 
-impl Display for Enhancement {
+impl Display for Enhance {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Enhancement::FilterSections(regions) => {
+            Enhance::FilterSections(regions) => {
                 write!(f, "FilterSections [")?;
 
                 for region in regions {

@@ -1,6 +1,6 @@
 use crate::ui;
 use crate::{
-    Notice, DrawSketch, Edge, Enhancement, ExecuteCommand, IdentifyNoise,
+    Notice, DrawSketch, Edge, ExecuteCommand, IdentifyNoise,
     Outcome, Operation, Paper, ScrollDown, ScrollUp, SetMarks, UpdateView,
 };
 use std::fmt;
@@ -38,8 +38,8 @@ impl Controller {
         Vec::new()
     }
 
-    pub(crate) fn enhance(&self, paper: &Paper) -> Option<Enhancement> {
-        self.mode().enhance(paper)
+    pub(crate) fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
+        self.mode().enhancements()
     }
 
     pub(crate) fn set_mode(&mut self, mode: Mode) {
@@ -86,7 +86,7 @@ impl Default for Mode {
 
 trait ModeHandler: fmt::Debug {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>>;
-    fn enhance(&self, paper: &Paper) -> Option<Enhancement>;
+    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>>;
 }
 
 #[derive(Debug)]
@@ -107,8 +107,8 @@ impl ModeHandler for DisplayMode {
         }
     }
 
-    fn enhance(&self, _paper: &Paper) -> Option<Enhancement> {
-        None
+    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
+        Vec::new()
     }
 }
 
@@ -126,8 +126,8 @@ impl ModeHandler for EditMode {
         }
     }
 
-    fn enhance(&self, _paper: &Paper) -> Option<Enhancement> {
-        None
+    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
+        Vec::new()
     }
 }
 
@@ -150,8 +150,8 @@ impl ModeHandler for ActionMode {
         }
     }
 
-    fn enhance(&self, _paper: &Paper) -> Option<Enhancement> {
-        None
+    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
+        Vec::new()
     }
 }
 
@@ -172,27 +172,8 @@ impl ModeHandler for FilterMode {
         }
     }
 
-    fn enhance(&self, paper: &Paper) -> Option<Enhancement> {
-        let mut sections = paper.noises.clone();
-
-        if let Some(last_feature) = paper
-            .patterns
-            .first_feature
-            .tokenize_iter(&paper.sketch)
-            .last()
-            .and_then(|x| x.get("feature"))
-        {
-            if let Some(id) = last_feature.chars().nth(0) {
-                for filter in paper.filters.iter() {
-                    if id == filter.id() {
-                        filter.extract(last_feature, &mut sections, &paper.view);
-                        break;
-                    }
-                }
-            }
-        }
-
-        Some(Enhancement::FilterSections(sections))
+    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
+        vec![Rc::new(FilterNoise)]
     }
 }
 
@@ -223,8 +204,8 @@ impl ModeHandler for CommandMode {
         }
     }
 
-    fn enhance(&self, _paper: &Paper) -> Option<Enhancement> {
-        None
+    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
+        Vec::new()
     }
 }
 
@@ -257,36 +238,29 @@ struct AddToSketch(String);
 
 impl Operation for AddToSketch {
     fn operate(&self, paper: &mut Paper) -> Outcome {
-        if !paper.add_to_sketch(self.0) {
+        if !paper.add_to_sketch(&self.0) {
             return Ok(Some(Notice::Flash))
         }
 
-        match paper.enhancements() {
-            Some(Enhancement::FilterSections(sections)) => {
-                paper.clear_background()?;
-
-                // Add back in the noise
-                for noise in paper.noises.iter() {
-                    if let Some(region) = noise.to_region(&paper.view.origin) {
-                        paper
-                            .ui
-                            .apply(Edit::new(region, Change::Format(Color::Blue)))?;
-                    }
-                }
-
-                for section in sections.iter() {
-                    if let Some(region) = section.to_region(&paper.view.origin) {
-                        paper
-                            .ui
-                            .apply(Edit::new(region, Change::Format(Color::Red)))?;
-                    }
-                }
-
-                paper.signals = sections;
-            }
-            None => {}
+        for enhancement in paper.enhancements() {
+            enhancement.enhance(paper)?;
         }
 
         Ok(None)
+    }
+}
+
+pub(crate) trait Enhancement {
+    fn enhance(&self, paper: &mut Paper) -> Result<(), String>;
+}
+
+struct FilterNoise;
+
+impl Enhancement for FilterNoise {
+    fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
+        paper.filter_noise();
+        paper.clear_background()?;
+        paper.draw_filter_backgrounds()?;
+        Ok(())
     }
 }
