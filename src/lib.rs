@@ -32,7 +32,7 @@
 #![warn(rust_2018_idioms, future_incompatible, unused, box_pointers, macro_use_extern_crate, missing_copy_implementations, missing_debug_implementations, missing_docs, single_use_lifetimes, trivial_casts, trivial_numeric_casts, unreachable_pub, unsafe_code, unused_import_braces, unused_lifetimes, unused_qualifications, unused_results)]
 #![doc(html_root_url = "https://docs.rs/paper/0.1.0")]
 
-mod mode;
+mod engine;
 mod ui;
 
 use crate::ui::{Address, Change, Color, Edit, Length, Region, UserInterface, END};
@@ -46,7 +46,7 @@ use std::iter::once;
 use std::num::NonZeroUsize;
 use std::ops::{Sub, Add, AddAssign, Shr, SubAssign};
 
-use crate::mode::{Controller, Mode};
+use crate::engine::{Controller, Mode};
 
 /// The paper application.
 #[derive(Debug, Default)]
