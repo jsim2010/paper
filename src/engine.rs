@@ -1,6 +1,6 @@
 //! Implements the state machine of the application.
-use crate::{Edge, Paper};
 use crate::ui::{ENTER, ESC};
+use crate::{Edge, Paper};
 use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::rc::Rc;
@@ -29,7 +29,7 @@ impl Controller {
     /// Returns the [`Operation`]s to be executed based on the current [`Mode`].
     pub(crate) fn process_input(&self, input: Option<char>) -> Vec<Rc<dyn Operation>> {
         if let Some(c) = input {
-            return self.mode().process_input(c)
+            return self.mode().process_input(c);
         }
 
         Vec::new()
@@ -80,7 +80,7 @@ impl Default for Mode {
 }
 
 /// Defines the functionality implemented while the application is in a [`Mode`].
-trait ModeHandler: Debug {
+trait ModeHandler {
     /// Returns the [`Operation`]s appropriate for an input.
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>>;
 }
@@ -146,7 +146,10 @@ impl ModeHandler for CommandMode {
                 Rc::clone(&self.change_to_display),
             ],
             ESC => vec![Rc::clone(&self.change_to_display)],
-            _ => vec![Rc::new(AddToSketch(input.to_string())), Rc::clone(&self.draw_popup)],
+            _ => vec![
+                Rc::new(AddToSketch(input.to_string())),
+                Rc::clone(&self.draw_popup),
+            ],
         }
     }
 }
@@ -178,7 +181,11 @@ impl ModeHandler for FilterMode {
                 Rc::clone(&self.filter_signals),
             ],
             ESC => vec![Rc::new(ChangeMode(Mode::Display))],
-            _ => vec![Rc::new(AddToSketch(input.to_string())), Rc::clone(&self.draw_popup), Rc::clone(&self.filter_signals)],
+            _ => vec![
+                Rc::new(AddToSketch(input.to_string())),
+                Rc::clone(&self.draw_popup),
+                Rc::clone(&self.filter_signals),
+            ],
         }
     }
 }
@@ -263,7 +270,12 @@ impl Operation for FilterSignals {
     fn operate(&self, paper: &mut Paper) -> Outcome {
         let filter = paper.sketch().clone();
 
-        if let Some(last_feature) = self.first_feature_pattern.tokenize_iter(&filter).last().and_then(|x| x.get("feature")) {
+        if let Some(last_feature) = self
+            .first_feature_pattern
+            .tokenize_iter(&filter)
+            .last()
+            .and_then(|x| x.get("feature"))
+        {
             paper.filter_signals(last_feature);
         }
 

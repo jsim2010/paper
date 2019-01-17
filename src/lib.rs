@@ -64,7 +64,7 @@ use std::iter::once;
 use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign, Shr, Sub, SubAssign};
 
-use crate::engine::{Notice, Controller};
+use crate::engine::{Controller, Notice};
 
 /// The paper application.
 #[derive(Debug, Default)]
