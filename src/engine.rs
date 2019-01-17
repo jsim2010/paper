@@ -1,7 +1,7 @@
 //! Implements the state machine of the application.
 use crate::{Edge, Paper};
 use crate::ui::{ENTER, ESC};
-use rec::{Atom, ChCls, Pattern, Quantifier, SOME, VAR};
+use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::rc::Rc;
 
@@ -187,7 +187,7 @@ struct FilterMode {
 impl FilterMode {
     fn new() -> FilterMode {
         FilterMode {
-            filter_signals: Rc::new(FilterSignals),
+            filter_signals: Rc::new(FilterSignals::new()),
         }
     }
 }
@@ -383,11 +383,28 @@ pub(crate) trait Enhancement: Debug {
 }
 
 #[derive(Debug)]
-struct FilterSignals;
+struct FilterSignals {
+    first_feature_pattern: Pattern,
+}
+
+impl FilterSignals {
+    fn new() -> FilterSignals {
+        FilterSignals {
+            first_feature_pattern: Pattern::define(
+                ChCls::None("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
+            ),
+        }
+    }
+}
 
 impl Enhancement for FilterSignals {
     fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
-        paper.filter_signals();
+        let filter = paper.sketch().clone();
+
+        if let Some(last_feature) = self.first_feature_pattern.tokenize_iter(&filter).last().and_then(|x| x.get("feature")) {
+            paper.filter_signals(last_feature);
+        }
+
         paper.clear_background()?;
         paper.draw_filter_backgrounds()
     }

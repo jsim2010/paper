@@ -54,7 +54,7 @@ mod engine;
 mod ui;
 
 use crate::ui::{Address, Change, Color, Edit, Length, Region, UserInterface, END};
-use rec::{Atom, ChCls, Pattern, OPT, SOME, VAR};
+use rec::{Atom, ChCls, Pattern, SOME};
 use std::cmp;
 use std::collections::HashMap;
 use std::fmt;
@@ -83,7 +83,6 @@ pub struct Paper {
     signals: Vec<Section>,
     noises: Vec<Section>,
     marks: Vec<Mark>,
-    patterns: PaperPatterns,
     filters: PaperFilters,
     sketch_additions: String,
 }
@@ -146,22 +145,14 @@ impl Paper {
         self.noises = self.signals.clone();
     }
 
-    fn filter_signals(&mut self) {
+    fn filter_signals(&mut self, feature: &str) {
         self.signals = self.noises.clone();
 
-        if let Some(last_feature) = self
-            .patterns
-            .first_feature
-            .tokenize_iter(&self.sketch)
-            .last()
-            .and_then(|x| x.get("feature"))
-        {
-            if let Some(id) = last_feature.chars().nth(0) {
-                for filter in self.filters.iter() {
-                    if id == filter.id() {
-                        filter.extract(last_feature, &mut self.signals, &self.view);
-                        break;
-                    }
+        if let Some(id) = feature.chars().nth(0) {
+            for filter in self.filters.iter() {
+                if id == filter.id() {
+                    filter.extract(feature, &mut self.signals, &self.view);
+                    break;
                 }
             }
         }
@@ -334,21 +325,6 @@ impl<'a> Iterator for PaperFiltersIter<'a> {
             1 => Some(&self.filters.line),
             2 => Some(&self.filters.pattern),
             _ => None,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct PaperPatterns {
-    first_feature: Pattern,
-}
-
-impl Default for PaperPatterns {
-    fn default() -> PaperPatterns {
-        PaperPatterns {
-            first_feature: Pattern::define(
-                ChCls::None("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
-            ),
         }
     }
 }
