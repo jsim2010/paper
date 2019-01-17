@@ -53,18 +53,16 @@
 mod engine;
 mod ui;
 
+use crate::engine::{Controller, Notice};
 use crate::ui::{Address, Change, Color, Edit, Length, Region, UserInterface, END};
 use rec::{Atom, ChCls, Pattern, SOME};
 use std::cmp;
 use std::collections::HashMap;
-use std::fmt;
-use std::fmt::Display;
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
 use std::iter::once;
 use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign, Shr, Sub, SubAssign};
-
-use crate::engine::{Controller, Notice};
 
 /// The paper application.
 #[derive(Debug, Default)]
@@ -476,7 +474,7 @@ enum Edge {
 }
 
 impl Display for Edge {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{:?}", self)
     }
 }
@@ -506,7 +504,7 @@ impl Mark {
 }
 
 impl Display for Mark {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}{}", self.place, self.pointer)
     }
 }
@@ -559,7 +557,7 @@ impl Default for Pointer {
 }
 
 impl Display for Pointer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(
             f,
             "[{}]",
@@ -595,7 +593,7 @@ impl Section {
 }
 
 impl Display for Section {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}->{}", self.start, self.length)
     }
 }
@@ -643,7 +641,7 @@ impl Shr<usize> for Place {
 }
 
 impl Display for Place {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "ln {}, idx {}", self.line, self.index)
     }
 }
@@ -663,7 +661,7 @@ impl LineNumber {
 }
 
 impl Display for LineNumber {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}", self.0)
     }
 }
@@ -727,7 +725,7 @@ impl PartialOrd<usize> for LineNumber {
     }
 }
 
-trait Filter: fmt::Debug {
+trait Filter: Debug {
     fn id(&self) -> char;
     fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View);
 }
