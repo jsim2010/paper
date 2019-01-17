@@ -9,40 +9,27 @@ use std::rc::Rc;
 type Outcome = Result<Option<Notice>, String>;
 
 /// Manages the functionality of the different [`Mode`]s.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Controller {
     /// The current [`Mode`].
     mode: Mode,
     /// The implementation of [`DisplayMode`].
-    display: Rc<dyn ModeHandler>,
+    display: DisplayMode,
     /// The implementation of [`CommandMode`].
-    command: Rc<dyn ModeHandler>,
+    command: CommandMode,
     /// The implementation of [`FilterMode`].
-    filter: Rc<dyn ModeHandler>,
+    filter: FilterMode,
     /// The implementation of [`ActionMode`].
-    action: Rc<dyn ModeHandler>,
+    action: ActionMode,
     /// The implementation of [`EditMode`].
-    edit: Rc<dyn ModeHandler>,
-}
-
-impl Default for Controller {
-    fn default() -> Controller {
-        Controller {
-            mode: Default::default(),
-            display: Rc::new(DisplayMode::new()),
-            command: Rc::new(CommandMode::new()),
-            filter: Rc::new(FilterMode::new()),
-            action: Rc::new(ActionMode),
-            edit: Rc::new(EditMode),
-        }
-    }
+    edit: EditMode,
 }
 
 impl Controller {
     /// Returns the [`Operation`]s to be executed based on the current [`Mode`].
     pub(crate) fn process_input(&self, input: Option<char>) -> Vec<Rc<dyn Operation>> {
         if let Some(c) = input {
-            return self.mode().process_input(c);
+            return self.mode().process_input(c)
         }
 
         Vec::new()
@@ -54,14 +41,14 @@ impl Controller {
     }
 
     /// Returns the [`ModeHandler`] of the current [`Mode`].
-    fn mode(&self) -> Rc<dyn ModeHandler> {
-        Rc::clone(match self.mode {
+    fn mode(&self) -> &dyn ModeHandler {
+        match self.mode {
             Mode::Display => &self.display,
             Mode::Command => &self.command,
             Mode::Filter => &self.filter,
             Mode::Action => &self.action,
             Mode::Edit => &self.edit,
-        })
+        }
     }
 }
 
@@ -107,8 +94,8 @@ struct DisplayMode {
     scroll_up: Rc<dyn Operation>,
 }
 
-impl DisplayMode {
-    fn new() -> DisplayMode {
+impl Default for DisplayMode {
+    fn default() -> DisplayMode {
         DisplayMode {
             change_to_command: Rc::new(ChangeMode(Mode::Command)),
             change_to_filter: Rc::new(ChangeMode(Mode::Filter)),
@@ -141,9 +128,8 @@ struct CommandMode {
     draw_popup: Rc<dyn Operation>,
 }
 
-impl CommandMode {
-    /// Creates a new `CommandMode`.
-    fn new() -> CommandMode {
+impl Default for CommandMode {
+    fn default() -> CommandMode {
         CommandMode {
             execute_command: Rc::new(ExecuteCommand::new()),
             change_to_display: Rc::new(ChangeMode(Mode::Display)),
@@ -172,8 +158,8 @@ struct FilterMode {
     filter_signals: Rc<dyn Operation>,
 }
 
-impl FilterMode {
-    fn new() -> FilterMode {
+impl Default for FilterMode {
+    fn default() -> FilterMode {
         FilterMode {
             draw_popup: Rc::new(DrawPopup),
             filter_signals: Rc::new(FilterSignals::new()),
@@ -198,7 +184,7 @@ impl ModeHandler for FilterMode {
 }
 
 /// Implements the functionality while the application is in [`Mode::Action`].
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct ActionMode;
 
 impl ModeHandler for ActionMode {
@@ -216,7 +202,7 @@ impl ModeHandler for ActionMode {
 }
 
 /// Implements the functionality while the application in in [`Mode::Edit`].
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct EditMode;
 
 impl ModeHandler for EditMode {
