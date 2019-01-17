@@ -137,7 +137,7 @@ impl Paper {
         self.view.put();
     }
 
-    fn enhancements(&self) -> Vec<Rc<dyn engine::Enhancement>> {
+    fn enhancements(&mut self) -> Vec<Rc<dyn engine::Enhancement>> {
         self.controller.enhancements()
     }
 
@@ -258,23 +258,21 @@ impl Paper {
         self.sketch.clear();
     }
 
-    fn update_view(&mut self) -> Result<(), String> {
+    fn update_view(&mut self, c: char) -> Result<(), String> {
         let mut adjustment: Adjustment = Default::default();
 
-        for c in self.sketch_additions.chars() {
-            for mark in self.marks.iter_mut() {
-                adjustment += Adjustment::create(c, &mark.place, &self.view);
+        for mark in self.marks.iter_mut() {
+            adjustment += Adjustment::create(c, &mark.place, &self.view);
 
-                if adjustment.change != Change::Clear {
-                    if let Some(region) = mark.place.to_region(&self.view.origin) {
-                        self.ui
-                            .apply(Edit::new(region, adjustment.change.clone()))?;
-                    }
+            if adjustment.change != Change::Clear {
+                if let Some(region) = mark.place.to_region(&self.view.origin) {
+                    self.ui
+                        .apply(Edit::new(region, adjustment.change.clone()))?;
                 }
-
-                mark.adjust(&adjustment);
-                self.view.add(mark, c);
             }
+
+            mark.adjust(&adjustment);
+            self.view.add(mark, c);
         }
 
         if adjustment.change == Change::Clear {

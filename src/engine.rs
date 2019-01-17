@@ -240,12 +240,12 @@ impl ModeHandler for EditMode {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
             ESC => vec![Rc::new(ChangeMode(Mode::Display))],
-            _ => vec![Rc::new(AddToSketch(input.to_string()))],
+            _ => vec![Rc::new(UpdateView(input))],
         }
     }
 
     fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        vec![Rc::new(UpdateView)]
+        Vec::new()
     }
 }
 
@@ -356,6 +356,16 @@ impl Operation for AddToSketch {
 }
 
 #[derive(Debug)]
+struct UpdateView(char);
+
+impl Operation for UpdateView {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
+        paper.update_view(self.0)?;
+        Ok(None)
+    }
+}
+
+#[derive(Debug)]
 struct Scroll(Direction);
 
 impl Operation for Scroll {
@@ -416,15 +426,6 @@ struct DrawPopup;
 impl Enhancement for DrawPopup {
     fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
         paper.draw_popup()
-    }
-}
-
-#[derive(Debug)]
-struct UpdateView;
-
-impl Enhancement for UpdateView {
-    fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
-        paper.update_view()
     }
 }
 
