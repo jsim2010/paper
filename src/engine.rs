@@ -29,7 +29,7 @@ impl Default for Controller {
     fn default() -> Controller {
         Controller {
             mode: Default::default(),
-            display: Rc::new(DisplayMode),
+            display: Rc::new(DisplayMode::new()),
             command: Rc::new(CommandMode::new()),
             filter: Rc::new(FilterMode),
             action: Rc::new(ActionMode),
@@ -39,6 +39,7 @@ impl Default for Controller {
 }
 
 impl Controller {
+    /// Returns the [`Operation`]s to be executed based on the current [`Mode`].
     pub(crate) fn process_input(&self, input: Option<char>) -> Vec<Rc<dyn Operation>> {
         if let Some(c) = input {
             return self.mode().process_input(c);
@@ -47,14 +48,17 @@ impl Controller {
         Vec::new()
     }
 
+    /// Returns the [`Enhancement`]s to be executed based on the current [`Mode`].
     pub(crate) fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
         self.mode().enhancements()
     }
 
+    /// Sets the current [`Mode`].
     pub(crate) fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
     }
 
+    /// Returns the [`ModeHandler`] of the current [`Mode`].
     fn mode(&self) -> Rc<dyn ModeHandler> {
         Rc::clone(match self.mode {
             Mode::Display => &self.display,
@@ -66,7 +70,7 @@ impl Controller {
     }
 }
 
-/// Specifies the functionality of the editor for a given state.
+/// Signifies a state of the application.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) enum Mode {
     /// Displays the current view.
@@ -93,24 +97,44 @@ impl Default for Mode {
     }
 }
 
+/// Defines the functionality implemented while the application is in a [`Mode`].
 trait ModeHandler: Debug {
+    /// Returns the [`Operation`]s appropriate for an input.
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>>;
+    /// Returns the [`Enhancement`]s.
     fn enhancements(&self) -> Vec<Rc<dyn Enhancement>>;
 }
 
+/// Implements the functionality while the application is in [`Mode::Display`].
 #[derive(Debug)]
-struct DisplayMode;
+struct DisplayMode {
+    change_to_command: Rc<dyn Operation>,
+    change_to_filter: Rc<dyn Operation>,
+    scroll_down: Rc<dyn Operation>,
+    scroll_up: Rc<dyn Operation>,
+}
+
+impl DisplayMode {
+    fn new() -> DisplayMode {
+        DisplayMode {
+            change_to_command: Rc::new(ChangeMode(Mode::Command)),
+            change_to_filter: Rc::new(ChangeMode(Mode::Filter)),
+            scroll_down: Rc::new(Scroll(Direction::Down)),
+            scroll_up: Rc::new(Scroll(Direction::Up)),
+        }
+    }
+}
 
 impl ModeHandler for DisplayMode {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
         match input {
-            '.' => vec![Rc::new(ChangeMode(Mode::Command))],
+            '.' => vec![Rc::clone(&self.change_to_command)],
             '#' | '/' => vec![
-                Rc::new(ChangeMode(Mode::Filter)),
+                Rc::clone(&self.change_to_filter),
                 Rc::new(AddToSketch(input.to_string())),
             ],
-            'j' => vec![Rc::new(Scroll(Direction::Down))],
-            'k' => vec![Rc::new(Scroll(Direction::Up))],
+            'j' => vec![Rc::clone(&self.scroll_down)],
+            'k' => vec![Rc::clone(&self.scroll_up)],
             _ => Vec::new(),
         }
     }
@@ -120,6 +144,7 @@ impl ModeHandler for DisplayMode {
     }
 }
 
+/// Implements the functionality while the application is in [`Mode::Command`].
 #[derive(Debug)]
 struct CommandMode {
     execute_command: Rc<dyn Operation>,
@@ -127,6 +152,7 @@ struct CommandMode {
 }
 
 impl CommandMode {
+    /// Creates a new `CommandMode`.
     fn new() -> CommandMode {
         CommandMode {
             execute_command: Rc::new(ExecuteCommand::new()),
@@ -152,6 +178,7 @@ impl ModeHandler for CommandMode {
     }
 }
 
+/// Implements the functionality while the application is in [`Mode::Filter`].
 #[derive(Debug)]
 struct FilterMode;
 
@@ -173,6 +200,7 @@ impl ModeHandler for FilterMode {
     }
 }
 
+/// Implements the functionality while the application is in [`Mode::Action`].
 #[derive(Debug)]
 struct ActionMode;
 
@@ -194,6 +222,7 @@ impl ModeHandler for ActionMode {
     }
 }
 
+/// Implements the functionality while the application in in [`Mode::Edit`].
 #[derive(Debug)]
 struct EditMode;
 
@@ -212,7 +241,7 @@ impl ModeHandler for EditMode {
 
 /// Signifies a command that [`Paper`] can execute.
 pub(crate) trait Operation: Debug {
-    /// Executes the command signified by `self`.
+    /// Executes the command.
     fn operate(&self, paper: &mut Paper) -> Outcome;
 }
 
