@@ -1,6 +1,6 @@
 //! Implements how the user interfaces with the application.
+use crate::{Display, FmtResult, Formatter};
 use pancurses::Input;
-use std::fmt::{Display, Formatter, Result as FmtResult};
 
 type UiResult = Result<(), String>;
 

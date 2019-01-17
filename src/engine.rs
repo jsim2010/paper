@@ -1,8 +1,7 @@
 //! Implements the state machine of the application.
 use crate::ui::{ENTER, ESC};
-use crate::{Edge, Paper};
+use crate::{Debug, Display, Edge, FmtResult, Formatter, Paper};
 use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
-use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::rc::Rc;
 
 /// Signifies the result of executing an [`Operation`].
