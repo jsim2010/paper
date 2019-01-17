@@ -31,7 +31,7 @@ impl Default for Controller {
             mode: Default::default(),
             display: Rc::new(DisplayMode::new()),
             command: Rc::new(CommandMode::new()),
-            filter: Rc::new(FilterMode),
+            filter: Rc::new(FilterMode::new()),
             action: Rc::new(ActionMode),
             edit: Rc::new(EditMode),
         }
@@ -180,7 +180,17 @@ impl ModeHandler for CommandMode {
 
 /// Implements the functionality while the application is in [`Mode::Filter`].
 #[derive(Debug)]
-struct FilterMode;
+struct FilterMode {
+    filter_signals: Rc<dyn Enhancement>,
+}
+
+impl FilterMode {
+    fn new() -> FilterMode {
+        FilterMode {
+            filter_signals: Rc::new(FilterSignals),
+        }
+    }
+}
 
 impl ModeHandler for FilterMode {
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>> {
@@ -196,7 +206,7 @@ impl ModeHandler for FilterMode {
     }
 
     fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        vec![Rc::new(FilterSignals), Rc::new(DrawPopup)]
+        vec![Rc::clone(&self.filter_signals), Rc::new(DrawPopup)]
     }
 }
 
@@ -368,10 +378,11 @@ enum Direction {
     Down,
 }
 
-pub(crate) trait Enhancement {
+pub(crate) trait Enhancement: Debug {
     fn enhance(&self, paper: &mut Paper) -> Result<(), String>;
 }
 
+#[derive(Debug)]
 struct FilterSignals;
 
 impl Enhancement for FilterSignals {
@@ -382,6 +393,7 @@ impl Enhancement for FilterSignals {
     }
 }
 
+#[derive(Debug)]
 struct DrawPopup;
 
 impl Enhancement for DrawPopup {
@@ -390,6 +402,7 @@ impl Enhancement for DrawPopup {
     }
 }
 
+#[derive(Debug)]
 struct UpdateView;
 
 impl Enhancement for UpdateView {
