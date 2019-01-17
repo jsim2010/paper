@@ -48,11 +48,6 @@ impl Controller {
         Vec::new()
     }
 
-    /// Returns the [`Enhancement`]s to be executed based on the current [`Mode`].
-    pub(crate) fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        self.mode().enhancements()
-    }
-
     /// Sets the current [`Mode`].
     pub(crate) fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
@@ -101,8 +96,6 @@ impl Default for Mode {
 trait ModeHandler: Debug {
     /// Returns the [`Operation`]s appropriate for an input.
     fn process_input(&self, input: char) -> Vec<Rc<dyn Operation>>;
-    /// Returns the [`Enhancement`]s.
-    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>>;
 }
 
 /// Implements the functionality while the application is in [`Mode::Display`].
@@ -130,17 +123,13 @@ impl ModeHandler for DisplayMode {
         match input {
             '.' => vec![Rc::clone(&self.change_to_command)],
             '#' | '/' => vec![
-                Rc::clone(&self.change_to_filter),
                 Rc::new(AddToSketch(input.to_string())),
+                Rc::clone(&self.change_to_filter),
             ],
             'j' => vec![Rc::clone(&self.scroll_down)],
             'k' => vec![Rc::clone(&self.scroll_up)],
             _ => Vec::new(),
         }
-    }
-
-    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        Vec::new()
     }
 }
 
@@ -149,6 +138,7 @@ impl ModeHandler for DisplayMode {
 struct CommandMode {
     execute_command: Rc<dyn Operation>,
     change_to_display: Rc<dyn Operation>,
+    draw_popup: Rc<dyn Operation>,
 }
 
 impl CommandMode {
@@ -157,6 +147,7 @@ impl CommandMode {
         CommandMode {
             execute_command: Rc::new(ExecuteCommand::new()),
             change_to_display: Rc::new(ChangeMode(Mode::Display)),
+            draw_popup: Rc::new(DrawPopup),
         }
     }
 }
@@ -169,24 +160,22 @@ impl ModeHandler for CommandMode {
                 Rc::clone(&self.change_to_display),
             ],
             ESC => vec![Rc::clone(&self.change_to_display)],
-            _ => vec![Rc::new(AddToSketch(input.to_string()))],
+            _ => vec![Rc::new(AddToSketch(input.to_string())), Rc::clone(&self.draw_popup)],
         }
-    }
-
-    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        vec![Rc::new(DrawPopup)]
     }
 }
 
 /// Implements the functionality while the application is in [`Mode::Filter`].
 #[derive(Debug)]
 struct FilterMode {
-    filter_signals: Rc<dyn Enhancement>,
+    draw_popup: Rc<dyn Operation>,
+    filter_signals: Rc<dyn Operation>,
 }
 
 impl FilterMode {
     fn new() -> FilterMode {
         FilterMode {
+            draw_popup: Rc::new(DrawPopup),
             filter_signals: Rc::new(FilterSignals::new()),
         }
     }
@@ -199,14 +188,12 @@ impl ModeHandler for FilterMode {
             '\t' => vec![
                 Rc::new(ReduceNoise),
                 Rc::new(AddToSketch(String::from("&&"))),
+                Rc::clone(&self.draw_popup),
+                Rc::clone(&self.filter_signals),
             ],
             ESC => vec![Rc::new(ChangeMode(Mode::Display))],
-            _ => vec![Rc::new(AddToSketch(input.to_string()))],
+            _ => vec![Rc::new(AddToSketch(input.to_string())), Rc::clone(&self.draw_popup), Rc::clone(&self.filter_signals)],
         }
-    }
-
-    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        vec![Rc::clone(&self.filter_signals), Rc::new(DrawPopup)]
     }
 }
 
@@ -226,10 +213,6 @@ impl ModeHandler for ActionMode {
             _ => Vec::new(),
         }
     }
-
-    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        Vec::new()
-    }
 }
 
 /// Implements the functionality while the application in in [`Mode::Edit`].
@@ -242,10 +225,6 @@ impl ModeHandler for EditMode {
             ESC => vec![Rc::new(ChangeMode(Mode::Display))],
             _ => vec![Rc::new(UpdateView(input))],
         }
-    }
-
-    fn enhancements(&self) -> Vec<Rc<dyn Enhancement>> {
-        Vec::new()
     }
 }
 
@@ -262,19 +241,48 @@ impl Operation for ChangeMode {
     fn operate(&self, paper: &mut Paper) -> Outcome {
         match self.0 {
             Mode::Display => {
+                paper.reset_sketch();
                 paper.display_view()?;
             }
             Mode::Command | Mode::Filter => {
-                paper.reset_sketch();
+                paper.draw_popup()?;
             }
             Mode::Action => {}
             Mode::Edit => {
                 paper.display_view()?;
-                paper.reset_sketch();
             }
         }
 
         paper.change_mode(self.0);
+        Ok(None)
+    }
+}
+
+#[derive(Debug)]
+struct FilterSignals {
+    first_feature_pattern: Pattern,
+}
+
+impl FilterSignals {
+    fn new() -> FilterSignals {
+        FilterSignals {
+            first_feature_pattern: Pattern::define(
+                ChCls::None("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
+            ),
+        }
+    }
+}
+
+impl Operation for FilterSignals {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
+        let filter = paper.sketch().clone();
+
+        if let Some(last_feature) = self.first_feature_pattern.tokenize_iter(&filter).last().and_then(|x| x.get("feature")) {
+            paper.filter_signals(last_feature);
+        }
+
+        paper.clear_background()?;
+        paper.draw_filter_backgrounds()?;
         Ok(None)
     }
 }
@@ -329,6 +337,16 @@ impl Operation for ExecuteCommand {
 }
 
 #[derive(Debug)]
+struct DrawPopup;
+
+impl Operation for DrawPopup {
+    fn operate(&self, paper: &mut Paper) -> Outcome {
+        paper.draw_popup()?;
+        Ok(None)
+    }
+}
+
+#[derive(Debug)]
 struct ReduceNoise;
 
 impl Operation for ReduceNoise {
@@ -345,10 +363,6 @@ impl Operation for AddToSketch {
     fn operate(&self, paper: &mut Paper) -> Outcome {
         if !paper.add_to_sketch(&self.0) {
             return Ok(Some(Notice::Flash));
-        }
-
-        for enhancement in paper.enhancements() {
-            enhancement.enhance(paper)?;
         }
 
         Ok(None)
@@ -386,47 +400,6 @@ impl Operation for Scroll {
 enum Direction {
     Up,
     Down,
-}
-
-pub(crate) trait Enhancement: Debug {
-    fn enhance(&self, paper: &mut Paper) -> Result<(), String>;
-}
-
-#[derive(Debug)]
-struct FilterSignals {
-    first_feature_pattern: Pattern,
-}
-
-impl FilterSignals {
-    fn new() -> FilterSignals {
-        FilterSignals {
-            first_feature_pattern: Pattern::define(
-                ChCls::None("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
-            ),
-        }
-    }
-}
-
-impl Enhancement for FilterSignals {
-    fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
-        let filter = paper.sketch().clone();
-
-        if let Some(last_feature) = self.first_feature_pattern.tokenize_iter(&filter).last().and_then(|x| x.get("feature")) {
-            paper.filter_signals(last_feature);
-        }
-
-        paper.clear_background()?;
-        paper.draw_filter_backgrounds()
-    }
-}
-
-#[derive(Debug)]
-struct DrawPopup;
-
-impl Enhancement for DrawPopup {
-    fn enhance(&self, paper: &mut Paper) -> Result<(), String> {
-        paper.draw_popup()
-    }
 }
 
 /// Signifies an action requested by an [`Operation`].

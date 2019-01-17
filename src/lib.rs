@@ -65,7 +65,6 @@ use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign, Shr, Sub, SubAssign};
 
 use crate::engine::{Notice, Controller};
-use std::rc::Rc;
 
 /// The paper application.
 #[derive(Debug, Default)]
@@ -135,10 +134,6 @@ impl Paper {
 
     fn save_view(&self) {
         self.view.put();
-    }
-
-    fn enhancements(&mut self) -> Vec<Rc<dyn engine::Enhancement>> {
-        self.controller.enhancements()
     }
 
     fn reduce_noise(&mut self) {
