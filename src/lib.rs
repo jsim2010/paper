@@ -36,7 +36,7 @@
     unused_qualifications,
     unused_results
 )]
-#![doc(html_root_url = "https://docs.rs/paper/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 
 mod engine;
 mod ui;
