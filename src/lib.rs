@@ -15,18 +15,6 @@
 //!
 //! To use paper, install and run the binary. If you are developing a rust crate that runs paper,
 //! then create and run an instance by calling the following:
-//!
-//! ```ignore
-//! extern crate paper;
-//!
-//! use paper::Paper;
-//!
-//! fn main() {
-//!     let mut paper = Paper::new();
-//!
-//!     paper.run();
-//! }
-//! ```
 
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 #![warn(
