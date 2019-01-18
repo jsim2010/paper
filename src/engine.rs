@@ -1,5 +1,5 @@
 //! Implements the state machine of the application.
-use crate::ui::{ENTER, ESC};
+use crate::ui::{BACKSPACE, ENTER, ESC};
 use crate::{Debug, Display, Edge, FmtResult, Formatter, Paper};
 use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
 use std::collections::HashMap;
@@ -265,7 +265,7 @@ impl Operation for ChangeMode {
 
         match mode {
             Mode::Display => {
-                paper.reset_sketch();
+                paper.sketch_mut().clear();
                 paper.display_view()?;
             }
             Mode::Command | Mode::Filter => {
@@ -299,8 +299,15 @@ impl AddToSketch {
 
 impl Operation for AddToSketch {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
-        if !paper.add_to_sketch(self.arg(opcode)?) {
-            return Ok(Some(Notice::Flash));
+        match self.arg(opcode)? {
+            BACKSPACE => {
+                if let None = paper.sketch_mut().pop() {
+                    return Ok(Some(Notice::Flash));
+                }
+            }
+            c => {
+                paper.sketch_mut().push(c);
+            }
         }
 
         Ok(None)

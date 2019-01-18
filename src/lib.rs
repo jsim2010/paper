@@ -56,15 +56,17 @@ mod ui;
 use crate::engine::{Controller, Notice};
 use crate::ui::{Address, Change, Color, Edit, Length, Region, UserInterface, END};
 use rec::{Atom, ChCls, Pattern, SOME};
-use std::cmp;
+use std::cmp::{self, Ordering};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
-use std::iter::once;
+use std::iter;
 use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign, Shr, Sub, SubAssign};
 
 /// The paper application.
+// In general, Paper methods should contain as little logic as possible. Instead all logic should
+// be included in Operations.
 #[derive(Debug, Default)]
 pub struct Paper {
     /// User interface of the application.
@@ -156,19 +158,8 @@ impl Paper {
         &self.sketch
     }
 
-    fn add_to_sketch(&mut self, c: char) -> bool {
-        match c {
-            ui::BACKSPACE => {
-                if let None = self.sketch.pop() {
-                    return false;
-                }
-            }
-            _ => {
-                self.sketch.push(c);
-            }
-        }
-
-        return true;
+    fn sketch_mut(&mut self) -> &mut String {
+        &mut self.sketch
     }
 
     fn draw_popup(&self) -> Result<(), String> {
@@ -231,21 +222,18 @@ impl Paper {
         Ok(())
     }
 
+    /// Sets the [`Color`] of a [`Section`].
     fn format_section(&self, section: &Section, color: Color) -> Result<(), String> {
+        // It is okay for to_region() to return None; this just means section is not displayed.
         if let Some(region) = section.to_region(&self.view.origin) {
             self.format_region(region, color)?;
         }
 
-        // Region is not displayable, which is generally not an error.
         Ok(())
     }
 
     fn format_region(&self, region: Region, color: Color) -> Result<(), String> {
         self.ui.apply(Edit::new(region, Change::Format(color)))
-    }
-
-    fn reset_sketch(&mut self) {
-        self.sketch.clear();
     }
 
     fn update_view(&mut self, c: char) -> Result<(), String> {
@@ -356,7 +344,7 @@ impl View {
 
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
         // Clear the screen, then add each row.
-        once(Edit::new(Default::default(), Change::Clear)).chain(
+        iter::once(Edit::new(Default::default(), Change::Clear)).chain(
             self.lines()
                 .skip(self.origin.line.index())
                 .enumerate()
@@ -723,7 +711,7 @@ impl PartialEq<usize> for LineNumber {
 }
 
 impl PartialOrd<usize> for LineNumber {
-    fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &usize) -> Option<Ordering> {
         Some(self.0.get().cmp(other))
     }
 }
