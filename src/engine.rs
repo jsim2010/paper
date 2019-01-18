@@ -70,7 +70,13 @@ pub(crate) enum Mode {
 
 impl Display for Mode {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{:?}", self)
+        match self {
+            Mode::Display => write!(f, "Display"),
+            Mode::Command => write!(f, "Command"),
+            Mode::Filter => write!(f, "Filter"),
+            Mode::Action => write!(f, "Action"),
+            Mode::Edit => write!(f, "Edit"),
+        }
     }
 }
 
@@ -94,14 +100,24 @@ pub(crate) enum OpCode {
 }
 
 impl OpCode {
-    fn id(&self) -> Discriminant<OpCode> {
-        discriminant(self)
+    fn id(self) -> Discriminant<OpCode> {
+        discriminant(&self)
     }
 }
 
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{:?}", self)
+        match self {
+            OpCode::ChangeMode(mode) => write!(f, "Change to mode {}", mode),
+            OpCode::AddToSketch(c) => write!(f, "Add '{}' to sketch", c),
+            OpCode::Scroll(d) => write!(f, "Scroll {}", d),
+            OpCode::ExecuteCommand => write!(f, "Execute command"),
+            OpCode::DrawPopup => write!(f, "Draw popup"),
+            OpCode::FilterSignals => write!(f, "Filter signals"),
+            OpCode::ReduceNoise => write!(f, "Reduce noise"),
+            OpCode::MarkAt(edge) => write!(f, "Mark at {}", edge),
+            OpCode::UpdateView(c) => write!(f, "Update view with '{}'", c),
+        }
     }
 }
 
@@ -301,7 +317,7 @@ impl Operation for AddToSketch {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
         match self.arg(opcode)? {
             BACKSPACE => {
-                if let None = paper.sketch_mut().pop() {
+                if paper.sketch_mut().pop().is_none() {
                     return Ok(Some(Notice::Flash));
                 }
             }
@@ -365,7 +381,7 @@ impl MarkAt {
 
 impl Operation for MarkAt {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
-        paper.set_marks(&self.arg(opcode)?);
+        paper.set_marks(self.arg(opcode)?);
         Ok(None)
     }
 }
@@ -394,9 +410,10 @@ impl Operation for ExecuteCommand {
         let command = paper.sketch().clone();
 
         match self.command_pattern.tokenize(&command).get("command") {
-            Some("see") => match self.see_pattern.tokenize(&command).get("path") {
-                Some(path) => paper.change_view(path),
-                None => {}
+            Some("see") => {
+                if let Some(path) = self.see_pattern.tokenize(&command).get("path") {
+                    paper.change_view(path);
+                }
             },
             Some("put") => {
                 paper.save_view();
@@ -492,6 +509,15 @@ impl Default for Direction {
     }
 }
 
+impl Display for Direction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Direction::Up => write!(f, "Up"),
+            Direction::Down => write!(f, "Down"),
+        }
+    }
+}
+
 /// Signifies an action requested by an [`Operation`].
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) enum Notice {
@@ -505,6 +531,9 @@ pub(crate) enum Notice {
 
 impl Display for Notice {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{:?}", self)
+        match self {
+            Notice::Quit => write!(f, "Quit"),
+            Notice::Flash => write!(f, "Flash"),
+        }
     }
 }

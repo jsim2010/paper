@@ -36,6 +36,7 @@
     unused_qualifications,
     unused_results
 )]
+#![warn(clippy::use_debug)]
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 
 mod engine;
@@ -44,7 +45,7 @@ mod ui;
 use crate::engine::{Controller, Notice};
 use crate::ui::{Address, Change, Color, Edit, Length, Region, UserInterface, END};
 use rec::{Atom, ChCls, Pattern, SOME};
-use std::cmp::{self, Ordering};
+use std::cmp;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
@@ -76,11 +77,13 @@ pub struct Paper {
 
 impl Paper {
     /// Creates a new paper application.
+    #[inline]
     pub fn new() -> Paper {
         Default::default()
     }
 
     /// Runs the application.
+    #[inline]
     pub fn run(&mut self) -> Result<(), String> {
         self.ui.init()?;
         let operations = engine::Operations::default();
@@ -163,18 +166,18 @@ impl Paper {
         Ok(())
     }
 
-    fn set_marks(&mut self, edge: &Edge) {
+    fn set_marks(&mut self, edge: Edge) {
         self.marks.clear();
 
         for signal in self.signals.iter() {
             let mut place = signal.start;
 
-            if *edge == Edge::End {
+            if edge == Edge::End {
                 let length = signal.length;
 
                 place.index += match length {
                     END => self.view.line_length(&signal.start),
-                    _ => length.to_usize(),
+                    _ => length.into_usize(),
                 };
             }
 
@@ -305,7 +308,7 @@ impl View {
     fn with_file(path: String) -> View {
         let mut view = View {
             data: fs::read_to_string(path.as_str()).unwrap().replace('\r', ""),
-            path: path,
+            path,
             ..Default::default()
         };
 
@@ -366,7 +369,7 @@ impl View {
     fn scroll(&mut self, movement: isize) {
         self.origin.line = cmp::min(
             self.origin.line + movement,
-            LineNumber::new(self.line_count).unwrap_or(Default::default()),
+            LineNumber::new(self.line_count).unwrap_or_default(),
         );
     }
 
@@ -454,7 +457,10 @@ impl Default for Edge {
 
 impl Display for Edge {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{:?}", self)
+        match self {
+            Edge::Start => write!(f, "Starting edge"),
+            Edge::End => write!(f, "Ending edge"),
+        }
     }
 }
 
@@ -504,6 +510,7 @@ impl Pointer {
 impl Add<Pointer> for usize {
     type Output = Pointer;
 
+    #[inline]
     fn add(self, other: Pointer) -> Pointer {
         Pointer(other.0.map(|x| x + self))
     }
@@ -557,6 +564,7 @@ pub struct Section {
 
 impl Section {
     /// Creates a new `Section` that signifies an entire line.
+    #[inline]
     pub fn line(line: LineNumber) -> Section {
         Section {
             start: Place { line, index: 0 },
@@ -572,6 +580,7 @@ impl Section {
 }
 
 impl Display for Section {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}->{}", self.start, self.length)
     }
@@ -611,6 +620,7 @@ impl Place {
 impl Shr<usize> for Place {
     type Output = Place;
 
+    #[inline]
     fn shr(self, rhs: usize) -> Place {
         Place {
             index: self.index + rhs,
@@ -620,6 +630,7 @@ impl Shr<usize> for Place {
 }
 
 impl Display for Place {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "ln {}, idx {}", self.line, self.index)
     }
@@ -631,7 +642,7 @@ pub struct LineNumber(NonZeroUsize);
 
 impl LineNumber {
     fn new(value: usize) -> Option<LineNumber> {
-        NonZeroUsize::new(value).map(|x| LineNumber(x))
+        NonZeroUsize::new(value).map(LineNumber)
     }
 
     fn index(self) -> usize {
@@ -640,12 +651,14 @@ impl LineNumber {
 }
 
 impl Display for LineNumber {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}", self.0)
     }
 }
 
 impl Default for LineNumber {
+    #[inline]
     fn default() -> LineNumber {
         // Safe to unwrap because 1 is a non-zero.
         LineNumber(NonZeroUsize::new(1).unwrap())
@@ -655,6 +668,7 @@ impl Default for LineNumber {
 impl Add<usize> for LineNumber {
     type Output = LineNumber;
 
+    #[inline]
     fn add(self, other: usize) -> LineNumber {
         // Safe to unwrap because self.0.get() > 0 and other >= 0.
         LineNumber::new(self.0.get() + other).unwrap()
@@ -664,6 +678,7 @@ impl Add<usize> for LineNumber {
 impl Add<isize> for LineNumber {
     type Output = LineNumber;
 
+    #[inline]
     fn add(self, other: isize) -> LineNumber {
         if other < 0 {
             self - (-other) as usize
@@ -676,6 +691,7 @@ impl Add<isize> for LineNumber {
 impl Sub<usize> for LineNumber {
     type Output = LineNumber;
 
+    #[inline]
     fn sub(self, other: usize) -> LineNumber {
         if self.0.get() > other {
             // Safe to unwrap because self.0.get() > other.
@@ -687,20 +703,9 @@ impl Sub<usize> for LineNumber {
 }
 
 impl SubAssign<usize> for LineNumber {
+    #[inline]
     fn sub_assign(&mut self, other: usize) {
         *self = *self - other
-    }
-}
-
-impl PartialEq<usize> for LineNumber {
-    fn eq(&self, other: &usize) -> bool {
-        self.0.get() == *other
-    }
-}
-
-impl PartialOrd<usize> for LineNumber {
-    fn partial_cmp(&self, other: &usize) -> Option<Ordering> {
-        Some(self.0.get().cmp(other))
     }
 }
 
@@ -718,12 +723,12 @@ impl Default for LineFilter {
     fn default() -> LineFilter {
         LineFilter {
             pattern: Pattern::define(
-                "#" + (ChCls::Digit.rpt(SOME).name("line") + ChCls::End
-                    | ChCls::Digit.rpt(SOME).name("start")
+                "#" + ((ChCls::Digit.rpt(SOME).name("line") + ChCls::End)
+                    | (ChCls::Digit.rpt(SOME).name("start")
                         + "."
-                        + ChCls::Digit.rpt(SOME).name("end")
-                    | ChCls::Digit.rpt(SOME).name("origin")
-                        + (("+".to_rec() | "-") + ChCls::Digit.rpt(SOME)).name("movement")),
+                        + ChCls::Digit.rpt(SOME).name("end"))
+                    | (ChCls::Digit.rpt(SOME).name("origin")
+                        + (("+".to_rec() | "-") + ChCls::Digit.rpt(SOME)).name("movement"))),
             ),
         }
     }
@@ -738,17 +743,21 @@ impl Filter for LineFilter {
         let tokens = self.pattern.tokenize(feature);
 
         if let Some(Ok(line)) = tokens.get("line").map(|x| x.parse::<usize>()) {
-            sections.retain(|&x| x.start.line == line);
+            if let Some(line_number) = LineNumber::new(line) {
+                sections.retain(|&x| x.start.line == line_number);
+            }
         } else if let (Some(line_start), Some(line_end)) = (tokens.get("start"), tokens.get("end"))
         {
             if let (Ok(start), Ok(end)) = (line_start.parse::<usize>(), line_end.parse::<usize>()) {
-                let top = cmp::min(start, end);
-                let bottom = cmp::max(start, end);
+                if let (Some(start_line_number), Some(end_line_number)) = (LineNumber::new(start), LineNumber::new(end)) {
+                    let top = cmp::min(start_line_number, end_line_number);
+                    let bottom = cmp::max(start_line_number, end_line_number);
 
-                sections.retain(|&x| {
-                    let row = x.start.line;
-                    row >= top && row <= bottom
-                })
+                    sections.retain(|&x| {
+                        let row = x.start.line;
+                        row >= top && row <= bottom
+                    })
+                }
             }
         } else if let (Some(line_origin), Some(line_movement)) =
             (tokens.get("origin"), tokens.get("movement"))
@@ -756,14 +765,16 @@ impl Filter for LineFilter {
             if let (Ok(origin), Ok(movement)) =
                 (line_origin.parse::<usize>(), line_movement.parse::<isize>())
             {
-                let end = (origin as isize + movement) as usize;
-                let top = cmp::min(origin, end);
-                let bottom = cmp::max(origin, end);
+                if let Some(origin_line_number) = LineNumber::new(origin) {
+                    let end = origin_line_number + movement;
+                    let top = cmp::min(origin_line_number, end);
+                    let bottom = cmp::max(origin_line_number, end);
 
-                sections.retain(|&x| {
-                    let row = x.start.line;
-                    row >= top && row <= bottom
-                })
+                    sections.retain(|&x| {
+                        let row = x.start.line;
+                        row >= top && row <= bottom
+                    })
+                }
             }
         }
     }

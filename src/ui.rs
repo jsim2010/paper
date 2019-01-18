@@ -219,7 +219,14 @@ impl Default for Change {
 
 impl Display for Change {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{:?}", self)
+        match self {
+            Change::Nothing => write!(f, "Nothing"),
+            Change::Backspace => write!(f, "Backspace"),
+            Change::Insert(c) => write!(f, "Insert '{}'", c),
+            Change::Row(s) => write!(f, "Write row '{}'", s),
+            Change::Clear => write!(f, "Clear"),
+            Change::Format(c) => write!(f, "Format to {}", c),
+        }
     }
 }
 
@@ -240,6 +247,16 @@ impl Color {
     /// [`pancurses`]: ../../pancurses/index.html
     fn cp(self) -> i16 {
         self as i16
+    }
+}
+
+impl Display for Color {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Color::Default => write!(f, "Default"),
+            Color::Red => write!(f, "Red"),
+            Color::Blue => write!(f, "Blue"),
+        }
     }
 }
 
@@ -348,7 +365,7 @@ pub(crate) const END: Length = Length(END_VALUE);
 
 impl Length {
     /// Converts to usize.
-    pub(crate) fn to_usize(&self) -> usize {
+    pub(crate) fn into_usize(self) -> usize {
         // Given that Length was created by from(), this conversion is safe.
         self.0 as usize
     }
