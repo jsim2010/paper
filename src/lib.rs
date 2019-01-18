@@ -283,7 +283,6 @@ impl Paper {
     }
 }
 
-
 #[derive(Debug, Default)]
 struct PaperFilters {
     line: LineFilter,

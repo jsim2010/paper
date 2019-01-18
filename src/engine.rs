@@ -2,9 +2,9 @@
 use crate::ui::{ENTER, ESC};
 use crate::{Debug, Display, Edge, FmtResult, Formatter, Paper};
 use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
-use std::rc::Rc;
 use std::collections::HashMap;
 use std::mem::{discriminant, Discriminant};
+use std::rc::Rc;
 
 /// Signifies the result of executing an [`Operation`].
 pub(crate) type Outcome = Result<Option<Notice>, String>;
@@ -149,9 +149,19 @@ impl ModeHandler for FilterMode {
     fn process_input(&self, input: char) -> Vec<OpCode> {
         match input {
             ENTER => vec![OpCode::ChangeMode(Mode::Action)],
-            '\t' => vec![OpCode::ReduceNoise, OpCode::AddToSketch('&'), OpCode::AddToSketch('&'), OpCode::DrawPopup, OpCode::FilterSignals],
+            '\t' => vec![
+                OpCode::ReduceNoise,
+                OpCode::AddToSketch('&'),
+                OpCode::AddToSketch('&'),
+                OpCode::DrawPopup,
+                OpCode::FilterSignals,
+            ],
             ESC => vec![OpCode::ChangeMode(Mode::Display)],
-            _ => vec![OpCode::AddToSketch(input), OpCode::DrawPopup, OpCode::FilterSignals],
+            _ => vec![
+                OpCode::AddToSketch(input),
+                OpCode::DrawPopup,
+                OpCode::FilterSignals,
+            ],
         }
     }
 }
@@ -191,7 +201,11 @@ pub(crate) struct Operations {
 
 impl Operations {
     pub(crate) fn execute(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
-        self.ops.get(&opcode.id()).map_or(Err(String::from("Received invalid OpCode.")), |x| x.operate(paper, opcode))
+        self.ops
+            .get(&opcode.id())
+            .map_or(Err(String::from("Received invalid OpCode.")), |x| {
+                x.operate(paper, opcode)
+            })
     }
 }
 
@@ -218,7 +232,10 @@ impl Default for Operations {
                 (OpCode::ReduceNoise.id(), reduce_noise),
                 (OpCode::MarkAt(Default::default()).id(), mark_at),
                 (OpCode::UpdateView(Default::default()).id(), update_view),
-            ].iter().cloned().collect(),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
         }
     }
 }
@@ -234,7 +251,10 @@ impl ChangeMode {
     fn arg(&self, opcode: OpCode) -> Result<Mode, String> {
         match opcode {
             OpCode::ChangeMode(mode) => Ok(mode),
-            _ => Err(format!("Attempted to execute ChangeMode Operation with OpCode {}", opcode)),
+            _ => Err(format!(
+                "Attempted to execute ChangeMode Operation with OpCode {}",
+                opcode
+            )),
         }
     }
 }
@@ -269,7 +289,10 @@ impl AddToSketch {
     fn arg(&self, opcode: OpCode) -> Result<char, String> {
         match opcode {
             OpCode::AddToSketch(c) => Ok(c),
-            _ => Err(format!("Attempted to execute AddToSketch Operation with OpCode {}", opcode)),
+            _ => Err(format!(
+                "Attempted to execute AddToSketch Operation with OpCode {}",
+                opcode
+            )),
         }
     }
 }
@@ -325,7 +348,10 @@ impl MarkAt {
     fn arg(&self, opcode: OpCode) -> Result<Edge, String> {
         match opcode {
             OpCode::MarkAt(edge) => Ok(edge),
-            _ => Err(format!("Attempted to execute MarkAt Operation with OpCode {}", opcode)),
+            _ => Err(format!(
+                "Attempted to execute MarkAt Operation with OpCode {}",
+                opcode
+            )),
         }
     }
 }
@@ -403,7 +429,10 @@ impl UpdateView {
     fn arg(&self, opcode: OpCode) -> Result<char, String> {
         match opcode {
             OpCode::UpdateView(c) => Ok(c),
-            _ => Err(format!("Attempted to execute UpdateView Operation with OpCode {}", opcode)),
+            _ => Err(format!(
+                "Attempted to execute UpdateView Operation with OpCode {}",
+                opcode
+            )),
         }
     }
 }
@@ -422,7 +451,10 @@ impl Scroll {
     fn arg(&self, opcode: OpCode) -> Result<Direction, String> {
         match opcode {
             OpCode::Scroll(direction) => Ok(direction),
-            _ => Err(format!("Attempted to execute Scroll Operation with OpCode {}", opcode)),
+            _ => Err(format!(
+                "Attempted to execute Scroll Operation with OpCode {}",
+                opcode
+            )),
         }
     }
 }
