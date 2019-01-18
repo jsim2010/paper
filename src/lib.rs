@@ -93,10 +93,11 @@ impl Paper {
     /// Runs the application.
     pub fn run(&mut self) -> Result<(), String> {
         self.ui.init()?;
+        let operations = engine::Operations::default();
 
         'main: loop {
-            for operation in self.controller.process_input(self.ui.receive_input()) {
-                match operation.operate(self)? {
+            for opcode in self.controller.process_input(self.ui.receive_input()) {
+                match operations.execute(self, opcode)? {
                     Some(Notice::Quit) => break 'main,
                     Some(Notice::Flash) => {
                         self.ui.flash()?;
@@ -155,19 +156,15 @@ impl Paper {
         &self.sketch
     }
 
-    fn add_to_sketch(&mut self, s: &String) -> bool {
-        self.sketch_additions = s.clone();
-
-        for c in self.sketch_additions.chars() {
-            match c {
-                ui::BACKSPACE => {
-                    if let None = self.sketch.pop() {
-                        return false;
-                    }
+    fn add_to_sketch(&mut self, c: char) -> bool {
+        match c {
+            ui::BACKSPACE => {
+                if let None = self.sketch.pop() {
+                    return false;
                 }
-                _ => {
-                    self.sketch.push(c);
-                }
+            }
+            _ => {
+                self.sketch.push(c);
             }
         }
 
@@ -285,6 +282,7 @@ impl Paper {
         self.ui.grid_height() / 4
     }
 }
+
 
 #[derive(Debug, Default)]
 struct PaperFilters {
@@ -471,6 +469,12 @@ enum Edge {
     Start,
     /// Indicates the last Place of the Section.
     End,
+}
+
+impl Default for Edge {
+    fn default() -> Edge {
+        Edge::Start
+    }
 }
 
 impl Display for Edge {
