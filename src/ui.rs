@@ -13,6 +13,8 @@ pub(crate) const ENTER: char = '\n';
 /// The character that represents the `Esc` key.
 pub(crate) const ESC: char = '';
 
+const DEFAULT_COLOR: i16 = -1;
+
 /// The interface between the user and the application.
 ///
 /// All output is displayed in a grid of cells. Each cell contains one character and can change its
@@ -109,7 +111,7 @@ impl UserInterface {
 
     fn define_color(&self, color: Color, background: i16) -> UiResult {
         UserInterface::check_result(
-            pancurses::init_pair(color.cp(), -1, background),
+            pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
             "init_pair",
         )
     }

@@ -481,17 +481,21 @@ impl Scroll {
             )),
         }
     }
+
+    #[allow(clippy::integer_arithmetic)]
+    fn get_scroll_movement(height: usize, direction: Direction) -> isize {
+        let height = height as isize;
+
+        match direction {
+            Direction::Up => -height,
+            Direction::Down => height,
+        }
+    }
 }
 
 impl Operation for Scroll {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
-        let height = paper.scroll_height() as isize;
-
-        match self.arg(opcode)? {
-            Direction::Up => paper.scroll(-height),
-            Direction::Down => paper.scroll(height),
-        }
-
+        paper.scroll(Scroll::get_scroll_movement(paper.scroll_height(), self.arg(opcode)?));
         paper.display_view()?;
         Ok(None)
     }

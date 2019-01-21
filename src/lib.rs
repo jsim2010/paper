@@ -35,7 +35,7 @@
     unused_qualifications,
     unused_results
 )]
-#![warn(clippy::use_debug, clippy::option_unwrap_used)]
+#![warn(clippy::use_debug, clippy::option_unwrap_used, clippy::integer_arithmetic)]
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 
 mod engine;
@@ -50,7 +50,7 @@ use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
 use std::iter;
 use std::num::NonZeroUsize;
-use std::ops::{Add, AddAssign, Shr, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Shr, SubAssign};
 
 /// The paper application.
 // In general, Paper methods should contain as little logic as possible. Instead all logic should
@@ -334,6 +334,10 @@ impl View {
         }
     }
 
+    fn line_number(&self, mark: &Pointer) -> Option<LineNumber> {
+        mark.0.and_then(|m| self.data.get(..=m)).and_then(|x| LineNumber::new(x.matches(ui::ENTER).count() + 1))
+    }
+
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
         // Clear the screen, then add each row.
         iter::once(Edit::new(Default::default(), Change::Clear)).chain(
@@ -568,6 +572,11 @@ impl PartialOrd<Pointer> for isize {
     }
 }
 
+struct NewSection {
+    start: Pointer,
+    length: Length,
+}
+
 /// Signifies adjacent [`Place`]s.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
 pub struct Section {
@@ -578,7 +587,7 @@ pub struct Section {
 impl Section {
     /// Creates a new `Section` that signifies an entire line.
     #[inline]
-    pub fn line(line: LineNumber) -> Section {
+    fn line(line: LineNumber) -> Section {
         Section {
             start: Place { line, index: 0 },
             length: END,
@@ -651,13 +660,14 @@ impl Display for Place {
 
 /// Signifies a line number.
 #[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Debug)]
-pub struct LineNumber(NonZeroUsize);
+struct LineNumber(NonZeroUsize);
 
 impl LineNumber {
     fn new(value: usize) -> Option<LineNumber> {
         NonZeroUsize::new(value).map(LineNumber)
     }
 
+    #[allow(clippy::integer_arithmetic)] // Okay to subtract 1 from a non-zero usize.
     fn index(self) -> usize {
         self.0.get() - 1
     }
@@ -679,6 +689,14 @@ impl Default for LineNumber {
     }
 }
 
+impl std::str::FromStr for LineNumber {
+    type Err = ParseLineNumberError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        LineNumber::new(s.parse::<usize>()?).ok_or(ParseLineNumberError::InvalidValue)
+    }
+}
+
 impl Add<usize> for LineNumber {
     type Output = LineNumber;
 
@@ -695,37 +713,68 @@ impl Add<isize> for LineNumber {
     #[inline]
     fn add(self, other: isize) -> LineNumber {
         if other < 0 {
-            self - (-other) as usize
+            LineNumber::new(self.0.get() - (-other) as usize).unwrap_or_else(|| panic!("Unable to add {} to LineNumber {}.", other, self))
         } else {
             self + other as usize
         }
     }
 }
 
-impl Sub<usize> for LineNumber {
-    type Output = LineNumber;
+#[derive(Debug)]
+enum ParseLineNumberError {
+    InvalidValue,
+    ParseInt(std::num::ParseIntError),
+}
 
-    #[inline]
-    fn sub(self, other: usize) -> LineNumber {
-        LineNumber::new(self.0.get() - other).unwrap_or_default()
+impl std::error::Error for ParseLineNumberError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match *self {
+            ParseLineNumberError::InvalidValue => None,
+            ParseLineNumberError::ParseInt(ref err) => Some(err),
+        }
     }
 }
 
-impl SubAssign<usize> for LineNumber {
-    #[inline]
-    fn sub_assign(&mut self, other: usize) {
-        *self = *self - other
+impl Display for ParseLineNumberError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match *self {
+            ParseLineNumberError::InvalidValue => write!(f, "Invalid line number provided."),
+            ParseLineNumberError::ParseInt(ref err) => write!(f, "{}", err),
+        }
+    }
+}
+
+impl From<std::num::ParseIntError> for ParseLineNumberError {
+    fn from(error: std::num::ParseIntError) -> ParseLineNumberError {
+        ParseLineNumberError::ParseInt(error)
     }
 }
 
 trait Filter: Debug {
     fn id(&self) -> char;
     fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View);
+    fn new_extract(&self, feature: &str, sections: &mut Vec<NewSection>, view: &View);
 }
 
 #[derive(Debug)]
 struct LineFilter {
     pattern: Pattern,
+}
+
+impl LineFilter {
+    fn retain_sections_within_bounds(sections: &mut Vec<NewSection>, bound1: LineNumber, bound2: LineNumber, view: &View) {
+        let (top, bottom) = match bound1.cmp(&bound2) {
+            Ordering::Greater => (bound2, bound1),
+            _ => (bound1, bound2),
+        };
+
+        sections.retain(|x| {
+            match view.line_number(&x.start) {
+                Some(line_number) => line_number >= top && line_number <= bottom,
+                None => false,
+            }
+        });
+    }
 }
 
 impl Default for LineFilter {
@@ -746,6 +795,18 @@ impl Default for LineFilter {
 impl Filter for LineFilter {
     fn id(&self) -> char {
         '#'
+    }
+
+    fn new_extract(&self, feature: &str, sections: &mut Vec<NewSection>, view: &View) {
+        let tokens = self.pattern.tokenize(feature);
+
+        if let Some(line) = tokens.get("line").and_then(|x| x.parse::<LineNumber>().ok()) {
+            sections.retain(|x| view.line_number(&x.start) == Some(line));
+        } else if let (Some(start), Some(end)) = (tokens.get("start").and_then(|x| x.parse::<LineNumber>().ok()), tokens.get("end").and_then(|x| x.parse::<LineNumber>().ok())) {
+            LineFilter::retain_sections_within_bounds(sections, start, end, view);
+        } else if let (Some(origin), Some(movement)) = (tokens.get("origin").and_then(|x| x.parse::<LineNumber>().ok()), tokens.get("movement").and_then(|x| x.parse::<isize>().ok())) {
+            LineFilter::retain_sections_within_bounds(sections, origin, origin + movement, view);
+        }
     }
 
     fn extract(&self, feature: &str, sections: &mut Vec<Section>, _view: &View) {
@@ -805,6 +866,9 @@ impl Default for PatternFilter {
 impl Filter for PatternFilter {
     fn id(&self) -> char {
         '/'
+    }
+
+    fn new_extract(&self, feature: &str, sections: &mut Vec<NewSection>, view: &View) {
     }
 
     fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) {
