@@ -30,13 +30,12 @@
     trivial_casts,
     trivial_numeric_casts,
     unreachable_pub,
-    unsafe_code,
     unused_import_braces,
     unused_lifetimes,
     unused_qualifications,
     unused_results
 )]
-#![warn(clippy::use_debug)]
+#![warn(clippy::use_debug, clippy::option_unwrap_used)]
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 
 mod engine;
@@ -45,7 +44,7 @@ mod ui;
 use crate::engine::{Controller, Notice};
 use crate::ui::{Address, Change, Color, Edit, Length, Region, UserInterface, END};
 use rec::{Atom, ChCls, Pattern, SOME};
-use std::cmp;
+use std::cmp::{self, Ordering};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
@@ -118,9 +117,9 @@ impl Paper {
         self.noises.clear();
 
         for line in 1..=self.view.line_count {
-            // Safe to unwrap because line >= 1.
-            self.noises
-                .push(Section::line(LineNumber::new(line).unwrap()));
+            if let Some(noise) = LineNumber::new(line).map(Section::line) {
+                self.noises.push(noise);
+            }
         }
     }
 
@@ -176,7 +175,7 @@ impl Paper {
                 let length = signal.length;
 
                 place.index += match length {
-                    END => self.view.line_length(&signal.start),
+                    END => self.view.line_length(&signal.start).unwrap_or_default(),
                     _ => length.into_usize(),
                 };
             }
@@ -231,17 +230,19 @@ impl Paper {
         let mut adjustment: Adjustment = Default::default();
 
         for mark in self.marks.iter_mut() {
-            adjustment += Adjustment::create(c, &mark.place, &self.view);
+            if let Some(new_adjustment) = Adjustment::create(c, &mark.place, &self.view) {
+                adjustment += new_adjustment;
 
-            if adjustment.change != Change::Clear {
-                if let Some(region) = mark.place.to_region(&self.view.origin) {
-                    self.ui
-                        .apply(Edit::new(region, adjustment.change.clone()))?;
+                if adjustment.change != Change::Clear {
+                    if let Some(region) = mark.place.to_region(&self.view.origin) {
+                        self.ui
+                            .apply(Edit::new(region, adjustment.change.clone()))?;
+                    }
                 }
-            }
 
-            mark.adjust(&adjustment);
-            self.view.add(mark, c);
+                mark.adjust(&adjustment);
+                self.view.add(mark, c);
+            }
         }
 
         if adjustment.change == Change::Clear {
@@ -317,18 +318,18 @@ impl View {
     }
 
     fn add(&mut self, mark: &Mark, c: char) {
-        let index = mark.pointer.to_usize();
-
-        match c {
-            ui::BACKSPACE => {
-                // For now, do not care to check what is removed. But this may become important for
-                // multi-byte characters.
-                match self.data.remove(index) {
-                    _ => {}
+        if let Some(index) = mark.pointer.0 {
+            match c {
+                ui::BACKSPACE => {
+                    // For now, do not care to check what is removed. But this may become important for
+                    // multi-byte characters.
+                    match self.data.remove(index) {
+                        _ => {}
+                    }
                 }
-            }
-            _ => {
-                self.data.insert(index - 1, c);
+                _ => {
+                    self.data.insert(index - 1, c);
+                }
             }
         }
     }
@@ -373,8 +374,8 @@ impl View {
         );
     }
 
-    fn line_length(&self, place: &Place) -> usize {
-        self.line(place.line).unwrap().len()
+    fn line_length(&self, place: &Place) -> Option<usize> {
+        self.line(place.line).map(|x| x.len())
     }
 
     fn put(&self) {
@@ -405,22 +406,17 @@ impl Adjustment {
         }
     }
 
-    fn create(c: char, place: &Place, view: &View) -> Adjustment {
+    fn create(c: char, place: &Place, view: &View) -> Option<Adjustment> {
         match c {
             ui::BACKSPACE => {
                 if place.index == 0 {
-                    Adjustment::new(
-                        place.line,
-                        -1,
-                        view.line_length(place) as isize,
-                        Change::Clear,
-                    )
+                    view.line_length(place).map(|x| Adjustment::new(place.line, -1, x as isize, Change::Clear))
                 } else {
-                    Adjustment::new(place.line, -1, -1, Change::Backspace)
+                    Some(Adjustment::new(place.line, -1, -1, Change::Backspace))
                 }
             }
-            ui::ENTER => Adjustment::new(place.line, 1, -(place.index as isize), Change::Clear),
-            _ => Adjustment::new(place.line, 1, 1, Change::Insert(c)),
+            ui::ENTER => Some(Adjustment::new(place.line, 1, -(place.index as isize), Change::Clear)),
+            _ => Some(Adjustment::new(place.line, 1, 1, Change::Insert(c))),
         }
     }
 }
@@ -475,7 +471,7 @@ struct Mark {
 
 impl Mark {
     fn adjust(&mut self, adjustment: &Adjustment) {
-        if -adjustment.shift < self.pointer.to_isize() {
+        if -adjustment.shift < self.pointer {
             self.pointer += adjustment.shift;
             self.place.line = self.place.line + adjustment.line_change;
 
@@ -494,16 +490,21 @@ impl Display for Mark {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Debug)]
 struct Pointer(Option<usize>);
 
-impl Pointer {
-    fn to_usize(&self) -> usize {
-        self.0.unwrap()
+impl PartialEq<isize> for Pointer {
+    fn eq(&self, other: &isize) -> bool {
+        match self.0 {
+            Some(value) => (value as isize) == *other,
+            None => false,
+        }
     }
+}
 
-    fn to_isize(&self) -> isize {
-        self.0.unwrap() as isize
+impl PartialOrd<isize> for Pointer {
+    fn partial_cmp(&self, other: &isize) -> Option<Ordering> {
+        self.0.map(|x| (x as isize).cmp(other))
     }
 }
 
@@ -552,6 +553,18 @@ impl Display for Pointer {
                 Some(i) => format!("{}", i),
             }
         )
+    }
+}
+
+impl PartialEq<Pointer> for isize {
+    fn eq(&self, other: &Pointer) -> bool {
+        other == self
+    }
+}
+
+impl PartialOrd<Pointer> for isize {
+    fn partial_cmp(&self, other: &Pointer) -> Option<Ordering> {
+        other.partial_cmp(self).map(|x| x.reverse())
     }
 }
 
@@ -660,8 +673,9 @@ impl Display for LineNumber {
 impl Default for LineNumber {
     #[inline]
     fn default() -> LineNumber {
-        // Safe to unwrap because 1 is a non-zero.
-        LineNumber(NonZeroUsize::new(1).unwrap())
+        unsafe {
+            LineNumber(NonZeroUsize::new_unchecked(1))
+        }
     }
 }
 
@@ -670,8 +684,8 @@ impl Add<usize> for LineNumber {
 
     #[inline]
     fn add(self, other: usize) -> LineNumber {
-        // Safe to unwrap because self.0.get() > 0 and other >= 0.
-        LineNumber::new(self.0.get() + other).unwrap()
+        // Should never panic due to self.0.get() > 0 and other >= 0.
+        LineNumber::new(self.0.get() + other).unwrap_or_else(|| panic!("Unable to add {} to LineNumber {}.", other, self))
     }
 }
 
@@ -693,12 +707,7 @@ impl Sub<usize> for LineNumber {
 
     #[inline]
     fn sub(self, other: usize) -> LineNumber {
-        if self.0.get() > other {
-            // Safe to unwrap because self.0.get() > other.
-            LineNumber::new(self.0.get() - other).unwrap()
-        } else {
-            Default::default()
-        }
+        LineNumber::new(self.0.get() - other).unwrap_or_default()
     }
 }
 
@@ -805,18 +814,14 @@ impl Filter for PatternFilter {
                 sections.clear();
 
                 for target_section in target_sections {
-                    let target = view
-                        .line(target_section.start.line)
-                        .unwrap()
-                        .chars()
-                        .skip(target_section.start.index)
-                        .collect::<String>();
-
-                    for location in search_pattern.locate_iter(&target) {
-                        sections.push(Section {
-                            start: target_section.start >> location.start(),
-                            length: Length::from(location.length()),
-                        });
+                    if let Some(target) = view
+                        .line(target_section.start.line).map(|x| x.chars().skip(target_section.start.index).collect::<String>()) {
+                        for location in search_pattern.locate_iter(&target) {
+                            sections.push(Section {
+                                start: target_section.start >> location.start(),
+                                length: Length::from(location.length()),
+                            });
+                        }
                     }
                 }
             }
