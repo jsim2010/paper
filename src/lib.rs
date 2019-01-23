@@ -35,7 +35,11 @@
     unused_qualifications,
     unused_results
 )]
-#![warn(clippy::use_debug, clippy::option_unwrap_used, clippy::integer_arithmetic)]
+#![warn(
+    clippy::use_debug,
+    clippy::option_unwrap_used,
+    clippy::integer_arithmetic
+)]
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 
 mod engine;
@@ -43,7 +47,8 @@ mod ui;
 
 use crate::engine::{Controller, Notice};
 use crate::ui::{Address, Change, Color, Edit, Length, Region, UserInterface, END};
-use rec::{Atom, ChCls, Pattern, SOME};
+use rec::ChCls::{Any, Digit, End, Sign};
+use rec::{Element, tkn, some, Pattern};
 use std::cmp::{self, Ordering};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
@@ -335,7 +340,9 @@ impl View {
     }
 
     fn line_number(&self, mark: &Pointer) -> Option<LineNumber> {
-        mark.0.and_then(|m| self.data.get(..=m)).and_then(|x| LineNumber::new(x.matches(ui::ENTER).count() + 1))
+        mark.0
+            .and_then(|m| self.data.get(..=m))
+            .and_then(|x| LineNumber::new(x.matches(ui::ENTER).count() + 1))
     }
 
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
@@ -414,12 +421,18 @@ impl Adjustment {
         match c {
             ui::BACKSPACE => {
                 if place.index == 0 {
-                    view.line_length(place).map(|x| Adjustment::new(place.line, -1, x as isize, Change::Clear))
+                    view.line_length(place)
+                        .map(|x| Adjustment::new(place.line, -1, x as isize, Change::Clear))
                 } else {
                     Some(Adjustment::new(place.line, -1, -1, Change::Backspace))
                 }
             }
-            ui::ENTER => Some(Adjustment::new(place.line, 1, -(place.index as isize), Change::Clear)),
+            ui::ENTER => Some(Adjustment::new(
+                place.line,
+                1,
+                -(place.index as isize),
+                Change::Clear,
+            )),
             _ => Some(Adjustment::new(place.line, 1, 1, Change::Insert(c))),
         }
     }
@@ -683,9 +696,7 @@ impl Display for LineNumber {
 impl Default for LineNumber {
     #[inline]
     fn default() -> LineNumber {
-        unsafe {
-            LineNumber(NonZeroUsize::new_unchecked(1))
-        }
+        unsafe { LineNumber(NonZeroUsize::new_unchecked(1)) }
     }
 }
 
@@ -703,7 +714,8 @@ impl Add<usize> for LineNumber {
     #[inline]
     fn add(self, other: usize) -> LineNumber {
         // Should never panic due to self.0.get() > 0 and other >= 0.
-        LineNumber::new(self.0.get() + other).unwrap_or_else(|| panic!("Unable to add {} to LineNumber {}.", other, self))
+        LineNumber::new(self.0.get() + other)
+            .unwrap_or_else(|| panic!("Unable to add {} to LineNumber {}.", other, self))
     }
 }
 
@@ -713,7 +725,8 @@ impl Add<isize> for LineNumber {
     #[inline]
     fn add(self, other: isize) -> LineNumber {
         if other < 0 {
-            LineNumber::new(self.0.get() - (-other) as usize).unwrap_or_else(|| panic!("Unable to add {} to LineNumber {}.", other, self))
+            LineNumber::new(self.0.get() - (-other) as usize)
+                .unwrap_or_else(|| panic!("Unable to add {} to LineNumber {}.", other, self))
         } else {
             self + other as usize
         }
@@ -762,17 +775,20 @@ struct LineFilter {
 }
 
 impl LineFilter {
-    fn retain_sections_within_bounds(sections: &mut Vec<NewSection>, bound1: LineNumber, bound2: LineNumber, view: &View) {
+    fn retain_sections_within_bounds(
+        sections: &mut Vec<NewSection>,
+        bound1: LineNumber,
+        bound2: LineNumber,
+        view: &View,
+    ) {
         let (top, bottom) = match bound1.cmp(&bound2) {
             Ordering::Greater => (bound2, bound1),
             _ => (bound1, bound2),
         };
 
-        sections.retain(|x| {
-            match view.line_number(&x.start) {
-                Some(line_number) => line_number >= top && line_number <= bottom,
-                None => false,
-            }
+        sections.retain(|x| match view.line_number(&x.start) {
+            Some(line_number) => line_number >= top && line_number <= bottom,
+            None => false,
         });
     }
 }
@@ -781,12 +797,10 @@ impl Default for LineFilter {
     fn default() -> LineFilter {
         LineFilter {
             pattern: Pattern::define(
-                "#" + ((ChCls::Digit.rpt(SOME).name("line") + ChCls::End)
-                    | (ChCls::Digit.rpt(SOME).name("start")
-                        + "."
-                        + ChCls::Digit.rpt(SOME).name("end"))
-                    | (ChCls::Digit.rpt(SOME).name("origin")
-                        + (("+".to_rec() | "-") + ChCls::Digit.rpt(SOME)).name("movement"))),
+                "#" + ((tkn!(some(Digit) => "line") + End)
+                    | (tkn!(some(Digit) => "start") + "." + tkn!(some(Digit) => "end"))
+                    | (tkn!(some(Digit) => "origin")
+                        + tkn!(Sign + some(Digit) => "movement"))),
             ),
         }
     }
@@ -800,11 +814,17 @@ impl Filter for LineFilter {
     fn new_extract(&self, feature: &str, sections: &mut Vec<NewSection>, view: &View) {
         let tokens = self.pattern.tokenize(feature);
 
-        if let Some(line) = tokens.get("line").and_then(|x| x.parse::<LineNumber>().ok()) {
+        if let Ok(line) = tokens.parse::<LineNumber>("line") {
             sections.retain(|x| view.line_number(&x.start) == Some(line));
-        } else if let (Some(start), Some(end)) = (tokens.get("start").and_then(|x| x.parse::<LineNumber>().ok()), tokens.get("end").and_then(|x| x.parse::<LineNumber>().ok())) {
+        } else if let (Ok(start), Ok(end)) = (
+            tokens.parse::<LineNumber>("start"),
+            tokens.parse::<LineNumber>("end"),
+        ) {
             LineFilter::retain_sections_within_bounds(sections, start, end, view);
-        } else if let (Some(origin), Some(movement)) = (tokens.get("origin").and_then(|x| x.parse::<LineNumber>().ok()), tokens.get("movement").and_then(|x| x.parse::<isize>().ok())) {
+        } else if let (Ok(origin), Ok(movement)) = (
+            tokens.parse::<LineNumber>("origin"),
+            tokens.parse::<isize>("movement"),
+        ) {
             LineFilter::retain_sections_within_bounds(sections, origin, origin + movement, view);
         }
     }
@@ -819,7 +839,9 @@ impl Filter for LineFilter {
         } else if let (Some(line_start), Some(line_end)) = (tokens.get("start"), tokens.get("end"))
         {
             if let (Ok(start), Ok(end)) = (line_start.parse::<usize>(), line_end.parse::<usize>()) {
-                if let (Some(start_line_number), Some(end_line_number)) = (LineNumber::new(start), LineNumber::new(end)) {
+                if let (Some(start_line_number), Some(end_line_number)) =
+                    (LineNumber::new(start), LineNumber::new(end))
+                {
                     let top = cmp::min(start_line_number, end_line_number);
                     let bottom = cmp::max(start_line_number, end_line_number);
 
@@ -858,7 +880,7 @@ struct PatternFilter {
 impl Default for PatternFilter {
     fn default() -> PatternFilter {
         PatternFilter {
-            pattern: Pattern::define("/" + ChCls::Any.rpt(SOME).name("pattern")),
+            pattern: Pattern::define("/" + tkn!(some(Any) => "pattern")),
         }
     }
 }
@@ -868,18 +890,20 @@ impl Filter for PatternFilter {
         '/'
     }
 
-    fn new_extract(&self, feature: &str, sections: &mut Vec<NewSection>, view: &View) {
-    }
+    fn new_extract(&self, feature: &str, sections: &mut Vec<NewSection>, view: &View) {}
 
     fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
-            if let Ok(search_pattern) = Pattern::load(user_pattern.to_rec()) {
+            if let Ok(search_pattern) = Pattern::load(user_pattern) {
                 let target_sections = sections.clone();
                 sections.clear();
 
                 for target_section in target_sections {
-                    if let Some(target) = view
-                        .line(target_section.start.line).map(|x| x.chars().skip(target_section.start.index).collect::<String>()) {
+                    if let Some(target) = view.line(target_section.start.line).map(|x| {
+                        x.chars()
+                            .skip(target_section.start.index)
+                            .collect::<String>()
+                    }) {
                         for location in search_pattern.locate_iter(&target) {
                             sections.push(Section {
                                 start: target_section.start >> location.start(),

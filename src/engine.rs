@@ -1,7 +1,8 @@
 //! Implements the state machine of the application.
 use crate::ui::{BACKSPACE, ENTER, ESC};
 use crate::{Debug, Display, Edge, FmtResult, Formatter, Paper};
-use rec::{Atom, ChCls, Pattern, Quantifier, OPT, SOME, VAR};
+use rec::{Element, tkn, opt, lazy_some, some, var, Pattern};
+use rec::ChCls::{Any, End, Not, Whitespace};
 use std::collections::HashMap;
 use std::mem::{discriminant, Discriminant};
 use std::rc::Rc;
@@ -339,7 +340,7 @@ impl FilterSignals {
     fn new() -> FilterSignals {
         FilterSignals {
             first_feature_pattern: Pattern::define(
-                ChCls::None("&").rpt(VAR).name("feature") + "&&".rpt(OPT),
+                tkn!(var(Not("&")) => "feature") + opt("&&"),
             ),
         }
     }
@@ -396,10 +397,10 @@ impl ExecuteCommand {
     fn new() -> ExecuteCommand {
         ExecuteCommand {
             command_pattern: Pattern::define(
-                ChCls::Any.rpt(SOME.lazy()).name("command") + (ChCls::WhSpc | ChCls::End),
+                tkn!(lazy_some(Any) => "command") + (Whitespace | End),
             ),
             see_pattern: Pattern::define(
-                "see" + ChCls::WhSpc.rpt(SOME) + ChCls::Any.rpt(VAR).name("path"),
+                "see" + some(Whitespace) + tkn!(var(Any) => "path")
             ),
         }
     }
@@ -414,7 +415,7 @@ impl Operation for ExecuteCommand {
                 if let Some(path) = self.see_pattern.tokenize(&command).get("path") {
                     paper.change_view(path);
                 }
-            },
+            }
             Some("put") => {
                 paper.save_view();
             }
@@ -495,7 +496,10 @@ impl Scroll {
 
 impl Operation for Scroll {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
-        paper.scroll(Scroll::get_scroll_movement(paper.scroll_height(), self.arg(opcode)?));
+        paper.scroll(Scroll::get_scroll_movement(
+            paper.scroll_height(),
+            self.arg(opcode)?,
+        ));
         paper.display_view()?;
         Ok(None)
     }
