@@ -339,12 +339,6 @@ impl View {
         }
     }
 
-    fn line_number(&self, mark: &Pointer) -> Option<LineNumber> {
-        mark.0
-            .and_then(|m| self.data.get(..=m))
-            .and_then(|x| LineNumber::new(x.matches(ui::ENTER).count() + 1))
-    }
-
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
         // Clear the screen, then add each row.
         iter::once(Edit::new(Default::default(), Change::Clear)).chain(
@@ -585,11 +579,6 @@ impl PartialOrd<Pointer> for isize {
     }
 }
 
-struct NewSection {
-    start: Pointer,
-    length: Length,
-}
-
 /// Signifies adjacent [`Place`]s.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
 pub struct Section {
@@ -766,31 +755,11 @@ impl From<std::num::ParseIntError> for ParseLineNumberError {
 trait Filter: Debug {
     fn id(&self) -> char;
     fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View);
-    fn new_extract(&self, feature: &str, sections: &mut Vec<NewSection>, view: &View);
 }
 
 #[derive(Debug)]
 struct LineFilter {
     pattern: Pattern,
-}
-
-impl LineFilter {
-    fn retain_sections_within_bounds(
-        sections: &mut Vec<NewSection>,
-        bound1: LineNumber,
-        bound2: LineNumber,
-        view: &View,
-    ) {
-        let (top, bottom) = match bound1.cmp(&bound2) {
-            Ordering::Greater => (bound2, bound1),
-            _ => (bound1, bound2),
-        };
-
-        sections.retain(|x| match view.line_number(&x.start) {
-            Some(line_number) => line_number >= top && line_number <= bottom,
-            None => false,
-        });
-    }
 }
 
 impl Default for LineFilter {
@@ -811,63 +780,28 @@ impl Filter for LineFilter {
         '#'
     }
 
-    fn new_extract(&self, feature: &str, sections: &mut Vec<NewSection>, view: &View) {
-        let tokens = self.pattern.tokenize(feature);
-
-        if let Ok(line) = tokens.parse::<LineNumber>("line") {
-            sections.retain(|x| view.line_number(&x.start) == Some(line));
-        } else if let (Ok(start), Ok(end)) = (
-            tokens.parse::<LineNumber>("start"),
-            tokens.parse::<LineNumber>("end"),
-        ) {
-            LineFilter::retain_sections_within_bounds(sections, start, end, view);
-        } else if let (Ok(origin), Ok(movement)) = (
-            tokens.parse::<LineNumber>("origin"),
-            tokens.parse::<isize>("movement"),
-        ) {
-            LineFilter::retain_sections_within_bounds(sections, origin, origin + movement, view);
-        }
-    }
-
     fn extract(&self, feature: &str, sections: &mut Vec<Section>, _view: &View) {
         let tokens = self.pattern.tokenize(feature);
 
-        if let Some(Ok(line)) = tokens.get("line").map(|x| x.parse::<usize>()) {
-            if let Some(line_number) = LineNumber::new(line) {
-                sections.retain(|&x| x.start.line == line_number);
-            }
-        } else if let (Some(line_start), Some(line_end)) = (tokens.get("start"), tokens.get("end"))
-        {
-            if let (Ok(start), Ok(end)) = (line_start.parse::<usize>(), line_end.parse::<usize>()) {
-                if let (Some(start_line_number), Some(end_line_number)) =
-                    (LineNumber::new(start), LineNumber::new(end))
-                {
-                    let top = cmp::min(start_line_number, end_line_number);
-                    let bottom = cmp::max(start_line_number, end_line_number);
+        if let Ok(line) = tokens.parse::<LineNumber>("line") {
+            sections.retain(|&x| x.start.line == line);
+        } else if let (Ok(start), Ok(end)) = (tokens.parse::<LineNumber>("start"), tokens.parse::<LineNumber>("end")) {
+            let top = cmp::min(start, end);
+            let bottom = cmp::max(start, end);
 
-                    sections.retain(|&x| {
-                        let row = x.start.line;
-                        row >= top && row <= bottom
-                    })
-                }
-            }
-        } else if let (Some(line_origin), Some(line_movement)) =
-            (tokens.get("origin"), tokens.get("movement"))
-        {
-            if let (Ok(origin), Ok(movement)) =
-                (line_origin.parse::<usize>(), line_movement.parse::<isize>())
-            {
-                if let Some(origin_line_number) = LineNumber::new(origin) {
-                    let end = origin_line_number + movement;
-                    let top = cmp::min(origin_line_number, end);
-                    let bottom = cmp::max(origin_line_number, end);
+            sections.retain(|&x| {
+                let row = x.start.line;
+                row >= top && row <= bottom
+            })
+        } else if let (Ok(origin), Ok(movement)) = (tokens.parse::<LineNumber>("origin"), tokens.parse::<isize>("movement")) {
+            let end = origin + movement;
+            let top = cmp::min(origin, end);
+            let bottom = cmp::max(origin, end);
 
-                    sections.retain(|&x| {
-                        let row = x.start.line;
-                        row >= top && row <= bottom
-                    })
-                }
-            }
+            sections.retain(|&x| {
+                let row = x.start.line;
+                row >= top && row <= bottom
+            })
         }
     }
 }
@@ -889,8 +823,6 @@ impl Filter for PatternFilter {
     fn id(&self) -> char {
         '/'
     }
-
-    fn new_extract(&self, feature: &str, sections: &mut Vec<NewSection>, view: &View) {}
 
     fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
