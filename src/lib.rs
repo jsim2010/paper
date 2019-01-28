@@ -54,7 +54,6 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
 use std::iter;
-use std::num::NonZeroUsize;
 use std::ops::{Add, AddAssign, Shr, SubAssign};
 
 /// The paper application.
@@ -343,14 +342,14 @@ impl View {
         // Clear the screen, then add each row.
         iter::once(Edit::new(Default::default(), Change::Clear)).chain(
             self.lines()
-                .skip(self.origin.line.index())
                 .enumerate()
+                .skip(self.origin.line.index())
                 .map(move |x| {
                     Edit::new(
                         Region::row(x.0),
                         Change::Row(format!(
                             "{:>width$} {}",
-                            self.origin.line + x.0,
+                            x.0 + 1,
                             x.1,
                             width = (-self.origin.index - 1) as usize
                         )),
@@ -374,7 +373,7 @@ impl View {
 
     fn scroll(&mut self, movement: isize) {
         self.origin.line = cmp::min(
-            self.origin.line + movement,
+            self.origin.line.shift(movement).unwrap_or_default(),
             LineNumber::new(self.line_count).unwrap_or_default(),
         );
     }
@@ -403,7 +402,7 @@ impl Adjustment {
         Adjustment {
             shift,
             line_change,
-            indexes_changed: [(line + line_change, index_change)]
+            indexes_changed: [(line.shift(line_change).unwrap(), index_change)]
                 .iter()
                 .cloned()
                 .collect(),
@@ -484,7 +483,7 @@ impl Mark {
     fn adjust(&mut self, adjustment: &Adjustment) {
         if -adjustment.shift < self.pointer {
             self.pointer += adjustment.shift;
-            self.place.line = self.place.line + adjustment.line_change;
+            self.place.line = self.place.line.shift(adjustment.line_change).unwrap();
 
             for (&line, &change) in adjustment.indexes_changed.iter() {
                 if line == self.place.line {
@@ -662,16 +661,29 @@ impl Display for Place {
 
 /// Signifies a line number.
 #[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Debug)]
-struct LineNumber(NonZeroUsize);
+struct LineNumber(usize);
 
 impl LineNumber {
     fn new(value: usize) -> Option<LineNumber> {
-        NonZeroUsize::new(value).map(LineNumber)
+        match value {
+            0 => None,
+            _ => Some(LineNumber(value)),
+        }
     }
 
-    #[allow(clippy::integer_arithmetic)] // Okay to subtract 1 from a non-zero usize.
+    #[allow(clippy::integer_arithmetic)] // Integer arithmetic is okay because self.0 > 0 by definition of new().
     fn index(self) -> usize {
-        self.0.get() - 1
+        self.0 - 1
+    }
+
+    fn shift(self, movement: isize) -> Option<LineNumber> {
+        let new_value = if movement < 0 {
+            movement.checked_neg().and_then(|x| self.0.checked_sub(x as usize))
+        } else {
+            self.0.checked_add(movement as usize)
+        };
+
+        new_value.and_then(LineNumber::new)
     }
 }
 
@@ -685,7 +697,7 @@ impl Display for LineNumber {
 impl Default for LineNumber {
     #[inline]
     fn default() -> LineNumber {
-        unsafe { LineNumber(NonZeroUsize::new_unchecked(1)) }
+        LineNumber(1)
     }
 }
 
@@ -694,31 +706,6 @@ impl std::str::FromStr for LineNumber {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         LineNumber::new(s.parse::<usize>()?).ok_or(ParseLineNumberError::InvalidValue)
-    }
-}
-
-impl Add<usize> for LineNumber {
-    type Output = LineNumber;
-
-    #[inline]
-    fn add(self, other: usize) -> LineNumber {
-        // Should never panic due to self.0.get() > 0 and other >= 0.
-        LineNumber::new(self.0.get() + other)
-            .unwrap_or_else(|| panic!("Unable to add {} to LineNumber {}.", other, self))
-    }
-}
-
-impl Add<isize> for LineNumber {
-    type Output = LineNumber;
-
-    #[inline]
-    fn add(self, other: isize) -> LineNumber {
-        if other < 0 {
-            LineNumber::new(self.0.get() - (-other) as usize)
-                .unwrap_or_else(|| panic!("Unable to add {} to LineNumber {}.", other, self))
-        } else {
-            self + other as usize
-        }
     }
 }
 
@@ -794,7 +781,7 @@ impl Filter for LineFilter {
                 row >= top && row <= bottom
             })
         } else if let (Ok(origin), Ok(movement)) = (tokens.parse::<LineNumber>("origin"), tokens.parse::<isize>("movement")) {
-            let end = origin + movement;
+            let end = origin.shift(movement).unwrap_or_default();
             let top = cmp::min(origin, end);
             let bottom = cmp::max(origin, end);
 
