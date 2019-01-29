@@ -48,7 +48,7 @@ mod engine;
 mod ui;
 
 use crate::engine::{Controller, Notice};
-use crate::ui::{Address, Change, Color, Dimension, Edit, Length, Region, UserInterface, END};
+use crate::ui::{Address, Change, Color, Index, Edit, Length, Region, UserInterface, END};
 use rec::ChCls::{Any, Digit, End, Sign};
 use rec::{Element, tkn, some, Pattern};
 use std::cmp::{self, Ordering};
@@ -57,6 +57,7 @@ use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
 use std::iter;
 use std::ops::{AddAssign, Shr, ShrAssign};
+use try_from::TryFrom;
 
 const NEGATIVE_ONE: isize = -1;
 
@@ -162,12 +163,16 @@ impl Paper {
 
     fn draw_popup(&self) -> Result<(), String> {
         self.ui
-            .apply(Edit::new(Region::row(0), Change::Row(self.sketch.clone())))
+            .apply(Edit::new(Region::row(Index::from(0)), Change::Row(self.sketch.clone())))
     }
 
     fn clear_background(&self) -> Result<(), String> {
         for row in 0..self.ui.grid_height() {
-            self.format_region(Region::row(row), Color::Default)?;
+            let index = match Index::try_from(row) {
+                Ok(i) => i,
+                Err(_) => return Err(String::from("Invalid value for Index")),
+            };
+            self.format_region(Region::row(index), Color::Default)?;
         }
 
         Ok(())
@@ -338,7 +343,7 @@ impl View {
 
     fn address_at(&self, place: &Place) -> Option<Address> {
         place.line.diff(self.first_line).and_then(|x| 
-            match (Dimension::try_from(x as u32), Dimension::try_from((place.index + self.margin_width) as u32)) {
+            match (Index::try_from(x as u32), Index::try_from((place.index + self.margin_width) as u32)) {
                 (Ok(row), Ok(column)) => Some(Address::new(row, column)),
                 _ => None
             })
@@ -356,7 +361,7 @@ impl View {
                 .skip(self.first_line.index())
                 .map(move |x| {
                     Edit::new(
-                        Region::row(x.0),
+                        Region::row(Index::try_from(x.0).unwrap()),
                         Change::Row(format!(
                             "{:>width$} {}",
                             x.0 + 1,

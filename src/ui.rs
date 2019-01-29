@@ -1,6 +1,7 @@
 //! Implements how the user interfaces with the application.
 use crate::{Display, FmtResult, Formatter};
 use pancurses::Input;
+use try_from::{TryFrom, TryFromIntError};
 
 type UiResult = Result<(), String>;
 
@@ -287,9 +288,9 @@ impl Region {
     }
 
     /// Creates a new `Region` that signifies an entire row.
-    pub(crate) fn row(row: usize) -> Self {
+    pub(crate) fn row(row: Index) -> Self {
         Self {
-            start: Address::new(Dimension(row as i32), Dimension(0)),
+            start: Address::new(row, Index::from(0)),
             length: END,
         }
     }
@@ -305,14 +306,14 @@ impl Display for Region {
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub(crate) struct Address {
     /// The index of the row that contains the cell (starts at 0).
-    row: Dimension,
+    row: Index,
     /// The index of the column that contains the cell (starts at 0).
-    column: Dimension,
+    column: Index,
 }
 
 impl Address {
     /// Creates a new `Address` with a given row and column.
-    pub(crate) fn new(row: Dimension, column: Dimension) -> Self {
+    pub(crate) fn new(row: Index, column: Index) -> Self {
         Self { row, column }
     }
 
@@ -341,32 +342,46 @@ impl Display for Address {
     }
 }
 
+/// Signifies the index of a row or column in the grid.
+///
+/// Given `x` is an Index value:
+///     `x >= 0`
+///     `x <= i32::max_value`
 #[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Dimension(i32);
+pub(crate) struct Index(i32);
 
-impl Dimension{ 
-    // TODO: This should be moved to impl TryFrom once that has stablized.
-    pub(crate) fn try_from(value: u32) -> Result<Self, String> {
-        #[allow(clippy::cast_sign_loss)] // i32::max_value() > 0.
-        let i32_max_value = i32::max_value() as u32;
-
-        if value <= i32_max_value {
-            #[allow(clippy::cast_possible_wrap)] // value <= i32_max_value.
-            Ok(Dimension(value as i32))
-        } else {
-            Err(String::from("Invalid value for Dimension"))
-        }
+impl From<u8> for Index {
+    fn from(value: u8) -> Self {
+        Index(i32::from(value))
     }
 }
 
-impl Display for Dimension {
+impl TryFrom<u32> for Index {
+    type Err = TryFromIntError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Err>{ 
+        i32::try_from(value).map(Index)
+    }
+}
+
+
+impl TryFrom<usize> for Index {
+    type Err = TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Err> {
+        i32::try_from(value).map(Index)
+    }
+}
+
+impl Display for Index {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}", self.0)
     }
 }
 
-impl From<Dimension> for i32 {
-    fn from(value: Dimension) -> Self {
+impl From<Index> for i32 {
+    #[inline]
+    fn from(value: Index) -> Self {
         value.0
     }
 }
@@ -395,23 +410,17 @@ const END_VALUE: i32 = -1;
 /// The `Length` that represents the number of characters until the end of the row.
 pub(crate) const END: Length = Length(END_VALUE);
 
-impl Length {
-    // TODO: This should be moved to impl TryFrom once that has stablized.
-    pub(crate) fn try_from(value: u64) -> Result<Self, String> {
-        #[allow(clippy::cast_sign_loss)] // i32::max_value() > 0.
-        let i32_max_value = i32::max_value() as u64;
+impl TryFrom<u64> for Length {
+    type Err = TryFromIntError;
 
-        if value <= i32_max_value {
-            #[allow(clippy::cast_possible_truncation)] // value <= i32_max_value.
-            Ok(Length(value as i32))
-        } else {
-            Err(String::from("Invalid value for Length"))
-        }
+    fn try_from(value: u64) -> Result<Self, TryFromIntError> {
+        i32::try_from(value).map(Length)
     }
 }
 
 impl From<Length> for u32 {
     #[allow(clippy::cast_sign_loss)] // Length::try_from() specifies value.0 >= 0.
+    #[inline]
     fn from(value: Length) -> Self {
         value.0 as Self
     }
