@@ -218,8 +218,8 @@ impl Paper {
 
     /// Sets the [`Color`] of a [`Section`].
     fn format_section(&self, section: &Section, color: Color) -> Result<(), String> {
-        // It is okay for to_region() to return None; this just means section is not displayed.
-        if let Some(region) = section.to_region(&self.view.origin) {
+        // It is okay for region_at() to return None; this just means section is not displayed.
+        if let Some(region) = self.view.region_at(section) {
             self.format_region(region, color)?;
         }
 
@@ -238,7 +238,7 @@ impl Paper {
                 adjustment += new_adjustment;
 
                 if adjustment.change != Change::Clear {
-                    if let Some(region) = mark.place.to_region(&self.view.origin) {
+                    if let Some(region) = self.view.region_at(&mark.place) {
                         self.ui
                             .apply(Edit::new(region, adjustment.change.clone()))?;
                     }
@@ -304,7 +304,8 @@ impl<'a> Iterator for PaperFiltersIter<'a> {
 #[derive(Clone, Debug, Default)]
 struct View {
     data: String,
-    origin: RelativePlace,
+    first_line: LineNumber,
+    margin_width: usize,
     line_count: usize,
     path: String,
 }
@@ -338,12 +339,20 @@ impl View {
         }
     }
 
+    fn address_at(&self, place: &Place) -> Option<Address> {
+        place.line.diff(self.first_line).map(|x| Address::new(x, place.index + self.margin_width))
+    }
+
+    fn region_at<T: RegionWrapper>(&self, region_wrapper: &T) -> Option<Region> {
+        self.address_at(&region_wrapper.start()).map(|address| Region::new(address, region_wrapper.length()))
+    }
+
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
         // Clear the screen, then add each row.
         iter::once(Edit::new(Default::default(), Change::Clear)).chain(
             self.lines()
                 .enumerate()
-                .skip(self.origin.line.index())
+                .skip(self.first_line.index())
                 .map(move |x| {
                     Edit::new(
                         Region::row(x.0),
@@ -351,7 +360,7 @@ impl View {
                             "{:>width$} {}",
                             x.0 + 1,
                             x.1,
-                            width = (-self.origin.index - 1) as usize
+                            width = self.margin_width - 1
                         )),
                     )
                 }),
@@ -368,12 +377,12 @@ impl View {
 
     fn clean(&mut self) {
         self.line_count = self.lines().count();
-        self.origin.index = -(((self.line_count + 1) as f32).log10().ceil() as isize + 1);
+        self.margin_width = ((self.line_count + 1) as f32).log10().ceil() as usize + 1;
     }
 
     fn scroll(&mut self, movement: isize) {
-        self.origin.line = cmp::min(
-            self.origin.line.shift(movement).unwrap_or_default(),
+        self.first_line = cmp::min(
+            self.first_line.shift(movement).unwrap_or_default(),
             LineNumber::new(self.line_count).unwrap_or_default(),
         );
     }
@@ -578,6 +587,11 @@ impl PartialOrd<Pointer> for isize {
     }
 }
 
+trait RegionWrapper {
+    fn start(&self) -> Place;
+    fn length(&self) -> Length;
+}
+
 /// Signifies adjacent [`Place`]s.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
 pub struct Section {
@@ -594,11 +608,15 @@ impl Section {
             length: END,
         }
     }
+}
 
-    fn to_region(&self, origin: &RelativePlace) -> Option<Region> {
+impl RegionWrapper for Section {
+    fn start(&self) -> Place {
         self.start
-            .to_address(origin)
-            .map(|x| Region::new(x, self.length))
+    }
+
+    fn length(&self) -> Length {
+        self.length
     }
 }
 
@@ -622,21 +640,13 @@ pub struct Place {
     index: usize,
 }
 
-impl Place {
-    fn to_address(&self, origin: &RelativePlace) -> Option<Address> {
-        if self.line < origin.line {
-            None
-        } else {
-            Some(Address::new(
-                self.line.index() - origin.line.index(),
-                (self.index as isize - origin.index) as usize,
-            ))
-        }
+impl RegionWrapper for Place {
+    fn start(&self) -> Place {
+        *self
     }
 
-    fn to_region(&self, origin: &RelativePlace) -> Option<Region> {
-        self.to_address(origin)
-            .map(|x| Region::new(x, Length::from(1)))
+    fn length(&self) -> Length {
+        Length::from(1)
     }
 }
 
@@ -684,6 +694,10 @@ impl LineNumber {
         };
 
         new_value.and_then(LineNumber::new)
+    }
+
+    fn diff(self, other: LineNumber) -> Option<usize> {
+        self.0.checked_sub(other.0)
     }
 }
 
