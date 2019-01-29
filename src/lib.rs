@@ -38,8 +38,9 @@
 #![warn(
     clippy::use_debug,
     clippy::option_unwrap_used,
-    clippy::integer_arithmetic
+    //clippy::integer_arithmetic
 )]
+#![allow(clippy::suspicious_op_assign_impl)] // This lint is not always correct; issues should be detected by tests.
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 
 mod engine;
@@ -54,7 +55,9 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
 use std::iter;
-use std::ops::{Add, AddAssign, Shr, SubAssign};
+use std::ops::{AddAssign, Shr, ShrAssign};
+
+const NEGATIVE_ONE: isize = -1;
 
 /// The paper application.
 // In general, Paper methods should contain as little logic as possible. Instead all logic should
@@ -183,19 +186,15 @@ impl Paper {
                     _ => length.into_usize(),
                 };
             }
-
+            
+            let mut pointer = Pointer(match place.line.index() {
+                0 => Some(0),
+                index => self.view.data.match_indices(ui::ENTER).nth(index - 1).map(|x| x.0 + 1),
+            });
+            pointer += place.index;
             self.marks.push(Mark {
                 place,
-                pointer: place.index
-                    + Pointer(match place.line.index() {
-                        0 => Some(0),
-                        index => self
-                            .view
-                            .data
-                            .match_indices(ui::ENTER)
-                            .nth(index - 1)
-                            .map(|x| x.0 + 1),
-                    }),
+                pointer,
             });
         }
     }
@@ -411,7 +410,7 @@ impl Adjustment {
         Adjustment {
             shift,
             line_change,
-            indexes_changed: [(line.shift(line_change).unwrap(), index_change)]
+            indexes_changed: [(line.shift(line_change).unwrap_or_default(), index_change)]
                 .iter()
                 .cloned()
                 .collect(),
@@ -424,17 +423,12 @@ impl Adjustment {
             ui::BACKSPACE => {
                 if place.index == 0 {
                     view.line_length(place)
-                        .map(|x| Adjustment::new(place.line, -1, x as isize, Change::Clear))
+                        .map(|x| Adjustment::new(place.line, NEGATIVE_ONE, x as isize, Change::Clear))
                 } else {
-                    Some(Adjustment::new(place.line, -1, -1, Change::Backspace))
+                    Some(Adjustment::new(place.line, NEGATIVE_ONE, NEGATIVE_ONE, Change::Backspace))
                 }
             }
-            ui::ENTER => Some(Adjustment::new(
-                place.line,
-                1,
-                -(place.index as isize),
-                Change::Clear,
-            )),
+            ui::ENTER => (place.index as isize).checked_neg().map(|index| Adjustment::new(place.line, 1, index, Change::Clear)),
             _ => Some(Adjustment::new(place.line, 1, 1, Change::Insert(c))),
         }
     }
@@ -490,14 +484,12 @@ struct Mark {
 
 impl Mark {
     fn adjust(&mut self, adjustment: &Adjustment) {
-        if -adjustment.shift < self.pointer {
-            self.pointer += adjustment.shift;
-            self.place.line = self.place.line.shift(adjustment.line_change).unwrap();
+        self.pointer = self.pointer.saturating_add(adjustment.shift);
+        self.place.line = self.place.line.shift(adjustment.line_change).unwrap_or_default();
 
-            for (&line, &change) in adjustment.indexes_changed.iter() {
-                if line == self.place.line {
-                    self.place.index = (self.place.index as isize + change) as usize;
-                }
+        for (&line, &change) in adjustment.indexes_changed.iter() {
+            if line == self.place.line {
+                self.place.index >>= change;
             }
         }
     }
@@ -511,6 +503,12 @@ impl Display for Mark {
 
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Debug)]
 struct Pointer(Option<usize>);
+
+impl Pointer {
+    fn saturating_add(self, rhs: isize) -> Pointer {
+        Pointer(self.0.map(|x| (x as isize).saturating_add(rhs) as usize))
+    }
+}
 
 impl PartialEq<isize> for Pointer {
     fn eq(&self, other: &isize) -> bool {
@@ -527,32 +525,17 @@ impl PartialOrd<isize> for Pointer {
     }
 }
 
-impl Add<Pointer> for usize {
-    type Output = Pointer;
-
-    #[inline]
-    fn add(self, other: Pointer) -> Pointer {
-        Pointer(other.0.map(|x| x + self))
-    }
-}
-
-impl Add<usize> for Pointer {
-    type Output = Pointer;
-
-    fn add(self, other: usize) -> Pointer {
-        Pointer(self.0.map(|x| x + other))
-    }
-}
-
-impl SubAssign<usize> for Pointer {
-    fn sub_assign(&mut self, other: usize) {
-        self.0 = self.0.map(|x| x - other);
-    }
-}
-
 impl AddAssign<isize> for Pointer {
+    #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
     fn add_assign(&mut self, other: isize) {
         self.0 = self.0.map(|x| (x as isize + other) as usize);
+    }
+}
+
+impl AddAssign<usize> for Pointer {
+    #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
+    fn add_assign(&mut self, other: usize) {
+        self.0 = self.0.map(|x| x + other);
     }
 }
 
@@ -653,12 +636,20 @@ impl RegionWrapper for Place {
 impl Shr<usize> for Place {
     type Output = Place;
 
+    #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
     #[inline]
     fn shr(self, rhs: usize) -> Place {
         Place {
             index: self.index + rhs,
             ..self
         }
+    }
+}
+
+impl ShrAssign<isize> for Place {
+    #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
+    fn shr_assign(&mut self, rhs: isize) {
+        self.index = ((self.index as isize) + rhs) as usize;
     }
 }
 
