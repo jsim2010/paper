@@ -82,7 +82,7 @@ impl Display for Mode {
 }
 
 impl Default for Mode {
-    fn default() -> Mode {
+    fn default() -> Self {
         Mode::Display
     }
 }
@@ -101,7 +101,7 @@ pub(crate) enum OpCode {
 }
 
 impl OpCode {
-    fn id(self) -> Discriminant<OpCode> {
+    fn id(self) -> Discriminant<Self> {
         discriminant(&self)
     }
 }
@@ -227,7 +227,7 @@ impl Operations {
 }
 
 impl Default for Operations {
-    fn default() -> Operations {
+    fn default() -> Self {
         let change_mode: Rc<dyn Operation> = Rc::new(ChangeMode);
         let add_to_sketch: Rc<dyn Operation> = Rc::new(AddToSketch);
         let scroll: Rc<dyn Operation> = Rc::new(Scroll);
@@ -238,16 +238,16 @@ impl Default for Operations {
         let mark_at: Rc<dyn Operation> = Rc::new(MarkAt);
         let update_view: Rc<dyn Operation> = Rc::new(UpdateView);
 
-        Operations {
+        Self {
             ops: [
-                (OpCode::ChangeMode(Default::default()).id(), change_mode),
+                (OpCode::ChangeMode(Mode::default()).id(), change_mode),
                 (OpCode::AddToSketch(Default::default()).id(), add_to_sketch),
-                (OpCode::Scroll(Default::default()).id(), scroll),
+                (OpCode::Scroll(Direction::default()).id(), scroll),
                 (OpCode::ExecuteCommand.id(), execute_command),
                 (OpCode::DrawPopup.id(), draw_popup),
                 (OpCode::FilterSignals.id(), filter_signals),
                 (OpCode::ReduceNoise.id(), reduce_noise),
-                (OpCode::MarkAt(Default::default()).id(), mark_at),
+                (OpCode::MarkAt(Edge::default()).id(), mark_at),
                 (OpCode::UpdateView(Default::default()).id(), update_view),
             ]
             .iter()
@@ -337,8 +337,8 @@ struct FilterSignals {
 }
 
 impl FilterSignals {
-    fn new() -> FilterSignals {
-        FilterSignals {
+    fn new() -> Self {
+        Self {
             first_feature_pattern: Pattern::define(
                 tkn!(var(Not("&")) => "feature") + opt("&&"),
             ),
@@ -394,8 +394,8 @@ struct ExecuteCommand {
 }
 
 impl ExecuteCommand {
-    fn new() -> ExecuteCommand {
-        ExecuteCommand {
+    fn new() -> Self {
+        Self {
             command_pattern: Pattern::define(
                 tkn!(lazy_some(Any) => "command") + (Whitespace | End),
             ),
@@ -496,7 +496,7 @@ impl Scroll {
 
 impl Operation for Scroll {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
-        paper.scroll(Scroll::get_scroll_movement(
+        paper.scroll(Self::get_scroll_movement(
             paper.scroll_height(),
             self.arg(opcode)?,
         ));
@@ -512,7 +512,7 @@ pub(crate) enum Direction {
 }
 
 impl Default for Direction {
-    fn default() -> Direction {
+    fn default() -> Self {
         Direction::Up
     }
 }

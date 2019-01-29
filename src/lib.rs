@@ -33,12 +33,13 @@
     unused_import_braces,
     unused_lifetimes,
     unused_qualifications,
-    unused_results
+    unused_results,
+    clippy::nursery,
 )]
 #![warn(
     clippy::use_debug,
     clippy::option_unwrap_used,
-    //clippy::integer_arithmetic
+    clippy::use_self,
 )]
 #![allow(clippy::suspicious_op_assign_impl)] // This lint is not always correct; issues should be detected by tests.
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
@@ -47,7 +48,7 @@ mod engine;
 mod ui;
 
 use crate::engine::{Controller, Notice};
-use crate::ui::{Address, Change, Color, Edit, Length, Region, UserInterface, END};
+use crate::ui::{Address, Change, Color, Dimension, Edit, Length, Region, UserInterface, END};
 use rec::ChCls::{Any, Digit, End, Sign};
 use rec::{Element, tkn, some, Pattern};
 use std::cmp::{self, Ordering};
@@ -84,8 +85,8 @@ pub struct Paper {
 impl Paper {
     /// Creates a new paper application.
     #[inline]
-    pub fn new() -> Paper {
-        Default::default()
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Runs the application.
@@ -175,7 +176,7 @@ impl Paper {
     fn set_marks(&mut self, edge: Edge) {
         self.marks.clear();
 
-        for signal in self.signals.iter() {
+        for signal in &self.signals {
             let mut place = signal.start;
 
             if edge == Edge::End {
@@ -183,7 +184,7 @@ impl Paper {
 
                 place.index += match length {
                     END => self.view.line_length(&signal.start).unwrap_or_default(),
-                    _ => length.into_usize(),
+                    _ => u32::from(length) as usize,
                 };
             }
             
@@ -204,11 +205,11 @@ impl Paper {
     }
 
     fn draw_filter_backgrounds(&self) -> Result<(), String> {
-        for noise in self.noises.iter() {
+        for noise in &self.noises {
             self.format_section(noise, Color::Blue)?;
         }
 
-        for signal in self.signals.iter() {
+        for signal in &self.signals {
             self.format_section(signal, Color::Red)?;
         }
 
@@ -230,9 +231,9 @@ impl Paper {
     }
 
     fn update_view(&mut self, c: char) -> Result<(), String> {
-        let mut adjustment: Adjustment = Default::default();
+        let mut adjustment = Adjustment::default();
 
-        for mark in self.marks.iter_mut() {
+        for mark in &mut self.marks {
             if let Some(new_adjustment) = Adjustment::create(c, &mark.place, &self.view) {
                 adjustment += new_adjustment;
 
@@ -310,11 +311,11 @@ struct View {
 }
 
 impl View {
-    fn with_file(path: String) -> View {
-        let mut view = View {
+    fn with_file(path: String) -> Self {
+        let mut view = Self {
             data: fs::read_to_string(path.as_str()).unwrap().replace('\r', ""),
             path,
-            ..Default::default()
+            ..Self::default()
         };
 
         view.clean();
@@ -323,23 +324,24 @@ impl View {
 
     fn add(&mut self, mark: &Mark, c: char) {
         if let Some(index) = mark.pointer.0 {
-            match c {
-                ui::BACKSPACE => {
-                    // For now, do not care to check what is removed. But this may become important for
-                    // multi-byte characters.
-                    match self.data.remove(index) {
-                        _ => {}
-                    }
+            if let ui::BACKSPACE = c {
+                // For now, do not care to check what is removed. But this may become important for
+                // multi-byte characters.
+                match self.data.remove(index) {
+                    _ => {}
                 }
-                _ => {
-                    self.data.insert(index - 1, c);
-                }
+            } else {
+                self.data.insert(index - 1, c);
             }
         }
     }
 
     fn address_at(&self, place: &Place) -> Option<Address> {
-        place.line.diff(self.first_line).map(|x| Address::new(x, place.index + self.margin_width))
+        place.line.diff(self.first_line).and_then(|x| 
+            match (Dimension::try_from(x as u32), Dimension::try_from((place.index + self.margin_width) as u32)) {
+                (Ok(row), Ok(column)) => Some(Address::new(row, column)),
+                _ => None
+            })
     }
 
     fn region_at<T: RegionWrapper>(&self, region_wrapper: &T) -> Option<Region> {
@@ -348,7 +350,7 @@ impl View {
 
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
         // Clear the screen, then add each row.
-        iter::once(Edit::new(Default::default(), Change::Clear)).chain(
+        iter::once(Edit::new(Region::default(), Change::Clear)).chain(
             self.lines()
                 .enumerate()
                 .skip(self.first_line.index())
@@ -404,10 +406,10 @@ struct Adjustment {
 }
 
 impl Adjustment {
-    fn new(line: LineNumber, shift: isize, index_change: isize, change: Change) -> Adjustment {
+    fn new(line: LineNumber, shift: isize, index_change: isize, change: Change) -> Self {
         let line_change = if change == Change::Clear { shift } else { 0 };
 
-        Adjustment {
+        Self {
             shift,
             line_change,
             indexes_changed: [(line.shift(line_change).unwrap_or_default(), index_change)]
@@ -418,24 +420,24 @@ impl Adjustment {
         }
     }
 
-    fn create(c: char, place: &Place, view: &View) -> Option<Adjustment> {
+    fn create(c: char, place: &Place, view: &View) -> Option<Self> {
         match c {
             ui::BACKSPACE => {
                 if place.index == 0 {
                     view.line_length(place)
-                        .map(|x| Adjustment::new(place.line, NEGATIVE_ONE, x as isize, Change::Clear))
+                        .map(|x| Self::new(place.line, NEGATIVE_ONE, x as isize, Change::Clear))
                 } else {
-                    Some(Adjustment::new(place.line, NEGATIVE_ONE, NEGATIVE_ONE, Change::Backspace))
+                    Some(Self::new(place.line, NEGATIVE_ONE, NEGATIVE_ONE, Change::Backspace))
                 }
             }
-            ui::ENTER => (place.index as isize).checked_neg().map(|index| Adjustment::new(place.line, 1, index, Change::Clear)),
-            _ => Some(Adjustment::new(place.line, 1, 1, Change::Insert(c))),
+            ui::ENTER => (place.index as isize).checked_neg().map(|index| Self::new(place.line, 1, index, Change::Clear)),
+            _ => Some(Self::new(place.line, 1, 1, Change::Insert(c))),
         }
     }
 }
 
 impl AddAssign for Adjustment {
-    fn add_assign(&mut self, other: Adjustment) {
+    fn add_assign(&mut self, other: Self) {
         self.shift += other.shift;
         self.line_change += other.line_change;
 
@@ -459,7 +461,7 @@ enum Edge {
 }
 
 impl Default for Edge {
-    fn default() -> Edge {
+    fn default() -> Self {
         Edge::Start
     }
 }
@@ -487,7 +489,7 @@ impl Mark {
         self.pointer = self.pointer.saturating_add(adjustment.shift);
         self.place.line = self.place.line.shift(adjustment.line_change).unwrap_or_default();
 
-        for (&line, &change) in adjustment.indexes_changed.iter() {
+        for (&line, &change) in &adjustment.indexes_changed {
             if line == self.place.line {
                 self.place.index >>= change;
             }
@@ -505,7 +507,7 @@ impl Display for Mark {
 struct Pointer(Option<usize>);
 
 impl Pointer {
-    fn saturating_add(self, rhs: isize) -> Pointer {
+    fn saturating_add(self, rhs: isize) -> Self {
         Pointer(self.0.map(|x| (x as isize).saturating_add(rhs) as usize))
     }
 }
@@ -540,7 +542,7 @@ impl AddAssign<usize> for Pointer {
 }
 
 impl Default for Pointer {
-    fn default() -> Pointer {
+    fn default() -> Self {
         Pointer(Some(0))
     }
 }
@@ -559,12 +561,14 @@ impl Display for Pointer {
 }
 
 impl PartialEq<Pointer> for isize {
+    #[inline]
     fn eq(&self, other: &Pointer) -> bool {
         other == self
     }
 }
 
 impl PartialOrd<Pointer> for isize {
+    #[inline]
     fn partial_cmp(&self, other: &Pointer) -> Option<Ordering> {
         other.partial_cmp(self).map(|x| x.reverse())
     }
@@ -585,8 +589,8 @@ pub struct Section {
 impl Section {
     /// Creates a new `Section` that signifies an entire line.
     #[inline]
-    fn line(line: LineNumber) -> Section {
-        Section {
+    fn line(line: LineNumber) -> Self {
+        Self {
             start: Place { line, index: 0 },
             length: END,
         }
@@ -629,17 +633,17 @@ impl RegionWrapper for Place {
     }
 
     fn length(&self) -> Length {
-        Length::from(1)
+        Length::try_from(1).unwrap()
     }
 }
 
 impl Shr<usize> for Place {
-    type Output = Place;
+    type Output = Self;
 
     #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
     #[inline]
-    fn shr(self, rhs: usize) -> Place {
-        Place {
+    fn shr(self, rhs: usize) -> Self {
+        Self {
             index: self.index + rhs,
             ..self
         }
@@ -648,6 +652,7 @@ impl Shr<usize> for Place {
 
 impl ShrAssign<isize> for Place {
     #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
+    #[inline]
     fn shr_assign(&mut self, rhs: isize) {
         self.index = ((self.index as isize) + rhs) as usize;
     }
@@ -665,7 +670,7 @@ impl Display for Place {
 struct LineNumber(usize);
 
 impl LineNumber {
-    fn new(value: usize) -> Option<LineNumber> {
+    fn new(value: usize) -> Option<Self> {
         match value {
             0 => None,
             _ => Some(LineNumber(value)),
@@ -677,17 +682,17 @@ impl LineNumber {
         self.0 - 1
     }
 
-    fn shift(self, movement: isize) -> Option<LineNumber> {
+    fn shift(self, movement: isize) -> Option<Self> {
         let new_value = if movement < 0 {
             movement.checked_neg().and_then(|x| self.0.checked_sub(x as usize))
         } else {
             self.0.checked_add(movement as usize)
         };
 
-        new_value.and_then(LineNumber::new)
+        new_value.and_then(Self::new)
     }
 
-    fn diff(self, other: LineNumber) -> Option<usize> {
+    fn diff(self, other: Self) -> Option<usize> {
         self.0.checked_sub(other.0)
     }
 }
@@ -701,7 +706,7 @@ impl Display for LineNumber {
 
 impl Default for LineNumber {
     #[inline]
-    fn default() -> LineNumber {
+    fn default() -> Self {
         LineNumber(1)
     }
 }
@@ -710,7 +715,7 @@ impl std::str::FromStr for LineNumber {
     type Err = ParseLineNumberError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        LineNumber::new(s.parse::<usize>()?).ok_or(ParseLineNumberError::InvalidValue)
+        Self::new(s.parse::<usize>()?).ok_or(ParseLineNumberError::InvalidValue)
     }
 }
 
@@ -739,7 +744,7 @@ impl Display for ParseLineNumberError {
 }
 
 impl From<std::num::ParseIntError> for ParseLineNumberError {
-    fn from(error: std::num::ParseIntError) -> ParseLineNumberError {
+    fn from(error: std::num::ParseIntError) -> Self {
         ParseLineNumberError::ParseInt(error)
     }
 }
@@ -751,12 +756,13 @@ trait Filter: Debug {
 
 #[derive(Debug)]
 struct LineFilter {
+    /// The [`Pattern`] used to match one or more [`LineNumber`]s.
     pattern: Pattern,
 }
 
 impl Default for LineFilter {
-    fn default() -> LineFilter {
-        LineFilter {
+    fn default() -> Self {
+        Self {
             pattern: Pattern::define(
                 "#" + ((tkn!(some(Digit) => "line") + End)
                     | (tkn!(some(Digit) => "start") + "." + tkn!(some(Digit) => "end"))
@@ -798,14 +804,16 @@ impl Filter for LineFilter {
     }
 }
 
+/// A [`Filter`] that extracts matches of a [`Pattern`].
 #[derive(Debug)]
 struct PatternFilter {
+    /// The [`Pattern`] used to match patterns.
     pattern: Pattern,
 }
 
 impl Default for PatternFilter {
-    fn default() -> PatternFilter {
-        PatternFilter {
+    fn default() -> Self {
+        Self {
             pattern: Pattern::define("/" + tkn!(some(Any) => "pattern")),
         }
     }
@@ -831,7 +839,7 @@ impl Filter for PatternFilter {
                         for location in search_pattern.locate_iter(&target) {
                             sections.push(Section {
                                 start: target_section.start >> location.start(),
-                                length: Length::from(location.length()),
+                                length: Length::try_from(location.length() as u64).unwrap(),
                             });
                         }
                     }

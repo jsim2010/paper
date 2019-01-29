@@ -51,7 +51,7 @@ impl UserInterface {
 
     /// Closes the user interface.
     pub(crate) fn close(&self) -> UiResult {
-        UserInterface::check_result(pancurses::endwin(), "endwin")
+        Self::check_result(pancurses::endwin(), "endwin")
     }
 
     /// Applies the edit to the output.
@@ -85,7 +85,7 @@ impl UserInterface {
 
     /// Flashes the output.
     pub(crate) fn flash(&self) -> UiResult {
-        UserInterface::check_result(pancurses::flash(), "flash")
+        Self::check_result(pancurses::flash(), "flash")
     }
 
     // TODO: Store this value and update when size is changed.
@@ -98,54 +98,54 @@ impl UserInterface {
     ///
     /// Must be called before any other color manipulation routine is called.
     fn start_color(&self) -> UiResult {
-        UserInterface::check_result(pancurses::start_color(), "start_color")
+        Self::check_result(pancurses::start_color(), "start_color")
     }
 
     fn use_default_colors(&self) -> UiResult {
-        UserInterface::check_result(pancurses::use_default_colors(), "use_default_colors")
+        Self::check_result(pancurses::use_default_colors(), "use_default_colors")
     }
 
     fn noecho(&self) -> UiResult {
-        UserInterface::check_result(pancurses::noecho(), "noecho")
+        Self::check_result(pancurses::noecho(), "noecho")
     }
 
     fn define_color(&self, color: Color, background: i16) -> UiResult {
-        UserInterface::check_result(
+        Self::check_result(
             pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
             "init_pair",
         )
     }
 
     fn move_to(&self, address: Address) -> UiResult {
-        UserInterface::check_result(self.window.mv(address.y(), address.x()), "wmove")
+        Self::check_result(self.window.mv(address.y(), address.x()), "wmove")
     }
 
     fn add_char(&self, c: char) -> UiResult {
-        UserInterface::check_result(self.window.addch(c), "waddch")
+        Self::check_result(self.window.addch(c), "waddch")
     }
 
     fn delete_char(&self) -> UiResult {
-        UserInterface::check_result(self.window.delch(), "wdelch")
+        Self::check_result(self.window.delch(), "wdelch")
     }
 
     fn insert_char(&self, c: char) -> UiResult {
-        UserInterface::check_result(self.window.insch(c), "winsch")
+        Self::check_result(self.window.insch(c), "winsch")
     }
 
     fn add_str(&self, s: String) -> UiResult {
-        UserInterface::check_result(self.window.addstr(s), "waddstr")
+        Self::check_result(self.window.addstr(s), "waddstr")
     }
 
     fn clear_to_row_end(&self) -> UiResult {
-        UserInterface::check_result(self.window.clrtoeol(), "wcleartoeol")
+        Self::check_result(self.window.clrtoeol(), "wcleartoeol")
     }
 
     fn clear_all(&self) -> UiResult {
-        UserInterface::check_result(self.window.clear(), "wclear")
+        Self::check_result(self.window.clear(), "wclear")
     }
 
     fn format(&self, length: Length, color: Color) -> UiResult {
-        UserInterface::check_result(
+        Self::check_result(
             self.window.chgat(length.0, pancurses::A_NORMAL, color.cp()),
             "wchgat",
         )
@@ -160,8 +160,8 @@ impl UserInterface {
 }
 
 impl Default for UserInterface {
-    fn default() -> UserInterface {
-        UserInterface {
+    fn default() -> Self {
+        Self {
             // Must call initscr() first.
             window: pancurses::initscr(),
         }
@@ -189,8 +189,8 @@ impl Edit {
     ///
     /// [`Region`]: struct.Region.html
     /// [`Change`]: enum.Change.html
-    pub(crate) fn new(region: Region, change: Change) -> Edit {
-        Edit { region, change }
+    pub(crate) fn new(region: Region, change: Change) -> Self {
+        Self { region, change }
     }
 }
 
@@ -214,7 +214,7 @@ pub(crate) enum Change {
 }
 
 impl Default for Change {
-    fn default() -> Change {
+    fn default() -> Self {
         Change::Nothing
     }
 }
@@ -282,14 +282,14 @@ impl Region {
     ///
     /// [`Address`]: struct.Address.html
     /// [`Length`]: struct.Length.html
-    pub(crate) fn new(start: Address, length: Length) -> Region {
-        Region { start, length }
+    pub(crate) fn new(start: Address, length: Length) -> Self {
+        Self { start, length }
     }
 
     /// Creates a new `Region` that signifies an entire row.
-    pub(crate) fn row(row: usize) -> Region {
-        Region {
-            start: Address::new(row, 0),
+    pub(crate) fn row(row: usize) -> Self {
+        Self {
+            start: Address::new(Dimension(row as i32), Dimension(0)),
             length: END,
         }
     }
@@ -305,15 +305,15 @@ impl Display for Region {
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub(crate) struct Address {
     /// The index of the row that contains the cell (starts at 0).
-    row: usize,
+    row: Dimension,
     /// The index of the column that contains the cell (starts at 0).
-    column: usize,
+    column: Dimension,
 }
 
 impl Address {
     /// Creates a new `Address` with a given row and column.
-    pub(crate) fn new(row: usize, column: usize) -> Address {
-        Address { row, column }
+    pub(crate) fn new(row: Dimension, column: Dimension) -> Self {
+        Self { row, column }
     }
 
     /// Returns the column of `self`.
@@ -321,8 +321,8 @@ impl Address {
     /// Used with [`pancurses`].
     ///
     /// [`pancurses`]: ../../pancurses/index.html
-    fn x(&self) -> i32 {
-        self.column as i32
+    fn x(self) -> i32 {
+        i32::from(self.column)
     }
 
     /// Returns the row of `self`.
@@ -330,8 +330,8 @@ impl Address {
     /// Used with [`pancurses`].
     ///
     /// [`pancurses`]: ../../pancurses/index.html
-    fn y(&self) -> i32 {
-        self.row as i32
+    fn y(self) -> i32 {
+        i32::from(self.row)
     }
 }
 
@@ -341,16 +341,46 @@ impl Display for Address {
     }
 }
 
+#[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Dimension(i32);
+
+impl Dimension{ 
+    // TODO: This should be moved to impl TryFrom once that has stablized.
+    pub(crate) fn try_from(value: u32) -> Result<Self, String> {
+        #[allow(clippy::cast_sign_loss)] // i32::max_value() > 0.
+        let i32_max_value = i32::max_value() as u32;
+
+        if value <= i32_max_value {
+            #[allow(clippy::cast_possible_wrap)] // value <= i32_max_value.
+            Ok(Dimension(value as i32))
+        } else {
+            Err(String::from("Invalid value for Dimension"))
+        }
+    }
+}
+
+impl Display for Dimension {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<Dimension> for i32 {
+    fn from(value: Dimension) -> Self {
+        value.0
+    }
+}
+
 /// Signifies a number of adjacent [`Address`]es.
 ///
 /// Generally this is an unsigned number. However, there is a special `Length` called [`END`] that
 /// signifies the number of [`Address`]es between a start [`Address`] and the end of that row.
 ///
-/// To ensure safe behavior, `Length` should only be created by using [`from`].
+/// To ensure safe behavior, `Length` should only be created by using [`try_from`].
 ///
 /// [`Address`]: struct.Address.html
 /// [`END`]: constant.END.html
-/// [`from`]: struct.Length.html#method.from
+/// [`try_from`]: struct.Length.html#method.try_from
 
 // Use a tuple instead of a type so that a custom Display trait can be implemented.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
@@ -366,10 +396,24 @@ const END_VALUE: i32 = -1;
 pub(crate) const END: Length = Length(END_VALUE);
 
 impl Length {
-    /// Converts to usize.
-    pub(crate) fn into_usize(self) -> usize {
-        // Given that Length was created by from(), this conversion is safe.
-        self.0 as usize
+    // TODO: This should be moved to impl TryFrom once that has stablized.
+    pub(crate) fn try_from(value: u64) -> Result<Self, String> {
+        #[allow(clippy::cast_sign_loss)] // i32::max_value() > 0.
+        let i32_max_value = i32::max_value() as u64;
+
+        if value <= i32_max_value {
+            #[allow(clippy::cast_possible_truncation)] // value <= i32_max_value.
+            Ok(Length(value as i32))
+        } else {
+            Err(String::from("Invalid value for Length"))
+        }
+    }
+}
+
+impl From<Length> for u32 {
+    #[allow(clippy::cast_sign_loss)] // Length::try_from() specifies value.0 >= 0.
+    fn from(value: Length) -> Self {
+        value.0 as Self
     }
 }
 
@@ -379,12 +423,5 @@ impl Display for Length {
             END_VALUE => write!(f, "END"),
             x => write!(f, "{}", x),
         }
-    }
-}
-
-// TODO: This should be changed to TryFrom once that has stablized.
-impl From<usize> for Length {
-    fn from(value: usize) -> Length {
-        Length(value as i32)
     }
 }
