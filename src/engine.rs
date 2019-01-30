@@ -1,14 +1,15 @@
 //! Implements the state machine of the application.
-use crate::ui::{BACKSPACE, ENTER, ESC};
+use crate::ui::{BACKSPACE, ENTER, ESC, Fault};
 use crate::{Debug, Display, Edge, FmtResult, Formatter, Paper};
 use rec::{Element, tkn, opt, lazy_some, some, var, Pattern};
 use rec::ChCls::{Any, End, Not, Whitespace};
 use std::collections::HashMap;
+use std::error::Error;
 use std::mem::{discriminant, Discriminant};
 use std::rc::Rc;
 
 /// Signifies the result of executing an [`Operation`].
-pub(crate) type Outcome = Result<Option<Notice>, String>;
+pub(crate) type Outcome = Result<Option<Notice>, Failure>;
 
 /// Manages the functionality of the different [`Mode`]s.
 #[derive(Debug, Default)]
@@ -56,7 +57,7 @@ impl Controller {
 
 /// Signifies a state of the application.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub(crate) enum Mode {
+pub enum Mode {
     /// Displays the current view.
     Display,
     /// Displays the current command.
@@ -88,7 +89,7 @@ impl Default for Mode {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum OpCode {
+pub enum OpCode {
     ChangeMode(Mode),
     AddToSketch(char),
     Scroll(Direction),
@@ -220,7 +221,7 @@ impl Operations {
     pub(crate) fn execute(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
         self.ops
             .get(&opcode.id())
-            .map_or(Err(String::from("Received invalid OpCode.")), |x| {
+            .map_or(Err(Failure::InvalidOpCode{operation: String::from("N/A"), opcode}), |x| {
                 x.operate(paper, opcode)
             })
     }
@@ -265,13 +266,11 @@ trait Operation: Debug {
 struct ChangeMode;
 
 impl ChangeMode {
-    fn arg(&self, opcode: OpCode) -> Result<Mode, String> {
-        match opcode {
-            OpCode::ChangeMode(mode) => Ok(mode),
-            _ => Err(format!(
-                "Attempted to execute ChangeMode Operation with OpCode {}",
-                opcode
-            )),
+    fn arg(&self, opcode: OpCode) -> Result<Mode, Failure> {
+        if let OpCode::ChangeMode(mode) = opcode {
+            Ok(mode)
+        } else {
+            Err(Failure::InvalidOpCode{operation: String::from("ChangeMode"), opcode})
         }
     }
 }
@@ -303,13 +302,11 @@ impl Operation for ChangeMode {
 struct AddToSketch;
 
 impl AddToSketch {
-    fn arg(&self, opcode: OpCode) -> Result<char, String> {
-        match opcode {
-            OpCode::AddToSketch(c) => Ok(c),
-            _ => Err(format!(
-                "Attempted to execute AddToSketch Operation with OpCode {}",
-                opcode
-            )),
+    fn arg(&self, opcode: OpCode) -> Result<char, Failure> {
+        if let OpCode::AddToSketch(c) = opcode {
+            Ok(c)
+        } else {
+            Err(Failure::InvalidOpCode{operation: String::from("AddToSketch"), opcode})
         }
     }
 }
@@ -369,13 +366,11 @@ impl Operation for FilterSignals {
 struct MarkAt;
 
 impl MarkAt {
-    fn arg(&self, opcode: OpCode) -> Result<Edge, String> {
-        match opcode {
-            OpCode::MarkAt(edge) => Ok(edge),
-            _ => Err(format!(
-                "Attempted to execute MarkAt Operation with OpCode {}",
-                opcode
-            )),
+    fn arg(&self, opcode: OpCode) -> Result<Edge, Failure> {
+        if let OpCode::MarkAt(edge) = opcode {
+            Ok(edge)
+        } else {
+            Err(Failure::InvalidOpCode{operation: String::from("MarkAt"), opcode})
         }
     }
 }
@@ -451,13 +446,11 @@ impl Operation for ReduceNoise {
 struct UpdateView;
 
 impl UpdateView {
-    fn arg(&self, opcode: OpCode) -> Result<char, String> {
-        match opcode {
-            OpCode::UpdateView(c) => Ok(c),
-            _ => Err(format!(
-                "Attempted to execute UpdateView Operation with OpCode {}",
-                opcode
-            )),
+    fn arg(&self, opcode: OpCode) -> Result<char, Failure> {
+        if let OpCode::UpdateView(c) = opcode {
+            Ok(c)
+        } else {
+            Err(Failure::InvalidOpCode{operation: String::from("UpdateView"), opcode})
         }
     }
 }
@@ -473,13 +466,11 @@ impl Operation for UpdateView {
 struct Scroll;
 
 impl Scroll {
-    fn arg(&self, opcode: OpCode) -> Result<Direction, String> {
-        match opcode {
-            OpCode::Scroll(direction) => Ok(direction),
-            _ => Err(format!(
-                "Attempted to execute Scroll Operation with OpCode {}",
-                opcode
-            )),
+    fn arg(&self, opcode: OpCode) -> Result<Direction, Failure> {
+        if let OpCode::Scroll(direction) = opcode {
+            Ok(direction)
+        } else {
+            Err(Failure::InvalidOpCode{operation: String::from("Scroll"), opcode})
         }
     }
 
@@ -495,7 +486,7 @@ impl Scroll {
 }
 
 impl Operation for Scroll {
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
+    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Result<Option<Notice>, Failure> {
         paper.scroll(Self::get_scroll_movement(
             paper.scroll_height(),
             self.arg(opcode)?,
@@ -505,8 +496,38 @@ impl Operation for Scroll {
     }
 }
 
+#[derive(Debug)]
+pub enum Failure {
+    InvalidOpCode { operation: String, opcode: OpCode },
+    Ui(Fault),
+}
+
+impl Error for Failure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Failure::InvalidOpCode {..} => None,
+            Failure::Ui(error) => Some(error),
+        }
+    }
+}
+
+impl Display for Failure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Failure::InvalidOpCode {ref operation, ref opcode} => write!(f, "Attempted to execute Operation '{}' with OpCode '{}'.", operation, opcode),
+            Failure::Ui(error) => write!(f, "{}", error),
+        }
+    }
+}
+
+impl From<Fault> for Failure {
+    fn from(error: Fault) -> Self {
+        Failure::Ui(error)
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum Direction {
+pub enum Direction {
     Up,
     Down,
 }

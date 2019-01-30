@@ -1,9 +1,11 @@
 //! Implements how the user interfaces with the application.
+
 use crate::{Display, FmtResult, Formatter};
 use pancurses::Input;
+use std::error::Error;
 use try_from::{TryFrom, TryFromIntError};
 
-type UiResult = Result<(), String>;
+type UiResult = Result<(), Fault>;
 
 /// The character that represents the `Backspace` key.
 pub(crate) const BACKSPACE: char = '\u{08}';
@@ -31,7 +33,7 @@ impl UserInterface {
     pub(crate) fn init(&self) -> UiResult {
         self.start_color()?;
         self.use_default_colors()?;
-        self.noecho()?;
+        self.disable_echo()?;
         self.define_color(Color::Red, pancurses::COLOR_RED)?;
         self.define_color(Color::Blue, pancurses::COLOR_BLUE)?;
 
@@ -52,7 +54,7 @@ impl UserInterface {
 
     /// Closes the user interface.
     pub(crate) fn close(&self) -> UiResult {
-        Self::check_result(pancurses::endwin(), "endwin")
+        Self::check_result(pancurses::endwin(), Fault::Endwin)
     }
 
     /// Applies the edit to the output.
@@ -86,7 +88,7 @@ impl UserInterface {
 
     /// Flashes the output.
     pub(crate) fn flash(&self) -> UiResult {
-        Self::check_result(pancurses::flash(), "flash")
+        Self::check_result(pancurses::flash(), Fault::Flash)
     }
 
     // TODO: Store this value and update when size is changed.
@@ -99,64 +101,125 @@ impl UserInterface {
     ///
     /// Must be called before any other color manipulation routine is called.
     fn start_color(&self) -> UiResult {
-        Self::check_result(pancurses::start_color(), "start_color")
+        Self::check_result(pancurses::start_color(), Fault::StartColor)
     }
 
     fn use_default_colors(&self) -> UiResult {
-        Self::check_result(pancurses::use_default_colors(), "use_default_colors")
+        Self::check_result(pancurses::use_default_colors(), Fault::UseDefaultColors)
     }
 
-    fn noecho(&self) -> UiResult {
-        Self::check_result(pancurses::noecho(), "noecho")
+    fn disable_echo(&self) -> UiResult {
+        Self::check_result(pancurses::noecho(), Fault::Noecho)
     }
 
     fn define_color(&self, color: Color, background: i16) -> UiResult {
         Self::check_result(
             pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
-            "init_pair",
+            Fault::InitPair,
         )
     }
 
     fn move_to(&self, address: Address) -> UiResult {
-        Self::check_result(self.window.mv(address.y(), address.x()), "wmove")
+        Self::check_result(self.window.mv(address.y(), address.x()), Fault::Wmove)
     }
 
     fn add_char(&self, c: char) -> UiResult {
-        Self::check_result(self.window.addch(c), "waddch")
+        Self::check_result(self.window.addch(c), Fault::Waddch)
     }
 
     fn delete_char(&self) -> UiResult {
-        Self::check_result(self.window.delch(), "wdelch")
+        Self::check_result(self.window.delch(), Fault::Wdelch)
     }
 
     fn insert_char(&self, c: char) -> UiResult {
-        Self::check_result(self.window.insch(c), "winsch")
+        Self::check_result(self.window.insch(c), Fault::Winsch)
     }
 
     fn add_str(&self, s: String) -> UiResult {
-        Self::check_result(self.window.addstr(s), "waddstr")
+        Self::check_result(self.window.addstr(s), Fault::Waddstr)
     }
 
     fn clear_to_row_end(&self) -> UiResult {
-        Self::check_result(self.window.clrtoeol(), "wcleartoeol")
+        Self::check_result(self.window.clrtoeol(), Fault::Wcleartoeol)
     }
 
     fn clear_all(&self) -> UiResult {
-        Self::check_result(self.window.clear(), "wclear")
+        Self::check_result(self.window.clear(), Fault::Wclear)
     }
 
     fn format(&self, length: Length, color: Color) -> UiResult {
-        Self::check_result(
-            self.window.chgat(length.0, pancurses::A_NORMAL, color.cp()),
-            "wchgat",
-        )
+        Self::check_result(self.window.chgat(length.0, pancurses::A_NORMAL, color.cp()), Fault::Wchgat)
     }
 
-    fn check_result(result: i32, call: &str) -> UiResult {
-        match result {
-            pancurses::OK => Ok(()),
-            _ => Err(format!("Failed while calling {}().", call)),
+    fn check_result(result: i32, error: Fault) -> UiResult {
+        if result == pancurses::OK {
+            Ok(())
+        } else {
+            Err(error)
         }
+    }
+}
+
+/// Describes possible errors during ui functions.
+#[derive(Copy, Clone, Debug)]
+pub enum Fault {
+    /// Describes a possible error during call to `wchgat()`.
+    Wchgat,
+    /// Describes a possible error during call to `wclear()`.
+    Wclear,
+    /// Describes a possible error during call to `wcleartoeol()`.
+    Wcleartoeol,
+    /// Describes a possible error during call to `waddstr()`.
+    Waddstr,
+    /// Describes a possible error during call to `winsch()`.
+    Winsch,
+    /// Describes a possible error during call to `wdelch()`.
+    Wdelch,
+    /// Describes a possible error during call to `waddch()`.
+    Waddch,
+    /// Describes a possible error during call to `wmove()`.
+    Wmove,
+    /// Describes a possible error during call to `init_pair()`.
+    InitPair,
+    /// Describes a possible error during call to `noecho()`.
+    Noecho,
+    /// Describes a possible error during call to `use_default_colors()`.
+    UseDefaultColors,
+    /// Describes a possible error during call to `start_color()`.
+    StartColor,
+    /// Describes a possible error during call to `endwin()`.
+    Endwin,
+    /// Describes a possible error during call to `flash()`.
+    Flash,
+}
+
+impl Fault {
+    /// Returns the function that caused the current [`Fault`].
+    fn get_function(&self) -> &str {
+        match self {
+            Fault::Wchgat => "wchgat",
+            Fault::Wclear => "wclear",
+            Fault::Wcleartoeol => "wcleartoeol",
+            Fault::Waddstr => "waddstr",
+            Fault::Winsch => "winsch",
+            Fault::Wdelch => "wdelch",
+            Fault::Waddch => "waddch",
+            Fault::Wmove => "wmove",
+            Fault::InitPair => "init_pair",
+            Fault::Noecho => "noecho",
+            Fault::UseDefaultColors => "use_default_colors",
+            Fault::StartColor => "start_color",
+            Fault::Endwin => "endwin",
+            Fault::Flash => "flash",
+        }
+    }
+}
+
+impl Error for Fault {}
+
+impl Display for Fault {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "Failed while calling {}().", self.get_function())
     }
 }
 

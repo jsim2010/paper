@@ -92,7 +92,7 @@ impl Paper {
 
     /// Runs the application.
     #[inline]
-    pub fn run(&mut self) -> Result<(), String> {
+    pub fn run(&mut self) -> Result<(), engine::Failure> {
         self.ui.init()?;
         let operations = engine::Operations::default();
 
@@ -113,7 +113,7 @@ impl Paper {
     }
 
     /// Displays the view on the user interface.
-    fn display_view(&self) -> Result<(), String> {
+    fn display_view(&self) -> Result<(), ui::Fault> {
         for edit in self.view.redraw_edits().take(self.ui.grid_height()) {
             self.ui.apply(edit)?;
         }
@@ -161,18 +161,14 @@ impl Paper {
         &mut self.sketch
     }
 
-    fn draw_popup(&self) -> Result<(), String> {
+    fn draw_popup(&self) -> Result<(), ui::Fault> {
         self.ui
             .apply(Edit::new(Region::row(Index::from(0)), Change::Row(self.sketch.clone())))
     }
 
-    fn clear_background(&self) -> Result<(), String> {
-        for row in 0..self.ui.grid_height() {
-            let index = match Index::try_from(row) {
-                Ok(i) => i,
-                Err(_) => return Err(String::from("Invalid value for Index")),
-            };
-            self.format_region(Region::row(index), Color::Default)?;
+    fn clear_background(&self) -> Result<(), ui::Fault> {
+        for row in (0..self.ui.grid_height()).flat_map(|r| Index::try_from(r).into_iter()) {
+            self.format_region(Region::row(row), Color::Default)?;
         }
 
         Ok(())
@@ -209,7 +205,7 @@ impl Paper {
         self.view.scroll(movement);
     }
 
-    fn draw_filter_backgrounds(&self) -> Result<(), String> {
+    fn draw_filter_backgrounds(&self) -> Result<(), ui::Fault> {
         for noise in &self.noises {
             self.format_section(noise, Color::Blue)?;
         }
@@ -222,7 +218,7 @@ impl Paper {
     }
 
     /// Sets the [`Color`] of a [`Section`].
-    fn format_section(&self, section: &Section, color: Color) -> Result<(), String> {
+    fn format_section(&self, section: &Section, color: Color) -> Result<(), ui::Fault> {
         // It is okay for region_at() to return None; this just means section is not displayed.
         if let Some(region) = self.view.region_at(section) {
             self.format_region(region, color)?;
@@ -231,11 +227,11 @@ impl Paper {
         Ok(())
     }
 
-    fn format_region(&self, region: Region, color: Color) -> Result<(), String> {
+    fn format_region(&self, region: Region, color: Color) -> Result<(), ui::Fault> {
         self.ui.apply(Edit::new(region, Change::Format(color)))
     }
 
-    fn update_view(&mut self, c: char) -> Result<(), String> {
+    fn update_view(&mut self, c: char) -> Result<(), ui::Fault> {
         let mut adjustment = Adjustment::default();
 
         for mark in &mut self.marks {
@@ -458,7 +454,7 @@ impl AddAssign for Adjustment {
 
 /// Indicates a specific Place of a given Section.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
-enum Edge {
+pub enum Edge {
     /// Indicates the first Place of the Section.
     Start,
     /// Indicates the last Place of the Section.
