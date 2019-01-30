@@ -3,7 +3,7 @@
 use crate::{Display, FmtResult, Formatter};
 use pancurses::Input;
 use std::error::Error;
-use try_from::{TryFrom, TryFromIntError};
+use try_from::{TryFrom, TryFromIntError, TryInto};
 
 /// The [`Result`] returned by functions of this module.
 type UiResult = Result<(), Fault>;
@@ -95,8 +95,8 @@ impl UserInterface {
 
     // TODO: Store this value and update when size is changed.
     /// Returns the number of cells that make up the height of the grid.
-    pub(crate) fn grid_height(&self) -> usize {
-        self.window.get_max_y() as usize
+    pub(crate) fn grid_height(&self) -> Result<usize, TryFromIntError> {
+        self.window.get_max_y().try_into()
     }
 
     /// Initializes color processing.
@@ -439,7 +439,7 @@ impl TryFrom<u32> for Index {
     type Err = TryFromIntError;
 
     fn try_from(value: u32) -> Result<Self, Self::Err>{ 
-        i32::try_from(value).map(Index)
+        value.try_into().map(Index)
     }
 }
 
@@ -448,7 +448,7 @@ impl TryFrom<usize> for Index {
     type Err = TryFromIntError;
 
     fn try_from(value: usize) -> Result<Self, Self::Err> {
-        i32::try_from(value).map(Index)
+        value.try_into().map(Index)
     }
 }
 
@@ -470,38 +470,33 @@ impl From<Index> for i32 {
 /// Generally this is an unsigned number. However, there is a special `Length` called [`END`] that
 /// signifies the number of [`Address`]es between a start [`Address`] and the end of that row.
 ///
-/// To ensure safe behavior, `Length` should only be created by using [`try_from`].
-///
 /// [`Address`]: struct.Address.html
 /// [`END`]: constant.END.html
-/// [`try_from`]: struct.Length.html#method.try_from
-
-// Use a tuple instead of a type so that a custom Display trait can be implemented.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub(crate) struct Length(i32);
 
 /// The internal value that represents the number of characters until the end of the row.
 ///
 /// Specified by [`pancurses`].
-///
-/// [`pancurses`]: ../../pancurses/index.html
 const END_VALUE: i32 = -1;
+
 /// The `Length` that represents the number of characters until the end of the row.
 pub(crate) const END: Length = Length(END_VALUE);
 
-impl TryFrom<u64> for Length {
+impl TryFrom<usize> for Length {
     type Err = TryFromIntError;
 
-    fn try_from(value: u64) -> Result<Self, TryFromIntError> {
-        i32::try_from(value).map(Length)
+    fn try_from(value: usize) -> Result<Self, Self::Err> {
+        value.try_into().map(Length)
     }
 }
 
-impl From<Length> for u32 {
-    #[allow(clippy::cast_sign_loss)] // Length::try_from() specifies value.0 >= 0.
+impl TryFrom<Length> for u32 {
+    type Err = TryFromIntError;
+
     #[inline]
-    fn from(value: Length) -> Self {
-        value.0 as Self
+    fn try_from(value: Length) -> Result<Self, Self::Err> {
+        value.0.try_into()
     }
 }
 

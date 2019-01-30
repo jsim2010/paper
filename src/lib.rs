@@ -57,7 +57,7 @@ use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
 use std::iter;
 use std::ops::{AddAssign, Shr, ShrAssign};
-use try_from::TryFrom;
+use try_from::{TryFrom, TryInto};
 
 const NEGATIVE_ONE: isize = -1;
 
@@ -114,7 +114,7 @@ impl Paper {
 
     /// Displays the view on the user interface.
     fn display_view(&self) -> Result<(), ui::Fault> {
-        for edit in self.view.redraw_edits().take(self.ui.grid_height()) {
+        for edit in self.view.redraw_edits().take(self.ui.grid_height().unwrap()) {
             self.ui.apply(edit)?;
         }
 
@@ -126,7 +126,7 @@ impl Paper {
         self.noises.clear();
 
         for line in 1..=self.view.line_count {
-            if let Some(noise) = LineNumber::new(line).map(Section::line) {
+            if let Some(noise) = LineNumber::new(line as u32).map(Section::line) {
                 self.noises.push(noise);
             }
         }
@@ -167,7 +167,7 @@ impl Paper {
     }
 
     fn clear_background(&self) -> Result<(), ui::Fault> {
-        for row in (0..self.ui.grid_height()).flat_map(|r| Index::try_from(r).into_iter()) {
+        for row in (0..self.ui.grid_height().unwrap()).flat_map(|r| Index::try_from(r).into_iter()) {
             self.format_region(Region::row(row), Color::Default)?;
         }
 
@@ -181,12 +181,9 @@ impl Paper {
             let mut place = signal.start;
 
             if edge == Edge::End {
-                let length = signal.length;
+                let length: Result<u32, _> = signal.length.try_into();
 
-                place.index += match length {
-                    END => self.view.line_length(&signal.start).unwrap_or_default(),
-                    _ => u32::from(length) as usize,
-                };
+                place.index += length.unwrap_or_else(|_| self.view.line_length(&signal.start).unwrap_or_default() as u32) as usize;
             }
             
             let mut pointer = Pointer(match place.line.index() {
@@ -264,7 +261,7 @@ impl Paper {
 
     /// Returns the height used for scrolling.
     fn scroll_height(&self) -> usize {
-        self.ui.grid_height() / 4
+        self.ui.grid_height().unwrap() / 4
     }
 }
 
@@ -339,7 +336,7 @@ impl View {
 
     fn address_at(&self, place: &Place) -> Option<Address> {
         place.line.diff(self.first_line).and_then(|x| 
-            match (Index::try_from(x as u32), Index::try_from((place.index + self.margin_width) as u32)) {
+            match (Index::try_from(x), Index::try_from((place.index + self.margin_width) as u32)) {
                 (Ok(row), Ok(column)) => Some(Address::new(row, column)),
                 _ => None
             })
@@ -385,7 +382,7 @@ impl View {
     fn scroll(&mut self, movement: isize) {
         self.first_line = cmp::min(
             self.first_line.shift(movement).unwrap_or_default(),
-            LineNumber::new(self.line_count).unwrap_or_default(),
+            LineNumber::new(self.line_count as u32).unwrap_or_default(),
         );
     }
 
@@ -615,12 +612,6 @@ impl Display for Section {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct RelativePlace {
-    line: LineNumber,
-    index: isize,
-}
-
 /// Signifies the location of a character within a view.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Place {
@@ -668,32 +659,33 @@ impl Display for Place {
 
 /// Signifies a line number.
 #[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Debug)]
-struct LineNumber(usize);
+struct LineNumber(u32);
 
 impl LineNumber {
-    fn new(value: usize) -> Option<Self> {
-        match value {
-            0 => None,
-            _ => Some(LineNumber(value)),
+    fn new(value: u32) -> Option<Self> {
+        if value == 0 {
+            None
+        } else {
+            value.try_into().ok().map(LineNumber)
         }
     }
 
     #[allow(clippy::integer_arithmetic)] // Integer arithmetic is okay because self.0 > 0 by definition of new().
     fn index(self) -> usize {
-        self.0 - 1
+        (self.0 - 1) as usize
     }
 
     fn shift(self, movement: isize) -> Option<Self> {
         let new_value = if movement < 0 {
-            movement.checked_neg().and_then(|x| self.0.checked_sub(x as usize))
+            movement.checked_neg().and_then(|x| self.0.checked_sub(x as u32))
         } else {
-            self.0.checked_add(movement as usize)
+            self.0.checked_add(movement as u32)
         };
 
         new_value.and_then(Self::new)
     }
 
-    fn diff(self, other: Self) -> Option<usize> {
+    fn diff(self, other: Self) -> Option<u32> {
         self.0.checked_sub(other.0)
     }
 }
@@ -716,7 +708,7 @@ impl std::str::FromStr for LineNumber {
     type Err = ParseLineNumberError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s.parse::<usize>()?).ok_or(ParseLineNumberError::InvalidValue)
+        Self::new(s.parse::<u32>()?).ok_or(ParseLineNumberError::InvalidValue)
     }
 }
 
@@ -840,7 +832,7 @@ impl Filter for PatternFilter {
                         for location in search_pattern.locate_iter(&target) {
                             sections.push(Section {
                                 start: target_section.start >> location.start(),
-                                length: Length::try_from(location.length() as u64).unwrap(),
+                                length: Length::try_from(location.length()).unwrap(),
                             });
                         }
                     }
