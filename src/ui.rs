@@ -5,6 +5,7 @@ use pancurses::Input;
 use std::error::Error;
 use try_from::{TryFrom, TryFromIntError};
 
+/// The [`Result`] returned by functions of this module.
 type UiResult = Result<(), Fault>;
 
 /// The character that represents the `Backspace` key.
@@ -16,6 +17,7 @@ pub(crate) const ENTER: char = '\n';
 /// The character that represents the `Esc` key.
 pub(crate) const ESC: char = '';
 
+/// Represents the default color.
 const DEFAULT_COLOR: i16 = -1;
 
 /// The interface between the user and the application.
@@ -104,14 +106,17 @@ impl UserInterface {
         Self::check_result(pancurses::start_color(), Fault::StartColor)
     }
 
+    /// Initializes the default colors.
     fn use_default_colors(&self) -> UiResult {
         Self::check_result(pancurses::use_default_colors(), Fault::UseDefaultColors)
     }
 
+    /// Disables echoing received characters on the screen.
     fn disable_echo(&self) -> UiResult {
         Self::check_result(pancurses::noecho(), Fault::Noecho)
     }
 
+    /// Defines [`Color`] as having a background color.
     fn define_color(&self, color: Color, background: i16) -> UiResult {
         Self::check_result(
             pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
@@ -119,38 +124,49 @@ impl UserInterface {
         )
     }
 
+    /// Moves the cursor to an [`Address`].
     fn move_to(&self, address: Address) -> UiResult {
         Self::check_result(self.window.mv(address.y(), address.x()), Fault::Wmove)
     }
 
+    /// Overwrites the block at cursor with a character.
     fn add_char(&self, c: char) -> UiResult {
         Self::check_result(self.window.addch(c), Fault::Waddch)
     }
 
+    /// Deletes the character at the cursor.
+    ///
+    /// All subseqent characters are shifted to the left and a blank block is added at the end.
     fn delete_char(&self) -> UiResult {
         Self::check_result(self.window.delch(), Fault::Wdelch)
     }
 
+    /// Inserts a character at the cursor, shifting all subsequent blocks to the right.
     fn insert_char(&self, c: char) -> UiResult {
         Self::check_result(self.window.insch(c), Fault::Winsch)
     }
 
+    /// Writes a string starting at the cursor.
     fn add_str(&self, s: String) -> UiResult {
         Self::check_result(self.window.addstr(s), Fault::Waddstr)
     }
 
+    /// Clears all blocks from the cursor to the end of the row.
     fn clear_to_row_end(&self) -> UiResult {
         Self::check_result(self.window.clrtoeol(), Fault::Wcleartoeol)
     }
 
+    /// Clears the entire window.
     fn clear_all(&self) -> UiResult {
         Self::check_result(self.window.clear(), Fault::Wclear)
     }
 
+    /// Sets the color of the next specified number of blocks from the cursor.
     fn format(&self, length: Length, color: Color) -> UiResult {
         Self::check_result(self.window.chgat(length.0, pancurses::A_NORMAL, color.cp()), Fault::Wchgat)
     }
 
+    /// Converts given result of ui function to a [`UiResult`].
     fn check_result(result: i32, error: Fault) -> UiResult {
         if result == pancurses::OK {
             Ok(())
