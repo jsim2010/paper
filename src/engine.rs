@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::mem::{discriminant, Discriminant};
 use std::rc::Rc;
+use try_from::{TryFrom, TryFromIntError};
 
 /// Signifies the result of executing an [`Operation`].
 pub(crate) type Outcome = Result<Option<Notice>, Failure>;
@@ -475,13 +476,14 @@ impl Scroll {
     }
 
     #[allow(clippy::integer_arithmetic)]
-    fn get_scroll_movement(height: usize, direction: Direction) -> isize {
-        let height = height as isize;
+    fn get_scroll_movement(height: usize, direction: Direction) -> Result<isize, Failure> {
+        let mut movement = isize::try_from(height)?;
 
-        match direction {
-            Direction::Up => -height,
-            Direction::Down => height,
+        if let Direction::Up = direction {
+            movement = -movement;
         }
+
+        Ok(movement)
     }
 }
 
@@ -490,7 +492,7 @@ impl Operation for Scroll {
         paper.scroll(Self::get_scroll_movement(
             paper.scroll_height(),
             self.arg(opcode)?,
-        ));
+        )?);
         paper.display_view()?;
         Ok(None)
     }
@@ -500,6 +502,7 @@ impl Operation for Scroll {
 pub enum Failure {
     InvalidOpCode { operation: String, opcode: OpCode },
     Ui(Fault),
+    Conversion(TryFromIntError),
 }
 
 impl Error for Failure {
@@ -507,6 +510,7 @@ impl Error for Failure {
         match self {
             Failure::InvalidOpCode {..} => None,
             Failure::Ui(error) => Some(error),
+            Failure::Conversion(error) => Some(error),
         }
     }
 }
@@ -516,6 +520,7 @@ impl Display for Failure {
         match self {
             Failure::InvalidOpCode {ref operation, ref opcode} => write!(f, "Attempted to execute Operation '{}' with OpCode '{}'.", operation, opcode),
             Failure::Ui(error) => write!(f, "{}", error),
+            Failure::Conversion(error) => write!(f, "{}", error),
         }
     }
 }
@@ -523,6 +528,12 @@ impl Display for Failure {
 impl From<Fault> for Failure {
     fn from(error: Fault) -> Self {
         Failure::Ui(error)
+    }
+}
+
+impl From<TryFromIntError> for Failure {
+    fn from(error: TryFromIntError) -> Self {
+        Failure::Conversion(error)
     }
 }
 
