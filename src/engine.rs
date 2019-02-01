@@ -89,20 +89,31 @@ impl Default for Mode {
     }
 }
 
+/// Signifies a representation of an [`Operation`].
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum OpCode {
+    /// Executes [`ChangeModeOperation`].
     ChangeMode(Mode),
+    /// Executes [`AddToSketchOperation`].
     AddToSketch(char),
+    /// Executes [`ScrollOperation`].
     Scroll(Direction),
+    /// Executes [`ExecuteCommandOperation`].
     ExecuteCommand,
-    DrawPopup,
+    /// Executes [`DrawSketchOperation`].
+    DrawSketch,
+    /// Executes [`FilterSignalsOperation`].
     FilterSignals,
+    /// Executes [`ReduceNoiseOperation`].
     ReduceNoise,
+    /// Executes [`MarkAtOperation`].
     MarkAt(Edge),
+    /// Executes [`UpdateViewOperation`].
     UpdateView(char),
 }
 
 impl OpCode {
+    /// The [`Discriminant`] that signifies the `OpCode`.
     fn id(self) -> Discriminant<Self> {
         discriminant(&self)
     }
@@ -115,7 +126,7 @@ impl Display for OpCode {
             OpCode::AddToSketch(c) => write!(f, "Add '{}' to sketch", c),
             OpCode::Scroll(d) => write!(f, "Scroll {}", d),
             OpCode::ExecuteCommand => write!(f, "Execute command"),
-            OpCode::DrawPopup => write!(f, "Draw popup"),
+            OpCode::DrawSketch => write!(f, "Draw sketch"),
             OpCode::FilterSignals => write!(f, "Filter signals"),
             OpCode::ReduceNoise => write!(f, "Reduce noise"),
             OpCode::MarkAt(edge) => write!(f, "Mark at {}", edge),
@@ -155,7 +166,7 @@ impl ModeHandler for CommandMode {
         match input {
             ENTER => vec![OpCode::ExecuteCommand, OpCode::ChangeMode(Mode::Display)],
             ESC => vec![OpCode::ChangeMode(Mode::Display)],
-            _ => vec![OpCode::AddToSketch(input), OpCode::DrawPopup],
+            _ => vec![OpCode::AddToSketch(input), OpCode::DrawSketch],
         }
     }
 }
@@ -172,13 +183,13 @@ impl ModeHandler for FilterMode {
                 OpCode::ReduceNoise,
                 OpCode::AddToSketch('&'),
                 OpCode::AddToSketch('&'),
-                OpCode::DrawPopup,
+                OpCode::DrawSketch,
                 OpCode::FilterSignals,
             ],
             ESC => vec![OpCode::ChangeMode(Mode::Display)],
             _ => vec![
                 OpCode::AddToSketch(input),
-                OpCode::DrawPopup,
+                OpCode::DrawSketch,
                 OpCode::FilterSignals,
             ],
         }
@@ -213,13 +224,16 @@ impl ModeHandler for EditMode {
     }
 }
 
+/// Stores all [`Operation`]s for the application.
 #[derive(Debug)]
 pub(crate) struct Operations {
+    /// The map associating [`OpCode`]s with [`Operation`]s.
     ops: HashMap<Discriminant<OpCode>, Rc<dyn Operation>>,
 }
 
 impl Operations {
-    pub(crate) fn execute(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
+    /// Executes the [`Operation`] described by an [`OpCode`].
+    pub(crate) fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
         self.ops
             .get(&opcode.id())
             .map_or(Err(Failure::InvalidOpCode{operation: String::from("N/A"), opcode}), |x| {
@@ -230,15 +244,15 @@ impl Operations {
 
 impl Default for Operations {
     fn default() -> Self {
-        let change_mode: Rc<dyn Operation> = Rc::new(ChangeMode);
-        let add_to_sketch: Rc<dyn Operation> = Rc::new(AddToSketch);
-        let scroll: Rc<dyn Operation> = Rc::new(Scroll);
-        let execute_command: Rc<dyn Operation> = Rc::new(ExecuteCommand::new());
-        let draw_popup: Rc<dyn Operation> = Rc::new(DrawPopup);
-        let filter_signals: Rc<dyn Operation> = Rc::new(FilterSignals::new());
-        let reduce_noise: Rc<dyn Operation> = Rc::new(ReduceNoise);
-        let mark_at: Rc<dyn Operation> = Rc::new(MarkAt);
-        let update_view: Rc<dyn Operation> = Rc::new(UpdateView);
+        let change_mode: Rc<dyn Operation> = Rc::new(ChangeModeOperation);
+        let add_to_sketch: Rc<dyn Operation> = Rc::new(AddToSketchOperation);
+        let scroll: Rc<dyn Operation> = Rc::new(ScrollOperation);
+        let execute_command: Rc<dyn Operation> = Rc::new(ExecuteCommandOperation::new());
+        let draw_sketch: Rc<dyn Operation> = Rc::new(DrawSketchOperation);
+        let filter_signals: Rc<dyn Operation> = Rc::new(FilterSignalsOperation::new());
+        let reduce_noise: Rc<dyn Operation> = Rc::new(ReduceNoiseOperation);
+        let mark_at: Rc<dyn Operation> = Rc::new(MarkAtOperation);
+        let update_view: Rc<dyn Operation> = Rc::new(UpdateViewOperation);
 
         Self {
             ops: [
@@ -246,7 +260,7 @@ impl Default for Operations {
                 (OpCode::AddToSketch(Default::default()).id(), add_to_sketch),
                 (OpCode::Scroll(Direction::default()).id(), scroll),
                 (OpCode::ExecuteCommand.id(), execute_command),
-                (OpCode::DrawPopup.id(), draw_popup),
+                (OpCode::DrawSketch.id(), draw_sketch),
                 (OpCode::FilterSignals.id(), filter_signals),
                 (OpCode::ReduceNoise.id(), reduce_noise),
                 (OpCode::MarkAt(Edge::default()).id(), mark_at),
@@ -259,14 +273,18 @@ impl Default for Operations {
     }
 }
 
+/// Signifies functionality for the application to implement.
 trait Operation: Debug {
+    /// Executes the `Operation`.
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome;
 }
 
+/// Changes the [`Mode`] of the application.
 #[derive(Clone, Debug)]
-struct ChangeMode;
+struct ChangeModeOperation;
 
-impl ChangeMode {
+impl ChangeModeOperation {
+    /// Returns the [`Mode`] stored in the [`OpCode`].
     fn arg(&self, opcode: OpCode) -> Result<Mode, Failure> {
         if let OpCode::ChangeMode(mode) = opcode {
             Ok(mode)
@@ -276,7 +294,7 @@ impl ChangeMode {
     }
 }
 
-impl Operation for ChangeMode {
+impl Operation for ChangeModeOperation {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
         let mode = self.arg(opcode)?;
 
@@ -286,7 +304,7 @@ impl Operation for ChangeMode {
                 paper.display_view()?;
             }
             Mode::Command | Mode::Filter => {
-                paper.draw_popup()?;
+                paper.draw_sketch()?;
             }
             Mode::Action => {}
             Mode::Edit => {
@@ -299,10 +317,12 @@ impl Operation for ChangeMode {
     }
 }
 
+/// Adds a character to the sketch.
 #[derive(Clone, Debug)]
-struct AddToSketch;
+struct AddToSketchOperation;
 
-impl AddToSketch {
+impl AddToSketchOperation {
+    /// Returns the [`char`] stored in the [`OpCode`].
     fn arg(&self, opcode: OpCode) -> Result<char, Failure> {
         if let OpCode::AddToSketch(c) = opcode {
             Ok(c)
@@ -312,7 +332,7 @@ impl AddToSketch {
     }
 }
 
-impl Operation for AddToSketch {
+impl Operation for AddToSketchOperation {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
         match self.arg(opcode)? {
             BACKSPACE => {
@@ -329,12 +349,15 @@ impl Operation for AddToSketch {
     }
 }
 
+/// Sets signals to match filters described in the sketch.
 #[derive(Debug)]
-struct FilterSignals {
+struct FilterSignalsOperation {
+    /// The [`Pattern`] that matches the first feature.
     first_feature_pattern: Pattern,
 }
 
-impl FilterSignals {
+impl FilterSignalsOperation {
+    /// Creates a new `FilterSignalsOperation`.
     fn new() -> Self {
         Self {
             first_feature_pattern: Pattern::define(
@@ -344,7 +367,7 @@ impl FilterSignals {
     }
 }
 
-impl Operation for FilterSignals {
+impl Operation for FilterSignalsOperation {
     fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Outcome {
         let filter = paper.sketch().clone();
 
@@ -363,10 +386,12 @@ impl Operation for FilterSignals {
     }
 }
 
+/// Sets the location of [`Mark`]s at an [`Edge`] of every signal.
 #[derive(Debug)]
-struct MarkAt;
+struct MarkAtOperation;
 
-impl MarkAt {
+impl MarkAtOperation {
+    /// Returns the [`Edge`] stored in the [`OpCode`].
     fn arg(&self, opcode: OpCode) -> Result<Edge, Failure> {
         if let OpCode::MarkAt(edge) = opcode {
             Ok(edge)
@@ -376,24 +401,28 @@ impl MarkAt {
     }
 }
 
-impl Operation for MarkAt {
+impl Operation for MarkAtOperation {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
         paper.set_marks(self.arg(opcode)?);
         Ok(None)
     }
 }
 
+/// Executes the command stored in sketch.
 #[derive(Debug)]
-struct ExecuteCommand {
+struct ExecuteCommandOperation {
+    /// The [`Pattern`] that matches the name of a command.
     command_pattern: Pattern,
+    /// The [`Pattern`] that matches the `see <path>` command.
     see_pattern: Pattern,
 }
 
-impl ExecuteCommand {
+impl ExecuteCommandOperation {
+    /// Creates a new `ExecuteCommandOperation`.
     fn new() -> Self {
         Self {
             command_pattern: Pattern::define(
-                tkn!(lazy_some(Any) => "command") + (Whitespace | End),
+                tkn!(lazy_some(Any) => "command") + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
             ),
             see_pattern: Pattern::define(
                 "see" + some(Whitespace) + tkn!(var(Any) => "path")
@@ -402,13 +431,14 @@ impl ExecuteCommand {
     }
 }
 
-impl Operation for ExecuteCommand {
+impl Operation for ExecuteCommandOperation {
     fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Outcome {
         let command = paper.sketch().clone();
+        let command_tokens = self.command_pattern.tokenize(&command);
 
-        match self.command_pattern.tokenize(&command).get("command") {
+        match command_tokens.get("command") {
             Some("see") => {
-                if let Some(path) = self.see_pattern.tokenize(&command).get("path") {
+                if let Some(path) = command_tokens.get("args") {
                     paper.change_view(path);
                 }
             }
@@ -423,30 +453,34 @@ impl Operation for ExecuteCommand {
     }
 }
 
+/// Draws the current sketch.
 #[derive(Debug)]
-struct DrawPopup;
+struct DrawSketchOperation;
 
-impl Operation for DrawPopup {
+impl Operation for DrawSketchOperation {
     fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Outcome {
-        paper.draw_popup()?;
+        paper.draw_sketch()?;
         Ok(None)
     }
 }
 
+/// Sets the noise equal to the signals that match the current filter.
 #[derive(Debug)]
-struct ReduceNoise;
+struct ReduceNoiseOperation;
 
-impl Operation for ReduceNoise {
+impl Operation for ReduceNoiseOperation {
     fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Outcome {
         paper.reduce_noise();
         Ok(None)
     }
 }
 
+/// Updates the view with a given character.
 #[derive(Debug)]
-struct UpdateView;
+struct UpdateViewOperation;
 
-impl UpdateView {
+impl UpdateViewOperation {
+    /// Returns the [`char`] stored in the [`OpCode`].
     fn arg(&self, opcode: OpCode) -> Result<char, Failure> {
         if let OpCode::UpdateView(c) = opcode {
             Ok(c)
@@ -456,17 +490,19 @@ impl UpdateView {
     }
 }
 
-impl Operation for UpdateView {
+impl Operation for UpdateViewOperation {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
         paper.update_view(self.arg(opcode)?)?;
         Ok(None)
     }
 }
 
+/// Changes the part of the view that is visible.
 #[derive(Debug)]
-struct Scroll;
+struct ScrollOperation;
 
-impl Scroll {
+impl ScrollOperation {
+    /// Returns the [`Direction`] stored in the [`OpCode`].
     fn arg(&self, opcode: OpCode) -> Result<Direction, Failure> {
         if let OpCode::Scroll(direction) = opcode {
             Ok(direction)
@@ -475,33 +511,44 @@ impl Scroll {
         }
     }
 
-    #[allow(clippy::integer_arithmetic)]
+    /// Returns the number of rows to scroll.
+    ///
+    /// A positive number signifies scrolling up while a negative signifies scrolling down.
     fn get_scroll_movement(height: usize, direction: Direction) -> Result<isize, Failure> {
-        let mut movement = isize::try_from(height)?;
+        let movement = isize::try_from(height)?;
 
         if let Direction::Up = direction {
-            movement = -movement;
+            movement.checked_neg().ok_or(Failure::Conversion(TryFromIntError::Overflow))
+        } else {
+            Ok(movement)
         }
-
-        Ok(movement)
     }
 }
 
-impl Operation for Scroll {
+impl Operation for ScrollOperation {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Result<Option<Notice>, Failure> {
         paper.scroll(Self::get_scroll_movement(
             paper.scroll_height(),
             self.arg(opcode)?,
-        )?);
+        )?)?;
         paper.display_view()?;
         Ok(None)
     }
 }
 
+/// Signifies an [`Error`] that occurs during the execution of an [`Operation`].
 #[derive(Debug)]
 pub enum Failure {
-    InvalidOpCode { operation: String, opcode: OpCode },
+    /// An [`OpCode`] does not match what was expected.
+    InvalidOpCode {
+        /// The name of the [`Operation`] during which `Failure` occurred.
+        operation: String,
+        /// The [`OpCode`] that was received.
+        opcode: OpCode,
+    },
+    /// An error occurred during the execution of a [`ui`] command.
     Ui(Fault),
+    /// An attempt to convert one type to another was unsuccessful.
     Conversion(TryFromIntError),
 }
 
@@ -537,9 +584,12 @@ impl From<TryFromIntError> for Failure {
     }
 }
 
+/// Signifies a direction in which the application can scroll.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Direction {
+    /// Moves the window up, effectively moving the view down.
     Up,
+    /// Moves the window down, effectively moving the view up.
     Down,
 }
 

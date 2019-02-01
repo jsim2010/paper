@@ -98,7 +98,7 @@ impl Paper {
 
         'main: loop {
             for opcode in self.controller.process_input(self.ui.receive_input()) {
-                match operations.execute(self, opcode)? {
+                match operations.operate(self, opcode)? {
                     Some(Notice::Quit) => break 'main,
                     Some(Notice::Flash) => {
                         self.ui.flash()?;
@@ -161,7 +161,7 @@ impl Paper {
         &mut self.sketch
     }
 
-    fn draw_popup(&self) -> Result<(), ui::Fault> {
+    fn draw_sketch(&self) -> Result<(), ui::Fault> {
         self.ui
             .apply(Edit::new(Region::row(Index::from(0)), Change::Row(self.sketch.clone())))
     }
@@ -198,8 +198,9 @@ impl Paper {
         }
     }
 
-    fn scroll(&mut self, movement: isize) {
+    fn scroll(&mut self, movement: isize) -> Result<(), ui::Fault> {
         self.view.scroll(movement);
+        self.display_view()
     }
 
     fn draw_filter_backgrounds(&self) -> Result<(), ui::Fault> {
@@ -350,14 +351,14 @@ impl View {
         // Clear the screen, then add each row.
         iter::once(Edit::new(Region::default(), Change::Clear)).chain(
             self.lines()
-                .enumerate()
                 .skip(self.first_line.index())
+                .enumerate()
                 .map(move |x| {
                     Edit::new(
                         Region::row(Index::try_from(x.0).unwrap()),
                         Change::Row(format!(
                             "{:>width$} {}",
-                            x.0 + 1,
+                            x.0 + self.first_line.index() + 1,
                             x.1,
                             width = self.margin_width - 1
                         )),
