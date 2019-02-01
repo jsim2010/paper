@@ -2,7 +2,10 @@
 
 use crate::{Display, FmtResult, Formatter};
 use pancurses::Input;
+use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::error::Error;
+use std::ops::{Add, AddAssign, Neg, Sub};
 use try_from::{TryFrom, TryFromIntError, TryInto};
 
 /// The [`Result`] returned by functions of this module.
@@ -421,17 +424,19 @@ impl Display for Address {
     }
 }
 
+pub(crate) type IndexType = i32;
+
 /// Signifies the index of a row or column in the grid.
 ///
 /// Given `x` is an Index value:
 ///     `x >= 0`
 ///     `x <= i32::max_value`
 #[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Index(i32);
+pub(crate) struct Index(IndexType);
 
 impl From<u8> for Index {
     fn from(value: u8) -> Self {
-        Index(i32::from(value))
+        Index(IndexType::from(value))
     }
 }
 
@@ -452,13 +457,69 @@ impl TryFrom<usize> for Index {
     }
 }
 
+impl TryFrom<Index> for usize {
+    type Err = TryFromIntError;
+
+    fn try_from(value: Index) -> Result<Self, Self::Err> {
+        Self::try_from(value.0)
+    }
+}
+
 impl Display for Index {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}", self.0)
     }
 }
 
-impl From<Index> for i32 {
+impl<T: Borrow<IndexType>> AddAssign<T> for Index {
+    fn add_assign(&mut self, other: T) {
+        self.0 += other.borrow();
+    }
+}
+
+impl Add<IndexType> for Index {
+    type Output = Self;
+
+    fn add(self, other: IndexType) -> Self::Output {
+        Index(self.0 + other)
+    }
+}
+
+impl Borrow<IndexType> for Index {
+    fn borrow(&self) -> &IndexType {
+        &self.0
+    }
+}
+
+impl Sub<u8> for Index {
+    type Output = Self;
+
+    fn sub(self, other: u8) -> Self::Output {
+        Index(self.0 - IndexType::from(other))
+    }
+}
+
+impl Neg for Index {
+    type Output = IndexType;
+
+    fn neg(self) -> Self::Output {
+        -self.0
+    }
+}
+
+impl PartialEq<IndexType> for Index {
+    fn eq(&self, other: &IndexType) -> bool {
+        self.0.eq(other)
+    }
+}
+
+impl PartialOrd<IndexType> for Index {
+    fn partial_cmp(&self, other: &IndexType) -> Option<Ordering> {
+        Some(self.0.cmp(other))
+    }
+}
+
+impl From<Index> for IndexType {
     #[inline]
     fn from(value: Index) -> Self {
         value.0
@@ -473,12 +534,12 @@ impl From<Index> for i32 {
 /// [`Address`]: struct.Address.html
 /// [`END`]: constant.END.html
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub(crate) struct Length(i32);
+pub(crate) struct Length(IndexType);
 
 /// The internal value that represents the number of characters until the end of the row.
 ///
 /// Specified by [`pancurses`].
-const END_VALUE: i32 = -1;
+const END_VALUE: IndexType = -1;
 
 /// The `Length` that represents the number of characters until the end of the row.
 pub(crate) const END: Length = Length(END_VALUE);
@@ -491,12 +552,16 @@ impl TryFrom<usize> for Length {
     }
 }
 
-impl TryFrom<Length> for u32 {
-    type Err = TryFromIntError;
+impl TryFrom<Length> for Index {
+    type Err = LengthEndError;
 
     #[inline]
     fn try_from(value: Length) -> Result<Self, Self::Err> {
-        value.0.try_into()
+        if value.0 >= 0 {
+            Ok(Index(value.0))
+        } else {
+            Err(LengthEndError)
+        }
     }
 }
 
@@ -506,5 +571,14 @@ impl Display for Length {
             END_VALUE => write!(f, "END"),
             x => write!(f, "{}", x),
         }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct LengthEndError;
+
+impl Display for LengthEndError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "Length is end")
     }
 }

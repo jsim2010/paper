@@ -35,11 +35,7 @@
     unused_qualifications,
     unused_results,
     clippy::nursery,
-)]
-#![warn(
-    clippy::use_debug,
-    clippy::option_unwrap_used,
-    clippy::use_self,
+    clippy::pedantic,
 )]
 #![allow(clippy::suspicious_op_assign_impl)] // This lint is not always correct; issues should be detected by tests.
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
@@ -48,18 +44,19 @@ mod engine;
 mod ui;
 
 use crate::engine::{Controller, Notice};
-use crate::ui::{Address, Change, Color, Index, Edit, Length, Region, UserInterface, END};
+use crate::ui::{Address, Change, Color, Index, Edit, Length, Region, UserInterface, END, IndexType};
 use rec::ChCls::{Any, Digit, End, Sign};
 use rec::{Element, tkn, some, Pattern};
+use std::borrow::Borrow;
 use std::cmp::{self, Ordering};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
 use std::iter;
-use std::ops::{AddAssign, Shr, ShrAssign};
-use try_from::{TryFrom, TryInto};
+use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
+use try_from::{TryFrom, TryInto, TryFromIntError};
 
-const NEGATIVE_ONE: isize = -1;
+const NEGATIVE_ONE: IndexType = -1;
 
 /// The paper application.
 // In general, Paper methods should contain as little logic as possible. Instead all logic should
@@ -126,7 +123,7 @@ impl Paper {
         self.noises.clear();
 
         for line in 1..=self.view.line_count {
-            if let Some(noise) = LineNumber::new(line as u32).map(Section::line) {
+            if let Some(noise) = LineNumber::new(line).map(Section::line) {
                 self.noises.push(noise);
             }
         }
@@ -140,17 +137,18 @@ impl Paper {
         self.noises = self.signals.clone();
     }
 
-    fn filter_signals(&mut self, feature: &str) {
+    fn filter_signals(&mut self, feature: &str) -> Result<(), TryFromIntError> {
         self.signals = self.noises.clone();
 
         if let Some(id) = feature.chars().nth(0) {
             for filter in self.filters.iter() {
                 if id == filter.id() {
-                    filter.extract(feature, &mut self.signals, &self.view);
-                    break;
+                    return filter.extract(feature, &mut self.signals, &self.view);
                 }
             }
         }
+
+        Ok(())
     }
 
     fn sketch(&self) -> &String {
@@ -181,16 +179,14 @@ impl Paper {
             let mut place = signal.start;
 
             if edge == Edge::End {
-                let length: Result<u32, _> = signal.length.try_into();
-
-                place.index += length.unwrap_or_else(|_| self.view.line_length(&signal.start).unwrap_or_default() as u32) as usize;
+                place.column += Index::try_from(signal.length).unwrap_or_else(|_| self.view.line_length(signal.start).unwrap_or_default())
             }
             
-            let mut pointer = Pointer(match place.line.index() {
-                0 => Some(0),
-                index => self.view.data.match_indices(ui::ENTER).nth(index - 1).map(|x| x.0 + 1),
+            let mut pointer = Pointer(match place.line.row() {
+                0 => Some(Index::from(0)),
+                row => self.view.data.match_indices(ui::ENTER).nth(row - 1).and_then(|x| Index::try_from(x.0 + 1).ok()),
             });
-            pointer += place.index;
+            pointer += place.column;
             self.marks.push(Mark {
                 place,
                 pointer,
@@ -198,7 +194,7 @@ impl Paper {
         }
     }
 
-    fn scroll(&mut self, movement: isize) -> Result<(), ui::Fault> {
+    fn scroll(&mut self, movement: IndexType) -> Result<(), ui::Fault> {
         self.view.scroll(movement);
         self.display_view()
     }
@@ -229,11 +225,11 @@ impl Paper {
         self.ui.apply(Edit::new(region, Change::Format(color)))
     }
 
-    fn update_view(&mut self, c: char) -> Result<(), ui::Fault> {
+    fn update_view(&mut self, c: char) -> Result<(), engine::Failure> {
         let mut adjustment = Adjustment::default();
 
         for mark in &mut self.marks {
-            if let Some(new_adjustment) = Adjustment::create(c, &mark.place, &self.view) {
+            if let Some(new_adjustment) = Adjustment::create(c, mark.place, &self.view) {
                 adjustment += new_adjustment;
 
                 if adjustment.change != Change::Clear {
@@ -244,12 +240,12 @@ impl Paper {
                 }
 
                 mark.adjust(&adjustment);
-                self.view.add(mark, c);
+                self.view.add(mark, c)?;
             }
         }
 
         if adjustment.change == Change::Clear {
-            self.view.clean();
+            self.view.clean()?;
             self.display_view()?;
         }
 
@@ -305,7 +301,7 @@ struct View {
     data: String,
     first_line: LineNumber,
     margin_width: usize,
-    line_count: usize,
+    line_count: u32,
     path: String,
 }
 
@@ -317,48 +313,51 @@ impl View {
             ..Self::default()
         };
 
-        view.clean();
+        view.clean().unwrap();
         view
     }
 
-    fn add(&mut self, mark: &Mark, c: char) {
+    fn add(&mut self, mark: &Mark, c: char) -> Result<(), TryFromIntError> {
         if let Some(index) = mark.pointer.0 {
+            let data_index = usize::try_from(index)?;
+
             if let ui::BACKSPACE = c {
                 // For now, do not care to check what is removed. But this may become important for
                 // multi-byte characters.
-                match self.data.remove(index) {
+                match self.data.remove(data_index) {
                     _ => {}
                 }
             } else {
-                self.data.insert(index - 1, c);
+                self.data.insert(data_index - 1, c);
             }
+        }
+
+        Ok(())
+    }
+
+    fn address_at(&self, place: Place) -> Option<Address> {
+        match Index::try_from(place.line - self.first_line) {
+            Ok(row) => IndexType::try_from(self.margin_width).ok().map(|origin| Address::new(row, place.column + origin)),
+            _ => None,
         }
     }
 
-    fn address_at(&self, place: &Place) -> Option<Address> {
-        place.line.diff(self.first_line).and_then(|x| 
-            match (Index::try_from(x), Index::try_from((place.index + self.margin_width) as u32)) {
-                (Ok(row), Ok(column)) => Some(Address::new(row, column)),
-                _ => None
-            })
-    }
-
     fn region_at<T: RegionWrapper>(&self, region_wrapper: &T) -> Option<Region> {
-        self.address_at(&region_wrapper.start()).map(|address| Region::new(address, region_wrapper.length()))
+        self.address_at(region_wrapper.start()).map(|address| Region::new(address, region_wrapper.length()))
     }
 
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
         // Clear the screen, then add each row.
         iter::once(Edit::new(Region::default(), Change::Clear)).chain(
             self.lines()
-                .skip(self.first_line.index())
+                .skip(self.first_line.row())
                 .enumerate()
                 .map(move |x| {
                     Edit::new(
                         Region::row(Index::try_from(x.0).unwrap()),
                         Change::Row(format!(
                             "{:>width$} {}",
-                            x.0 + self.first_line.index() + 1,
+                            x.0 + self.first_line.row() + 1,
                             x.1,
                             width = self.margin_width - 1
                         )),
@@ -372,23 +371,29 @@ impl View {
     }
 
     fn line(&self, line_number: LineNumber) -> Option<&str> {
-        self.lines().nth(line_number.index())
+        self.lines().nth(line_number.row())
     }
 
-    fn clean(&mut self) {
-        self.line_count = self.lines().count();
-        self.margin_width = ((self.line_count + 1) as f32).log10().ceil() as usize + 1;
+    fn clean(&mut self) -> Result<(), TryFromIntError> {
+        self.line_count = u32::try_from(self.lines().count())?;
+        #[allow(clippy::cast_sign_loss)] // self.line_count >= 0, thus log10().ceil() >= 0.0
+        #[allow(clippy::cast_possible_truncation)] // self.line_count <= 4294967295, thus log10().ceil() <= 10.0
+        {
+            self.margin_width = (f64::from(self.line_count + 1)).log10().ceil() as usize + 1;
+        }
+
+        Ok(())
     }
 
-    fn scroll(&mut self, movement: isize) {
+    fn scroll(&mut self, movement: IndexType) {
         self.first_line = cmp::min(
-            self.first_line.shift(movement).unwrap_or_default(),
-            LineNumber::new(self.line_count as u32).unwrap_or_default(),
+            self.first_line + movement,
+            LineNumber::new(self.line_count).unwrap_or_default(),
         );
     }
 
-    fn line_length(&self, place: &Place) -> Option<usize> {
-        self.line(place.line).map(|x| x.len())
+    fn line_length(&self, place: Place) -> Option<Index> {
+        self.line(place.line).map(|x| Index::try_from(x.len()).unwrap())
     }
 
     fn put(&self) {
@@ -398,20 +403,20 @@ impl View {
 
 #[derive(Clone, Debug, Default)]
 struct Adjustment {
-    shift: isize,
-    line_change: isize,
-    indexes_changed: HashMap<LineNumber, isize>,
+    shift: IndexType,
+    line_change: IndexType,
+    indexes_changed: HashMap<LineNumber, IndexType>,
     change: Change,
 }
 
 impl Adjustment {
-    fn new(line: LineNumber, shift: isize, index_change: isize, change: Change) -> Self {
+    fn new(line: LineNumber, shift: IndexType, index_change: IndexType, change: Change) -> Self {
         let line_change = if change == Change::Clear { shift } else { 0 };
 
         Self {
             shift,
             line_change,
-            indexes_changed: [(line.shift(line_change).unwrap_or_default(), index_change)]
+            indexes_changed: [(line + line_change, index_change)]
                 .iter()
                 .cloned()
                 .collect(),
@@ -419,17 +424,17 @@ impl Adjustment {
         }
     }
 
-    fn create(c: char, place: &Place, view: &View) -> Option<Self> {
+    fn create(c: char, place: Place, view: &View) -> Option<Self> {
         match c {
             ui::BACKSPACE => {
-                if place.index == 0 {
+                if place.column == 0 {
                     view.line_length(place)
-                        .map(|x| Self::new(place.line, NEGATIVE_ONE, x as isize, Change::Clear))
+                        .map(|x| Self::new(place.line, NEGATIVE_ONE, IndexType::from(x), Change::Clear))
                 } else {
                     Some(Self::new(place.line, NEGATIVE_ONE, NEGATIVE_ONE, Change::Backspace))
                 }
             }
-            ui::ENTER => (place.index as isize).checked_neg().map(|index| Self::new(place.line, 1, index, Change::Clear)),
+            ui::ENTER => Some(Self::new(place.line, 1, -place.column, Change::Clear)),
             _ => Some(Self::new(place.line, 1, 1, Change::Insert(c))),
         }
     }
@@ -485,12 +490,12 @@ struct Mark {
 
 impl Mark {
     fn adjust(&mut self, adjustment: &Adjustment) {
-        self.pointer = self.pointer.saturating_add(adjustment.shift);
-        self.place.line = self.place.line.shift(adjustment.line_change).unwrap_or_default();
+        self.pointer += adjustment.shift;
+        self.place.line = self.place.line + adjustment.line_change;
 
         for (&line, &change) in &adjustment.indexes_changed {
             if line == self.place.line {
-                self.place.index >>= change;
+                self.place >>= change;
             }
         }
     }
@@ -503,46 +508,29 @@ impl Display for Mark {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Debug)]
-struct Pointer(Option<usize>);
+struct Pointer(Option<Index>);
 
-impl Pointer {
-    fn saturating_add(self, rhs: isize) -> Self {
-        Pointer(self.0.map(|x| (x as isize).saturating_add(rhs) as usize))
+impl PartialEq<IndexType> for Pointer {
+    fn eq(&self, other: &IndexType) -> bool {
+        self.0.map_or(false, |x| x == *other)
     }
 }
 
-impl PartialEq<isize> for Pointer {
-    fn eq(&self, other: &isize) -> bool {
-        match self.0 {
-            Some(value) => (value as isize) == *other,
-            None => false,
-        }
+impl PartialOrd<IndexType> for Pointer {
+    fn partial_cmp(&self, other: &IndexType) -> Option<Ordering> {
+        self.0.and_then(|x| x.partial_cmp(other))
     }
 }
 
-impl PartialOrd<isize> for Pointer {
-    fn partial_cmp(&self, other: &isize) -> Option<Ordering> {
-        self.0.map(|x| (x as isize).cmp(other))
-    }
-}
-
-impl AddAssign<isize> for Pointer {
-    #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
-    fn add_assign(&mut self, other: isize) {
-        self.0 = self.0.map(|x| (x as isize + other) as usize);
-    }
-}
-
-impl AddAssign<usize> for Pointer {
-    #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
-    fn add_assign(&mut self, other: usize) {
-        self.0 = self.0.map(|x| x + other);
+impl<T: Borrow<IndexType>> AddAssign<T> for Pointer {
+    fn add_assign(&mut self, other: T) {
+        self.0 = self.0.map(|x| x + *other.borrow());
     }
 }
 
 impl Default for Pointer {
     fn default() -> Self {
-        Pointer(Some(0))
+        Pointer(Some(Index::from(0)))
     }
 }
 
@@ -559,14 +547,14 @@ impl Display for Pointer {
     }
 }
 
-impl PartialEq<Pointer> for isize {
+impl PartialEq<Pointer> for IndexType {
     #[inline]
     fn eq(&self, other: &Pointer) -> bool {
         other == self
     }
 }
 
-impl PartialOrd<Pointer> for isize {
+impl PartialOrd<Pointer> for IndexType {
     #[inline]
     fn partial_cmp(&self, other: &Pointer) -> Option<Ordering> {
         other.partial_cmp(self).map(|x| x.reverse())
@@ -590,7 +578,7 @@ impl Section {
     #[inline]
     fn line(line: LineNumber) -> Self {
         Self {
-            start: Place { line, index: 0 },
+            start: Place { line, column: Index::from(0) },
             length: END,
         }
     }
@@ -617,7 +605,7 @@ impl Display for Section {
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Place {
     line: LineNumber,
-    index: usize,
+    column: Index,
 }
 
 impl RegionWrapper for Place {
@@ -630,40 +618,39 @@ impl RegionWrapper for Place {
     }
 }
 
-impl Shr<usize> for Place {
+impl Shr<IndexType> for Place {
     type Output = Self;
 
-    #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
     #[inline]
-    fn shr(self, rhs: usize) -> Self {
-        Self {
-            index: self.index + rhs,
-            ..self
-        }
+    fn shr(self, rhs: IndexType) -> Self {
+        let mut new_place = self;
+        new_place >>= rhs;
+        new_place
     }
 }
 
-impl ShrAssign<isize> for Place {
-    #[allow(clippy::integer_arithmetic)] // Panic behavior of operators should match that of default implementation.
+impl ShrAssign<IndexType> for Place {
     #[inline]
-    fn shr_assign(&mut self, rhs: isize) {
-        self.index = ((self.index as isize) + rhs) as usize;
+    fn shr_assign(&mut self, rhs: IndexType) {
+        self.column += rhs;
     }
 }
 
 impl Display for Place {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "ln {}, idx {}", self.line, self.index)
+        write!(f, "ln {}, idx {}", self.line, self.column)
     }
 }
 
+type LineNumberType = u32;
+
 /// Signifies a line number.
 #[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Debug)]
-struct LineNumber(u32);
+struct LineNumber(LineNumberType);
 
 impl LineNumber {
-    fn new(value: u32) -> Option<Self> {
+    fn new(value: LineNumberType) -> Option<Self> {
         if value == 0 {
             None
         } else {
@@ -671,23 +658,50 @@ impl LineNumber {
         }
     }
 
-    #[allow(clippy::integer_arithmetic)] // Integer arithmetic is okay because self.0 > 0 by definition of new().
-    fn index(self) -> usize {
+    fn row(self) -> usize {
         (self.0 - 1) as usize
     }
+}
 
-    fn shift(self, movement: isize) -> Option<Self> {
-        let new_value = if movement < 0 {
-            movement.checked_neg().and_then(|x| self.0.checked_sub(x as u32))
+impl Add<IndexType> for LineNumber {
+    type Output = Self;
+
+    fn add(self, other: IndexType) -> Self::Output {
+        if other < 0 {
+            self - match (-other).try_into() {
+                Ok(subtrahend) => subtrahend,
+                Err(_) => LineNumberType::max_value(),
+            }
         } else {
-            self.0.checked_add(movement as u32)
-        };
-
-        new_value.and_then(Self::new)
+            self + match other.try_into() {
+                Ok(addend) => addend,
+                Err(_) => LineNumberType::max_value(),
+            }
+        }
     }
+}
 
-    fn diff(self, other: Self) -> Option<u32> {
-        self.0.checked_sub(other.0)
+impl Add<LineNumberType> for LineNumber {
+    type Output = Self;
+
+    fn add(self, other: LineNumberType) -> Self::Output {
+        LineNumber(self.0 + other)
+    }
+}
+
+impl Sub for LineNumber {
+    type Output = LineNumberType;
+
+    fn sub(self, other: Self) -> Self::Output {
+        self.0 - other.0
+    }
+}
+
+impl Sub<LineNumberType> for LineNumber {
+    type Output = Self;
+
+    fn sub(self, other: LineNumberType) -> Self::Output {
+        LineNumber(self.0 - other)
     }
 }
 
@@ -745,7 +759,7 @@ impl From<std::num::ParseIntError> for ParseLineNumberError {
 
 trait Filter: Debug {
     fn id(&self) -> char;
-    fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View);
+    fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) -> Result<(), TryFromIntError>;
 }
 
 #[derive(Debug)]
@@ -772,7 +786,7 @@ impl Filter for LineFilter {
         '#'
     }
 
-    fn extract(&self, feature: &str, sections: &mut Vec<Section>, _view: &View) {
+    fn extract(&self, feature: &str, sections: &mut Vec<Section>, _view: &View) -> Result<(), TryFromIntError> {
         let tokens = self.pattern.tokenize(feature);
 
         if let Ok(line) = tokens.parse::<LineNumber>("line") {
@@ -785,8 +799,8 @@ impl Filter for LineFilter {
                 let row = x.start.line;
                 row >= top && row <= bottom
             })
-        } else if let (Ok(origin), Ok(movement)) = (tokens.parse::<LineNumber>("origin"), tokens.parse::<isize>("movement")) {
-            let end = origin.shift(movement).unwrap_or_default();
+        } else if let (Ok(origin), Ok(movement)) = (tokens.parse::<LineNumber>("origin"), tokens.parse::<IndexType>("movement")) {
+            let end = origin + movement;
             let top = cmp::min(origin, end);
             let bottom = cmp::max(origin, end);
 
@@ -795,6 +809,8 @@ impl Filter for LineFilter {
                 row >= top && row <= bottom
             })
         }
+
+        Ok(())
     }
 }
 
@@ -818,7 +834,7 @@ impl Filter for PatternFilter {
         '/'
     }
 
-    fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) {
+    fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) -> Result<(), TryFromIntError> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
             if let Ok(search_pattern) = Pattern::load(user_pattern) {
                 let target_sections = sections.clone();
@@ -827,12 +843,12 @@ impl Filter for PatternFilter {
                 for target_section in target_sections {
                     if let Some(target) = view.line(target_section.start.line).map(|x| {
                         x.chars()
-                            .skip(target_section.start.index)
+                            .skip(usize::try_from(target_section.start.column).unwrap())
                             .collect::<String>()
                     }) {
                         for location in search_pattern.locate_iter(&target) {
                             sections.push(Section {
-                                start: target_section.start >> location.start(),
+                                start: target_section.start >> IndexType::try_from(location.start())?,
                                 length: Length::try_from(location.length()).unwrap(),
                             });
                         }
@@ -840,5 +856,7 @@ impl Filter for PatternFilter {
                 }
             }
         }
+
+        Ok(())
     }
 }

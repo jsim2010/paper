@@ -1,5 +1,5 @@
 //! Implements the state machine of the application.
-use crate::ui::{BACKSPACE, ENTER, ESC, Fault};
+use crate::ui::{BACKSPACE, ENTER, ESC, Fault, IndexType};
 use crate::{Debug, Display, Edge, FmtResult, Formatter, Paper};
 use rec::{Element, tkn, opt, lazy_some, some, var, Pattern};
 use rec::ChCls::{Any, End, Not, Whitespace};
@@ -377,7 +377,7 @@ impl Operation for FilterSignalsOperation {
             .last()
             .and_then(|x| x.get("feature"))
         {
-            paper.filter_signals(last_feature);
+            paper.filter_signals(last_feature)?;
         }
 
         paper.clear_background()?;
@@ -514,8 +514,8 @@ impl ScrollOperation {
     /// Returns the number of rows to scroll.
     ///
     /// A positive number signifies scrolling up while a negative signifies scrolling down.
-    fn get_scroll_movement(height: usize, direction: Direction) -> Result<isize, Failure> {
-        let movement = isize::try_from(height)?;
+    fn get_scroll_movement(height: usize, direction: Direction) -> Result<IndexType, Failure> {
+        let movement = IndexType::try_from(height)?;
 
         if let Direction::Up = direction {
             movement.checked_neg().ok_or(Failure::Conversion(TryFromIntError::Overflow))
