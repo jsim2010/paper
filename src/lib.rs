@@ -36,6 +36,7 @@
     unused_results,
     clippy::nursery,
     clippy::pedantic,
+    clippy::restriction,
 )]
 #![allow(clippy::suspicious_op_assign_impl)] // This lint is not always correct; issues should be detected by tests.
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]

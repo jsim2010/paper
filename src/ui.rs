@@ -424,6 +424,7 @@ impl Display for Address {
     }
 }
 
+/// The type of the value stored in [`Index`].
 pub(crate) type IndexType = i32;
 
 /// Signifies the index of a row or column in the grid.
@@ -460,6 +461,7 @@ impl TryFrom<usize> for Index {
 impl TryFrom<Index> for usize {
     type Err = TryFromIntError;
 
+    #[inline]
     fn try_from(value: Index) -> Result<Self, Self::Err> {
         Self::try_from(value.0)
     }
@@ -481,7 +483,7 @@ impl Add<IndexType> for Index {
     type Output = Self;
 
     fn add(self, other: IndexType) -> Self::Output {
-        Index(self.0 + other)
+        Index(self.0.checked_add(other).unwrap_or_else(|| panic!("{} + {} wrapped", self.0, other)))
     }
 }
 
@@ -491,17 +493,10 @@ impl Borrow<IndexType> for Index {
     }
 }
 
-impl Sub<u8> for Index {
-    type Output = Self;
-
-    fn sub(self, other: u8) -> Self::Output {
-        Index(self.0 - IndexType::from(other))
-    }
-}
-
 impl Neg for Index {
     type Output = IndexType;
 
+    #[allow(clippy::integer_arithmetic)] // self.0 >= 0
     fn neg(self) -> Self::Output {
         -self.0
     }
@@ -574,6 +569,7 @@ impl Display for Length {
     }
 }
 
+/// Signifies an [`Error`] that occurs when trying to convert [`END`] to an [`Index`].
 #[derive(Copy, Clone, Debug)]
 pub struct LengthEndError;
 
