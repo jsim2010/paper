@@ -1,15 +1,15 @@
 //! Implements how the user interfaces with the application.
 
-use crate::{Display, FmtResult, Formatter};
+mod base;
+
+pub(crate) use base::{Index, IndexType, Length, END};
+
+use crate::{fmt, Display, Formatter, TryFrom, TryFromIntError};
 use pancurses::Input;
-use std::borrow::Borrow;
-use std::cmp::Ordering;
-use std::error::Error;
-use std::ops::{Add, AddAssign, Neg};
-use try_from::{TryFrom, TryFromIntError, TryInto};
+use std::error;
 
 /// The [`Result`] returned by functions of this module.
-type UiResult = Result<(), Fault>;
+pub(crate) type Outcome = Result<(), Error>;
 
 /// The character that represents the `Backspace` key.
 pub(crate) const BACKSPACE: char = '\u{08}';
@@ -23,230 +23,173 @@ pub(crate) const ESC: char = '';
 /// Represents the default color.
 const DEFAULT_COLOR: i16 = -1;
 
-/// The interface between the user and the application.
-///
-/// All output is displayed in a grid of cells. Each cell contains one character and can change its
-/// background color.
-#[derive(Debug)]
-pub(crate) struct UserInterface {
-    /// The window that interfaces with the application.
-    window: pancurses::Window,
-}
-
-impl UserInterface {
-    /// Sets up the user interface for use.
-    pub(crate) fn init(&self) -> UiResult {
-        self.start_color()?;
-        self.use_default_colors()?;
-        self.disable_echo()?;
-        self.define_color(Color::Red, pancurses::COLOR_RED)?;
-        self.define_color(Color::Blue, pancurses::COLOR_BLUE)?;
-
-        Ok(())
-    }
-
-    /// Gets input from the user.
-    ///
-    /// Returns [`None`] if no character input is provided.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    pub(crate) fn receive_input(&self) -> Option<char> {
-        match self.window.getch() {
-            Some(Input::Character(c)) => Some(c),
-            _ => None,
-        }
-    }
-
-    /// Closes the user interface.
-    pub(crate) fn close(&self) -> UiResult {
-        Self::check_result(pancurses::endwin(), Fault::Endwin)
-    }
-
-    /// Applies the edit to the output.
-    pub(crate) fn apply(&self, edit: Edit) -> UiResult {
-        self.move_to(edit.region.start)?;
-
-        match edit.change {
-            Change::Backspace => {
-                // Add BACKSPACE (move cursor 1 cell to the left) and delete that character.
-                self.add_char(BACKSPACE)?;
-                self.delete_char()?;
-            }
-            Change::Insert(c) => {
-                self.insert_char(c)?;
-            }
-            Change::Row(s) => {
-                self.add_str(s)?;
-                self.clear_to_row_end()?;
-            }
-            Change::Clear => {
-                self.clear_all()?;
-            }
-            Change::Format(color) => {
-                self.format(edit.region.length, color)?;
-            }
-            Change::Nothing => {}
-        }
-
-        Ok(())
-    }
-
-    /// Flashes the output.
-    pub(crate) fn flash(&self) -> UiResult {
-        Self::check_result(pancurses::flash(), Fault::Flash)
-    }
-
-    // TODO: Store this value and update when size is changed.
-    /// Returns the number of cells that make up the height of the grid.
-    pub(crate) fn grid_height(&self) -> Result<usize, TryFromIntError> {
-        self.window.get_max_y().try_into()
-    }
-
-    /// Initializes color processing.
-    ///
-    /// Must be called before any other color manipulation routine is called.
-    fn start_color(&self) -> UiResult {
-        Self::check_result(pancurses::start_color(), Fault::StartColor)
-    }
-
-    /// Initializes the default colors.
-    fn use_default_colors(&self) -> UiResult {
-        Self::check_result(pancurses::use_default_colors(), Fault::UseDefaultColors)
-    }
-
-    /// Disables echoing received characters on the screen.
-    fn disable_echo(&self) -> UiResult {
-        Self::check_result(pancurses::noecho(), Fault::Noecho)
-    }
-
-    /// Defines [`Color`] as having a background color.
-    fn define_color(&self, color: Color, background: i16) -> UiResult {
-        Self::check_result(
-            pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
-            Fault::InitPair,
-        )
-    }
-
-    /// Moves the cursor to an [`Address`].
-    fn move_to(&self, address: Address) -> UiResult {
-        Self::check_result(self.window.mv(address.y(), address.x()), Fault::Wmove)
-    }
-
-    /// Overwrites the block at cursor with a character.
-    fn add_char(&self, c: char) -> UiResult {
-        Self::check_result(self.window.addch(c), Fault::Waddch)
-    }
-
-    /// Deletes the character at the cursor.
-    ///
-    /// All subseqent characters are shifted to the left and a blank block is added at the end.
-    fn delete_char(&self) -> UiResult {
-        Self::check_result(self.window.delch(), Fault::Wdelch)
-    }
-
-    /// Inserts a character at the cursor, shifting all subsequent blocks to the right.
-    fn insert_char(&self, c: char) -> UiResult {
-        Self::check_result(self.window.insch(c), Fault::Winsch)
-    }
-
-    /// Writes a string starting at the cursor.
-    fn add_str(&self, s: String) -> UiResult {
-        Self::check_result(self.window.addstr(s), Fault::Waddstr)
-    }
-
-    /// Clears all blocks from the cursor to the end of the row.
-    fn clear_to_row_end(&self) -> UiResult {
-        Self::check_result(self.window.clrtoeol(), Fault::Wcleartoeol)
-    }
-
-    /// Clears the entire window.
-    fn clear_all(&self) -> UiResult {
-        Self::check_result(self.window.clear(), Fault::Wclear)
-    }
-
-    /// Sets the color of the next specified number of blocks from the cursor.
-    fn format(&self, length: Length, color: Color) -> UiResult {
-        Self::check_result(self.window.chgat(length.0, pancurses::A_NORMAL, color.cp()), Fault::Wchgat)
-    }
-
-    /// Converts given result of ui function to a [`UiResult`].
-    fn check_result(result: i32, error: Fault) -> UiResult {
-        if result == pancurses::OK {
-            Ok(())
-        } else {
-            Err(error)
-        }
-    }
-}
-
 /// Describes possible errors during ui functions.
-#[derive(Copy, Clone, Debug)]
-pub enum Fault {
+#[derive(Clone, Copy, Debug)]
+pub enum Error {
+    /// Describes a possible error during call to `endwin()`.
+    Endwin,
+    /// Describes a possible error during call to `flash()`.
+    Flash,
+    /// Describes a possible error during call to `init_pair()`.
+    InitPair,
+    /// Describes a possible error during call to `noecho()`.
+    Noecho,
+    /// Describes a possible error during call to `start_color()`.
+    StartColor,
+    /// Describes a possible error during call to `use_default_colors()`.
+    UseDefaultColors,
+    /// Describes a possible error during call to `waddch()`.
+    Waddch,
+    /// Describes a possible error during call to `waddstr()`.
+    Waddstr,
     /// Describes a possible error during call to `wchgat()`.
     Wchgat,
     /// Describes a possible error during call to `wclear()`.
     Wclear,
     /// Describes a possible error during call to `wcleartoeol()`.
     Wcleartoeol,
-    /// Describes a possible error during call to `waddstr()`.
-    Waddstr,
-    /// Describes a possible error during call to `winsch()`.
-    Winsch,
     /// Describes a possible error during call to `wdelch()`.
     Wdelch,
-    /// Describes a possible error during call to `waddch()`.
-    Waddch,
+    /// Describes a possible error during call to `winsch()`.
+    Winsch,
     /// Describes a possible error during call to `wmove()`.
     Wmove,
-    /// Describes a possible error during call to `init_pair()`.
-    InitPair,
-    /// Describes a possible error during call to `noecho()`.
-    Noecho,
-    /// Describes a possible error during call to `use_default_colors()`.
-    UseDefaultColors,
-    /// Describes a possible error during call to `start_color()`.
-    StartColor,
-    /// Describes a possible error during call to `endwin()`.
-    Endwin,
-    /// Describes a possible error during call to `flash()`.
-    Flash,
 }
 
-impl Fault {
-    /// Returns the function that caused the current [`Fault`].
+impl Error {
+    /// Returns the function that caused the current `Error`.
     fn get_function(&self) -> &str {
         match self {
-            Fault::Wchgat => "wchgat",
-            Fault::Wclear => "wclear",
-            Fault::Wcleartoeol => "wcleartoeol",
-            Fault::Waddstr => "waddstr",
-            Fault::Winsch => "winsch",
-            Fault::Wdelch => "wdelch",
-            Fault::Waddch => "waddch",
-            Fault::Wmove => "wmove",
-            Fault::InitPair => "init_pair",
-            Fault::Noecho => "noecho",
-            Fault::UseDefaultColors => "use_default_colors",
-            Fault::StartColor => "start_color",
-            Fault::Endwin => "endwin",
-            Fault::Flash => "flash",
+            Error::Endwin => "endwin",
+            Error::Flash => "flash",
+            Error::InitPair => "init_pair",
+            Error::Noecho => "noecho",
+            Error::StartColor => "start_color",
+            Error::UseDefaultColors => "use_default_colors",
+            Error::Waddch => "waddch",
+            Error::Waddstr => "waddstr",
+            Error::Wchgat => "wchgat",
+            Error::Wclear => "wclear",
+            Error::Wcleartoeol => "wcleartoeol",
+            Error::Wdelch => "wdelch",
+            Error::Winsch => "winsch",
+            Error::Wmove => "wmove",
         }
     }
 }
 
-impl Error for Fault {}
-
-impl Display for Fault {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "Failed while calling {}().", self.get_function())
     }
 }
 
-impl Default for UserInterface {
+impl error::Error for Error {}
+
+/// Signifies a specific cell in the grid.
+#[derive(Clone, Copy, Eq, Debug, Default, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct Address {
+    /// The index of the row that contains the cell (starts at 0).
+    row: Index,
+    /// The index of the column that contains the cell (starts at 0).
+    column: Index,
+}
+
+impl Address {
+    /// Creates a new `Address` with a given row and column.
+    pub(crate) fn new(row: Index, column: Index) -> Self {
+        Self { row, column }
+    }
+
+    /// Returns the column of `self`.
+    ///
+    /// Used with [`pancurses`].
+    ///
+    /// [`pancurses`]: ../../pancurses/index.html
+    fn x(self) -> IndexType {
+        IndexType::from(self.column)
+    }
+
+    /// Returns the row of `self`.
+    ///
+    /// Used with [`pancurses`].
+    ///
+    /// [`pancurses`]: ../../pancurses/index.html
+    fn y(self) -> IndexType {
+        IndexType::from(self.row)
+    }
+}
+
+impl Display for Address {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.row, self.column)
+    }
+}
+
+/// Signifies a modification to the grid.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum Change {
+    /// Removes the previous cell, moving all subsequent cells to the left.
+    Backspace,
+    /// Clears all cells.
+    Clear,
+    /// Sets the color of all cells in a [`Region`].
+    ///
+    /// [`Region`]: struct.Region.html
+    Format(Color),
+    /// Inserts a cell containing a character, moving all subsequent cells to the right.
+    Insert(char),
+    /// Does nothing.
+    Nothing,
+    /// Writes the characters of a string in sequence and clears all subsequent cells.
+    Row(String),
+}
+
+impl Default for Change {
     fn default() -> Self {
-        Self {
-            // Must call initscr() first.
-            window: pancurses::initscr(),
+        Change::Nothing
+    }
+}
+
+impl Display for Change {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Change::Backspace => write!(f, "Backspace"),
+            Change::Clear => write!(f, "Clear"),
+            Change::Format(color) => write!(f, "Format to {}", color),
+            Change::Insert(input) => write!(f, "Insert '{}'", input),
+            Change::Nothing => write!(f, "Nothing"),
+            Change::Row(row_str) => write!(f, "Write row '{}'", row_str),
+        }
+    }
+}
+
+/// Signifies a color.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum Color {
+    /// The default foreground on a blue background.
+    Blue,
+    /// The default foreground on the default background.
+    Default,
+    /// The default foreground on a red background.
+    Red,
+}
+
+impl Color {
+    /// Converts `self` to a `color-pair` as specified in [`pancurses`].
+    ///
+    /// [`pancurses`]: ../../pancurses/index.html
+    fn cp(self) -> i16 {
+        self as i16
+    }
+}
+
+impl Display for Color {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Color::Blue => write!(f, "Blue"),
+            Color::Default => write!(f, "Default"),
+            Color::Red => write!(f, "Red"),
         }
     }
 }
@@ -277,78 +220,10 @@ impl Edit {
     }
 }
 
-/// Signifies a modification to the grid.
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub(crate) enum Change {
-    /// Does nothing.
-    Nothing,
-    /// Removes the previous cell, moving all subsequent cells to the left.
-    Backspace,
-    /// Inserts a cell containing a character, moving all subsequent cells to the right.
-    Insert(char),
-    /// Writes the characters of a string in sequence and clears all subsequent cells.
-    Row(String),
-    /// Clears all cells.
-    Clear,
-    /// Sets the color of all cells in a [`Region`].
-    ///
-    /// [`Region`]: struct.Region.html
-    Format(Color),
-}
-
-impl Default for Change {
-    fn default() -> Self {
-        Change::Nothing
-    }
-}
-
-impl Display for Change {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Change::Nothing => write!(f, "Nothing"),
-            Change::Backspace => write!(f, "Backspace"),
-            Change::Insert(c) => write!(f, "Insert '{}'", c),
-            Change::Row(s) => write!(f, "Write row '{}'", s),
-            Change::Clear => write!(f, "Clear"),
-            Change::Format(c) => write!(f, "Format to {}", c),
-        }
-    }
-}
-
-/// Signifies a color.
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub(crate) enum Color {
-    /// The default foreground on the default background.
-    Default,
-    /// The default foreground on a red background.
-    Red,
-    /// The default foreground on a blue background.
-    Blue,
-}
-
-impl Color {
-    /// Converts `self` to a `color-pair` as specified in [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
-    fn cp(self) -> i16 {
-        self as i16
-    }
-}
-
-impl Display for Color {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Color::Default => write!(f, "Default"),
-            Color::Red => write!(f, "Red"),
-            Color::Blue => write!(f, "Blue"),
-        }
-    }
-}
-
 /// Signifies a group of adjacent [`Address`]es.
 ///
 /// [`Address`]: struct.Address.html
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) struct Region {
     /// The first [`Address`].
     ///
@@ -370,239 +245,177 @@ impl Region {
     }
 
     /// Creates a new `Region` that signifies an entire row.
-    pub(crate) fn row(row: usize) -> Result<Self, TryFromIntError> {
-        Index::try_from(row).map(|row_index|
-            Self {
-                start: Address::new(row_index, Index::from(0)),
-                length: END,
-            }
-        )
+    pub(crate) fn with_row(row: usize) -> Result<Self, TryFromIntError> {
+        Index::try_from(row).map(|row_index| Self {
+            start: Address::new(row_index, Index::from(0)),
+            length: END,
+        })
     }
 }
 
 impl Display for Region {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}->{}", self.start, self.length)
     }
 }
 
-/// Signifies a specific cell in the grid.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub(crate) struct Address {
-    /// The index of the row that contains the cell (starts at 0).
-    row: Index,
-    /// The index of the column that contains the cell (starts at 0).
-    column: Index,
-}
-
-impl Address {
-    /// Creates a new `Address` with a given row and column.
-    pub(crate) fn new(row: Index, column: Index) -> Self {
-        Self { row, column }
-    }
-
-    /// Returns the column of `self`.
-    ///
-    /// Used with [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
-    fn x(self) -> i32 {
-        i32::from(self.column)
-    }
-
-    /// Returns the row of `self`.
-    ///
-    /// Used with [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
-    fn y(self) -> i32 {
-        i32::from(self.row)
-    }
-}
-
-impl Display for Address {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "({}, {})", self.row, self.column)
-    }
-}
-
-/// The type of the value stored in [`Index`].
-pub(crate) type IndexType = i32;
-
-/// Signifies the index of a row or column in the grid.
+/// The interface between the user and the application.
 ///
-/// Given `x` is an Index value:
-///     `x >= 0`
-///     `x <= i32::max_value`
-#[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Index(IndexType);
+/// All output is displayed in a grid of cells. Each cell contains one character and can change its
+/// background color.
+#[derive(Debug)]
+pub(crate) struct UserInterface {
+    /// The window that interfaces with the application.
+    window: pancurses::Window,
+}
 
-impl TryFrom<IndexType> for Index {
-    type Err = TryFromIntError;
-
-    fn try_from(value: IndexType) -> Result<Self, Self::Err> {
-        if value < 0 {
-            Err(TryFromIntError::Underflow)
+impl UserInterface {
+    /// Converts given result of ui function to a [`Outcome`].
+    fn process(result: i32, error: Error) -> Outcome {
+        if result == pancurses::OK {
+            Ok(())
         } else {
-            Ok(Index(value))
+            Err(error)
         }
     }
-}
 
-impl From<u8> for Index {
-    fn from(value: u8) -> Self {
-        Index(IndexType::from(value))
+    /// Sets up the user interface for use.
+    pub(crate) fn init(&self) -> Outcome {
+        self.start_color()?;
+        self.use_default_colors()?;
+        self.disable_echo()?;
+        self.define_color(Color::Red, pancurses::COLOR_RED)?;
+        self.define_color(Color::Blue, pancurses::COLOR_BLUE)?;
+
+        Ok(())
     }
-}
 
-impl TryFrom<i64> for Index {
-    type Err = TryFromIntError;
-
-    fn try_from(value: i64) -> Result<Self, Self::Err> {
-        IndexType::try_from(value).map(Index)
+    /// Closes the user interface.
+    pub(crate) fn close(&self) -> Outcome {
+        Self::process(pancurses::endwin(), Error::Endwin)
     }
-}
 
-impl TryFrom<u32> for Index {
-    type Err = TryFromIntError;
-
-    fn try_from(value: u32) -> Result<Self, Self::Err>{ 
-        value.try_into().map(Index)
+    /// Overwrites the block at cursor with a character.
+    fn add_char(&self, c: char) -> Outcome {
+        Self::process(self.window.addch(c), Error::Waddch)
     }
-}
 
-
-impl TryFrom<usize> for Index {
-    type Err = TryFromIntError;
-
-    fn try_from(value: usize) -> Result<Self, Self::Err> {
-        value.try_into().map(Index)
+    /// Writes a string starting at the cursor.
+    fn add_str(&self, s: String) -> Outcome {
+        Self::process(self.window.addstr(s), Error::Waddstr)
     }
-}
 
-impl TryFrom<Index> for usize {
-    type Err = TryFromIntError;
+    /// Applies the edit to the output.
+    pub(crate) fn apply(&self, edit: Edit) -> Outcome {
+        self.move_to(edit.region.start)?;
 
-    #[inline]
-    fn try_from(value: Index) -> Result<Self, Self::Err> {
-        Self::try_from(value.0)
-    }
-}
-
-impl Display for Index {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl<T: Borrow<IndexType>> AddAssign<T> for Index {
-    fn add_assign(&mut self, other: T) {
-        self.0 += other.borrow();
-    }
-}
-
-impl Add<IndexType> for Index {
-    type Output = Self;
-
-    fn add(self, other: IndexType) -> Self::Output {
-        Index(self.0.checked_add(other).unwrap_or_else(|| panic!("{} + {} wrapped", self, other)))
-    }
-}
-
-impl Borrow<IndexType> for Index {
-    fn borrow(&self) -> &IndexType {
-        &self.0
-    }
-}
-
-impl Neg for Index {
-    type Output = IndexType;
-
-    #[allow(clippy::integer_arithmetic)] // self.0 >= 0
-    fn neg(self) -> Self::Output {
-        -self.0
-    }
-}
-
-impl PartialEq<IndexType> for Index {
-    fn eq(&self, other: &IndexType) -> bool {
-        self.0.eq(other)
-    }
-}
-
-impl PartialOrd<IndexType> for Index {
-    fn partial_cmp(&self, other: &IndexType) -> Option<Ordering> {
-        Some(self.0.cmp(other))
-    }
-}
-
-impl From<Index> for IndexType {
-    #[inline]
-    fn from(value: Index) -> Self {
-        value.0
-    }
-}
-
-/// Signifies a number of adjacent [`Address`]es.
-///
-/// Generally this is an unsigned number. However, there is a special `Length` called [`END`] that
-/// signifies the number of [`Address`]es between a start [`Address`] and the end of that row.
-///
-/// [`Address`]: struct.Address.html
-/// [`END`]: constant.END.html
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub(crate) struct Length(IndexType);
-
-/// The internal value that represents the number of characters until the end of the row.
-///
-/// Specified by [`pancurses`].
-const END_VALUE: IndexType = -1;
-
-/// The `Length` that represents the number of characters until the end of the row.
-pub(crate) const END: Length = Length(END_VALUE);
-
-impl From<u8> for Length {
-    fn from(value: u8) -> Self {
-        Length(IndexType::from(value))
-    }
-}
-
-impl TryFrom<usize> for Length {
-    type Err = TryFromIntError;
-
-    fn try_from(value: usize) -> Result<Self, Self::Err> {
-        value.try_into().map(Length)
-    }
-}
-
-impl TryFrom<Length> for Index {
-    type Err = LengthEndError;
-
-    #[inline]
-    fn try_from(value: Length) -> Result<Self, Self::Err> {
-        if value.0 >= 0 {
-            Ok(Index(value.0))
-        } else {
-            Err(LengthEndError)
+        match edit.change {
+            Change::Backspace => {
+                // Add BACKSPACE (move cursor 1 cell to the left) and delete that character.
+                self.add_char(BACKSPACE)?;
+                self.delete_char()
+            }
+            Change::Clear => self.clear_all(),
+            Change::Format(color) => self.format(edit.region.length, color),
+            Change::Insert(c) => self.insert_char(c),
+            Change::Nothing => Ok(()),
+            Change::Row(s) => {
+                self.add_str(s)?;
+                self.clear_to_row_end()
+            }
         }
     }
-}
 
-impl Display for Length {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self.0 {
-            END_VALUE => write!(f, "END"),
-            x => write!(f, "{}", x),
+    /// Clears the entire window.
+    fn clear_all(&self) -> Outcome {
+        Self::process(self.window.clear(), Error::Wclear)
+    }
+
+    /// Clears all blocks from the cursor to the end of the row.
+    fn clear_to_row_end(&self) -> Outcome {
+        Self::process(self.window.clrtoeol(), Error::Wcleartoeol)
+    }
+
+    /// Defines [`Color`] as having a background color.
+    fn define_color(&self, color: Color, background: i16) -> Outcome {
+        Self::process(
+            pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
+            Error::InitPair,
+        )
+    }
+
+    /// Deletes the character at the cursor.
+    ///
+    /// All subseqent characters are shifted to the left and a blank block is added at the end.
+    fn delete_char(&self) -> Outcome {
+        Self::process(self.window.delch(), Error::Wdelch)
+    }
+
+    /// Disables echoing received characters on the screen.
+    fn disable_echo(&self) -> Outcome {
+        Self::process(pancurses::noecho(), Error::Noecho)
+    }
+
+    /// Flashes the output.
+    pub(crate) fn flash(&self) -> Outcome {
+        Self::process(pancurses::flash(), Error::Flash)
+    }
+
+    /// Sets the color of the next specified number of blocks from the cursor.
+    fn format(&self, length: Length, color: Color) -> Outcome {
+        Self::process(
+            self.window
+                .chgat(length.n(), pancurses::A_NORMAL, color.cp()),
+            Error::Wchgat,
+        )
+    }
+
+    // TODO: Store this value and update when size is changed.
+    /// Returns the number of cells that make up the height of the grid.
+    pub(crate) fn grid_height(&self) -> Result<usize, TryFromIntError> {
+        usize::try_from(self.window.get_max_y())
+    }
+
+    /// Inserts a character at the cursor, shifting all subsequent blocks to the right.
+    fn insert_char(&self, c: char) -> Outcome {
+        Self::process(self.window.insch(c), Error::Winsch)
+    }
+
+    /// Moves the cursor to an [`Address`].
+    fn move_to(&self, address: Address) -> Outcome {
+        Self::process(self.window.mv(address.y(), address.x()), Error::Wmove)
+    }
+
+    /// Gets input from the user.
+    ///
+    /// Returns [`None`] if no character input is provided.
+    ///
+    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
+    pub(crate) fn receive_input(&self) -> Option<char> {
+        match self.window.getch() {
+            Some(Input::Character(c)) => Some(c),
+            _ => None,
         }
+    }
+
+    /// Initializes color processing.
+    ///
+    /// Must be called before any other color manipulation routine is called.
+    fn start_color(&self) -> Outcome {
+        Self::process(pancurses::start_color(), Error::StartColor)
+    }
+
+    /// Initializes the default colors.
+    fn use_default_colors(&self) -> Outcome {
+        Self::process(pancurses::use_default_colors(), Error::UseDefaultColors)
     }
 }
 
-/// Signifies an [`Error`] that occurs when trying to convert [`END`] to an [`Index`].
-#[derive(Copy, Clone, Debug)]
-pub struct LengthEndError;
-
-impl Display for LengthEndError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "Length is end")
+impl Default for UserInterface {
+    fn default() -> Self {
+        Self {
+            // Must call initscr() first.
+            window: pancurses::initscr(),
+        }
     }
 }

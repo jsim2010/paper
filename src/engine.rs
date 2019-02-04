@@ -1,16 +1,18 @@
 //! Implements the state machine of the application.
-use crate::ui::{BACKSPACE, ENTER, ESC, Fault, IndexType};
-use crate::{Debug, Display, Edge, FmtResult, Formatter, Paper};
-use rec::{Element, tkn, opt, lazy_some, some, var, Pattern};
-use rec::ChCls::{Any, End, Not, Whitespace};
-use std::collections::HashMap;
-use std::error::Error;
+use crate::{
+    error, io, fmt, some, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter, HashMap,
+    IndexType, Paper, Pattern, TryFrom, TryFromIntError, BACKSPACE, ENTER,
+};
+use rec::ChCls::{Not, Whitespace};
+use rec::{lazy_some, opt, var};
 use std::mem::{discriminant, Discriminant};
 use std::rc::Rc;
-use try_from::{TryFrom, TryFromIntError};
+use ui::ESC;
 
-/// Signifies the result of executing an [`Operation`].
-pub(crate) type Outcome = Result<Option<Notice>, Failure>;
+/// Signifies a [`Result`] during the execution of an [`Operation`].
+pub(crate) type Outcome<T> = Result<T, Failure>;
+/// Signifies the final [`Outcome`] of an [`Operation`].
+type Output = Outcome<Option<Notice>>;
 
 /// Manages the functionality of the different [`Mode`]s.
 #[derive(Debug, Default)]
@@ -72,7 +74,7 @@ pub enum Mode {
 }
 
 impl Display for Mode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Mode::Display => write!(f, "Display"),
             Mode::Command => write!(f, "Command"),
@@ -120,7 +122,7 @@ impl OpCode {
 }
 
 impl Display for OpCode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             OpCode::ChangeMode(mode) => write!(f, "Change to mode {}", mode),
             OpCode::AddToSketch(c) => write!(f, "Add '{}' to sketch", c),
@@ -233,12 +235,14 @@ pub(crate) struct Operations {
 
 impl Operations {
     /// Executes the [`Operation`] described by an [`OpCode`].
-    pub(crate) fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
-        self.ops
-            .get(&opcode.id())
-            .map_or(Err(Failure::InvalidOpCode{operation: String::from("N/A"), opcode}), |x| {
-                x.operate(paper, opcode)
-            })
+    pub(crate) fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
+        self.ops.get(&opcode.id()).map_or(
+            Err(Failure::InvalidOpCode {
+                operation: String::from("N/A"),
+                opcode,
+            }),
+            |x| x.operate(paper, opcode),
+        )
     }
 }
 
@@ -276,7 +280,7 @@ impl Default for Operations {
 /// Signifies functionality for the application to implement.
 trait Operation: Debug {
     /// Executes the `Operation`.
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome;
+    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output;
 }
 
 /// Changes the [`Mode`] of the application.
@@ -285,17 +289,20 @@ struct ChangeModeOperation;
 
 impl ChangeModeOperation {
     /// Returns the [`Mode`] stored in the [`OpCode`].
-    fn arg(&self, opcode: OpCode) -> Result<Mode, Failure> {
+    fn arg(&self, opcode: OpCode) -> Outcome<Mode> {
         if let OpCode::ChangeMode(mode) = opcode {
             Ok(mode)
         } else {
-            Err(Failure::InvalidOpCode{operation: String::from("ChangeMode"), opcode})
+            Err(Failure::InvalidOpCode {
+                operation: String::from("ChangeMode"),
+                opcode,
+            })
         }
     }
 }
 
 impl Operation for ChangeModeOperation {
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
+    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
         let mode = self.arg(opcode)?;
 
         match mode {
@@ -323,17 +330,20 @@ struct AddToSketchOperation;
 
 impl AddToSketchOperation {
     /// Returns the [`char`] stored in the [`OpCode`].
-    fn arg(&self, opcode: OpCode) -> Result<char, Failure> {
+    fn arg(&self, opcode: OpCode) -> Outcome<char> {
         if let OpCode::AddToSketch(c) = opcode {
             Ok(c)
         } else {
-            Err(Failure::InvalidOpCode{operation: String::from("AddToSketch"), opcode})
+            Err(Failure::InvalidOpCode {
+                operation: String::from("AddToSketch"),
+                opcode,
+            })
         }
     }
 }
 
 impl Operation for AddToSketchOperation {
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
+    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
         match self.arg(opcode)? {
             BACKSPACE => {
                 if paper.sketch_mut().pop().is_none() {
@@ -360,15 +370,13 @@ impl FilterSignalsOperation {
     /// Creates a new `FilterSignalsOperation`.
     fn new() -> Self {
         Self {
-            first_feature_pattern: Pattern::define(
-                tkn!(var(Not("&")) => "feature") + opt("&&"),
-            ),
+            first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
         }
     }
 }
 
 impl Operation for FilterSignalsOperation {
-    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Outcome {
+    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Output {
         let filter = paper.sketch().clone();
 
         if let Some(last_feature) = self
@@ -392,17 +400,20 @@ struct MarkAtOperation;
 
 impl MarkAtOperation {
     /// Returns the [`Edge`] stored in the [`OpCode`].
-    fn arg(&self, opcode: OpCode) -> Result<Edge, Failure> {
+    fn arg(&self, opcode: OpCode) -> Outcome<Edge> {
         if let OpCode::MarkAt(edge) = opcode {
             Ok(edge)
         } else {
-            Err(Failure::InvalidOpCode{operation: String::from("MarkAt"), opcode})
+            Err(Failure::InvalidOpCode {
+                operation: String::from("MarkAt"),
+                opcode,
+            })
         }
     }
 }
 
 impl Operation for MarkAtOperation {
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
+    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
         paper.set_marks(self.arg(opcode)?);
         Ok(None)
     }
@@ -422,28 +433,27 @@ impl ExecuteCommandOperation {
     fn new() -> Self {
         Self {
             command_pattern: Pattern::define(
-                tkn!(lazy_some(Any) => "command") + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
+                tkn!(lazy_some(Any) => "command")
+                    + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
             ),
-            see_pattern: Pattern::define(
-                "see" + some(Whitespace) + tkn!(var(Any) => "path")
-            ),
+            see_pattern: Pattern::define("see" + some(Whitespace) + tkn!(var(Any) => "path")),
         }
     }
 }
 
 impl Operation for ExecuteCommandOperation {
-    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Outcome {
+    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Output {
         let command = paper.sketch().clone();
         let command_tokens = self.command_pattern.tokenize(&command);
 
         match command_tokens.get("command") {
             Some("see") => {
                 if let Some(path) = command_tokens.get("args") {
-                    paper.change_view(path);
+                    paper.change_view(path)?;
                 }
             }
             Some("put") => {
-                paper.save_view();
+                paper.save_view()?;
             }
             Some("end") => return Ok(Some(Notice::Quit)),
             Some(_) | None => {}
@@ -458,7 +468,7 @@ impl Operation for ExecuteCommandOperation {
 struct DrawSketchOperation;
 
 impl Operation for DrawSketchOperation {
-    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Outcome {
+    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Output {
         paper.draw_sketch()?;
         Ok(None)
     }
@@ -469,7 +479,7 @@ impl Operation for DrawSketchOperation {
 struct ReduceNoiseOperation;
 
 impl Operation for ReduceNoiseOperation {
-    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Outcome {
+    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Output {
         paper.reduce_noise();
         Ok(None)
     }
@@ -481,17 +491,20 @@ struct UpdateViewOperation;
 
 impl UpdateViewOperation {
     /// Returns the [`char`] stored in the [`OpCode`].
-    fn arg(&self, opcode: OpCode) -> Result<char, Failure> {
+    fn arg(&self, opcode: OpCode) -> Outcome<char> {
         if let OpCode::UpdateView(c) = opcode {
             Ok(c)
         } else {
-            Err(Failure::InvalidOpCode{operation: String::from("UpdateView"), opcode})
+            Err(Failure::InvalidOpCode {
+                operation: String::from("UpdateView"),
+                opcode,
+            })
         }
     }
 }
 
 impl Operation for UpdateViewOperation {
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Outcome {
+    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
         paper.update_view(self.arg(opcode)?)?;
         Ok(None)
     }
@@ -503,22 +516,27 @@ struct ScrollOperation;
 
 impl ScrollOperation {
     /// Returns the [`Direction`] stored in the [`OpCode`].
-    fn arg(&self, opcode: OpCode) -> Result<Direction, Failure> {
+    fn arg(&self, opcode: OpCode) -> Outcome<Direction> {
         if let OpCode::Scroll(direction) = opcode {
             Ok(direction)
         } else {
-            Err(Failure::InvalidOpCode{operation: String::from("Scroll"), opcode})
+            Err(Failure::InvalidOpCode {
+                operation: String::from("Scroll"),
+                opcode,
+            })
         }
     }
 
     /// Returns the number of rows to scroll.
     ///
     /// A positive number signifies scrolling up while a negative signifies scrolling down.
-    fn get_scroll_movement(height: usize, direction: Direction) -> Result<IndexType, Failure> {
+    fn get_scroll_movement(height: usize, direction: Direction) -> Outcome<IndexType> {
         let movement = IndexType::try_from(height)?;
 
         if let Direction::Up = direction {
-            movement.checked_neg().ok_or(Failure::Conversion(TryFromIntError::Overflow))
+            movement
+                .checked_neg()
+                .ok_or(Failure::Conversion(TryFromIntError::Overflow))
         } else {
             Ok(movement)
         }
@@ -526,7 +544,7 @@ impl ScrollOperation {
 }
 
 impl Operation for ScrollOperation {
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Result<Option<Notice>, Failure> {
+    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
         paper.scroll(Self::get_scroll_movement(
             paper.scroll_height(),
             self.arg(opcode)?,
@@ -536,7 +554,7 @@ impl Operation for ScrollOperation {
     }
 }
 
-/// Signifies an [`Error`] that occurs during the execution of an [`Operation`].
+/// Signifies an [`error::Error`] that occurs during the execution of an [`Operation`].
 #[derive(Debug)]
 pub enum Failure {
     /// An [`OpCode`] does not match what was expected.
@@ -547,33 +565,43 @@ pub enum Failure {
         opcode: OpCode,
     },
     /// An error occurred during the execution of a [`ui`] command.
-    Ui(Fault),
+    Ui(ui::Error),
     /// An attempt to convert one type to another was unsuccessful.
     Conversion(TryFromIntError),
+    Io(io::Error),
 }
 
-impl Error for Failure {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+impl error::Error for Failure {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Failure::InvalidOpCode {..} => None,
+            Failure::InvalidOpCode { .. } => None,
             Failure::Ui(error) => Some(error),
             Failure::Conversion(error) => Some(error),
+            Failure::Io(error) => Some(error),
         }
     }
 }
 
 impl Display for Failure {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Failure::InvalidOpCode {ref operation, ref opcode} => write!(f, "Attempted to execute Operation '{}' with OpCode '{}'.", operation, opcode),
+            Failure::InvalidOpCode {
+                ref operation,
+                ref opcode,
+            } => write!(
+                f,
+                "Attempted to execute Operation '{}' with OpCode '{}'.",
+                operation, opcode
+            ),
             Failure::Ui(error) => write!(f, "{}", error),
             Failure::Conversion(error) => write!(f, "{}", error),
+            Failure::Io(error) => write!(f, "{}", error),
         }
     }
 }
 
-impl From<Fault> for Failure {
-    fn from(error: Fault) -> Self {
+impl From<ui::Error> for Failure {
+    fn from(error: ui::Error) -> Self {
         Failure::Ui(error)
     }
 }
@@ -581,6 +609,12 @@ impl From<Fault> for Failure {
 impl From<TryFromIntError> for Failure {
     fn from(error: TryFromIntError) -> Self {
         Failure::Conversion(error)
+    }
+}
+
+impl From<io::Error> for Failure {
+    fn from(error: io::Error) -> Self {
+        Failure::Io(error)
     }
 }
 
@@ -600,7 +634,7 @@ impl Default for Direction {
 }
 
 impl Display for Direction {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Direction::Up => write!(f, "Up"),
             Direction::Down => write!(f, "Down"),
@@ -620,7 +654,7 @@ pub(crate) enum Notice {
 }
 
 impl Display for Notice {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Notice::Quit => write!(f, "Quit"),
             Notice::Flash => write!(f, "Flash"),

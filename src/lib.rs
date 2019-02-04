@@ -45,19 +45,23 @@
 mod engine;
 mod ui;
 
-use crate::engine::{Controller, Notice};
-use crate::ui::{Address, Change, Color, Index, Edit, Length, Region, UserInterface, END, IndexType};
+use engine::{Controller, Notice};
+use ui::{
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface,
+    BACKSPACE, END, ENTER,
+};
 use rec::ChCls::{Any, Digit, End, Sign};
-use rec::{Element, tkn, some, Pattern};
+use rec::{some, tkn, Element, Pattern};
 use std::borrow::Borrow;
 use std::cmp::{self, Ordering};
 use std::collections::HashMap;
-use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
+use std::error;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::fs;
 use std::io;
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
-use try_from::{TryFrom, TryInto, TryFromIntError};
+use try_from::{TryFrom, TryFromIntError};
 
 const NEGATIVE_ONE: IndexType = -1;
 
@@ -92,7 +96,7 @@ impl Paper {
 
     /// Runs the application.
     #[inline]
-    pub fn run(&mut self) -> Result<(), engine::Failure> {
+    pub fn run(&mut self) -> engine::Outcome<()> {
         self.ui.init()?;
         let operations = engine::Operations::default();
 
@@ -113,15 +117,19 @@ impl Paper {
     }
 
     /// Displays the view on the user interface.
-    fn display_view(&self) -> Result<(), ui::Fault> {
-        for edit in self.view.redraw_edits().take(self.ui.grid_height().unwrap()) {
+    fn display_view(&self) -> ui::Outcome {
+        for edit in self
+            .view
+            .redraw_edits()
+            .take(self.ui.grid_height().unwrap())
+        {
             self.ui.apply(edit)?;
         }
 
         Ok(())
     }
 
-    fn change_view(&mut self, path: &str) -> Result<(), TryFromIntError> {
+    fn change_view(&mut self, path: &str) -> io::Result<()> {
         self.view = View::with_file(String::from(path))?;
         self.noises.clear();
 
@@ -134,8 +142,8 @@ impl Paper {
         Ok(())
     }
 
-    fn save_view(&self) {
-        self.view.put();
+    fn save_view(&self) -> io::Result<()> {
+        self.view.put()
     }
 
     fn reduce_noise(&mut self) {
@@ -164,14 +172,16 @@ impl Paper {
         &mut self.sketch
     }
 
-    fn draw_sketch(&self) -> Result<(), engine::Failure> {
-        Ok(self.ui
-            .apply(Edit::new(Region::row(0)?, Change::Row(self.sketch.clone())))?)
+    fn draw_sketch(&self) -> engine::Outcome<()> {
+        Ok(self.ui.apply(Edit::new(
+            Region::with_row(0)?,
+            Change::Row(self.sketch.clone()),
+        ))?)
     }
 
-    fn clear_background(&self) -> Result<(), engine::Failure> {
+    fn clear_background(&self) -> engine::Outcome<()> {
         for row in 0..self.ui.grid_height().unwrap() {
-            self.format_region(Region::row(row)?, Color::Default)?;
+            self.format_region(Region::with_row(row)?, Color::Default)?;
         }
 
         Ok(())
@@ -184,27 +194,30 @@ impl Paper {
             let mut place = signal.start;
 
             if edge == Edge::End {
-                place.column += Index::try_from(signal.length).unwrap_or_else(|_| self.view.line_length(signal.start).unwrap_or_default())
+                place.column += Index::try_from(signal.length)
+                    .unwrap_or_else(|_| self.view.line_length(signal.start).unwrap_or_default())
             }
-            
+
             let mut pointer = Pointer(match place.line.row() {
                 0 => Some(Index::from(0)),
-                row => self.view.data.match_indices(ui::ENTER).nth(row - 1).and_then(|x| Index::try_from(x.0 + 1).ok()),
+                row => self
+                    .view
+                    .data
+                    .match_indices(ENTER)
+                    .nth(row - 1)
+                    .and_then(|x| Index::try_from(x.0 + 1).ok()),
             });
             pointer += place.column;
-            self.marks.push(Mark {
-                place,
-                pointer,
-            });
+            self.marks.push(Mark { place, pointer });
         }
     }
 
-    fn scroll(&mut self, movement: IndexType) -> Result<(), ui::Fault> {
+    fn scroll(&mut self, movement: IndexType) -> ui::Outcome {
         self.view.scroll(movement);
         self.display_view()
     }
 
-    fn draw_filter_backgrounds(&self) -> Result<(), ui::Fault> {
+    fn draw_filter_backgrounds(&self) -> ui::Outcome {
         for noise in &self.noises {
             self.format_section(noise, Color::Blue)?;
         }
@@ -217,7 +230,7 @@ impl Paper {
     }
 
     /// Sets the [`Color`] of a [`Section`].
-    fn format_section(&self, section: &Section, color: Color) -> Result<(), ui::Fault> {
+    fn format_section(&self, section: &Section, color: Color) -> ui::Outcome {
         // It is okay for region_at() to return None; this just means section is not displayed.
         if let Some(region) = self.view.region_at(section) {
             self.format_region(region, color)?;
@@ -226,11 +239,11 @@ impl Paper {
         Ok(())
     }
 
-    fn format_region(&self, region: Region, color: Color) -> Result<(), ui::Fault> {
+    fn format_region(&self, region: Region, color: Color) -> ui::Outcome {
         self.ui.apply(Edit::new(region, Change::Format(color)))
     }
 
-    fn update_view(&mut self, c: char) -> Result<(), engine::Failure> {
+    fn update_view(&mut self, c: char) -> engine::Outcome<()> {
         let mut adjustment = Adjustment::default();
 
         for mark in &mut self.marks {
@@ -250,7 +263,7 @@ impl Paper {
         }
 
         if adjustment.change == Change::Clear {
-            self.view.clean()?;
+            self.view.clean();
             self.display_view()?;
         }
 
@@ -311,14 +324,14 @@ struct View {
 }
 
 impl View {
-    fn with_file(path: String) -> Result<Self, TryFromIntError> {
+    fn with_file(path: String) -> io::Result<Self> {
         let mut view = Self {
-            data: fs::read_to_string(path.as_str()).unwrap().replace('\r', ""),
+            data: fs::read_to_string(path.as_str())?.replace('\r', ""),
             path,
             ..Self::default()
         };
 
-        view.clean()?;
+        view.clean();
         Ok(view)
     }
 
@@ -326,7 +339,7 @@ impl View {
         if let Some(index) = mark.pointer.0 {
             let data_index = usize::try_from(index)?;
 
-            if let ui::BACKSPACE = c {
+            if let BACKSPACE = c {
                 // For now, do not care to check what is removed. But this may become important for
                 // multi-byte characters.
                 match self.data.remove(data_index) {
@@ -342,13 +355,16 @@ impl View {
 
     fn address_at(&self, place: Place) -> Option<Address> {
         match Index::try_from(place.line - self.first_line) {
-            Ok(row) => IndexType::try_from(self.margin_width).ok().map(|origin| Address::new(row, place.column + origin)),
+            Ok(row) => IndexType::try_from(self.margin_width)
+                .ok()
+                .map(|origin| Address::new(row, place.column + origin)),
             _ => None,
         }
     }
 
     fn region_at<T: RegionWrapper>(&self, region_wrapper: &T) -> Option<Region> {
-        self.address_at(region_wrapper.start()).map(|address| Region::new(address, region_wrapper.length()))
+        self.address_at(region_wrapper.start())
+            .map(|address| Region::new(address, region_wrapper.length()))
     }
 
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
@@ -358,18 +374,20 @@ impl View {
                 .skip(self.first_line.row())
                 .enumerate()
                 .flat_map(move |x| {
-                    Region::row(x.0).map(|region|
-                        Edit::new(
-                            region,
-                            Change::Row(format!(
-                                "{:>width$} {}",
-                                x.0 + self.first_line.row() + 1,
-                                x.1,
-                                width = self.margin_width - 1
-                            )),
-                        )
-                    ).into_iter()
-                })
+                    Region::with_row(x.0)
+                        .map(|region| {
+                            Edit::new(
+                                region,
+                                Change::Row(format!(
+                                    "{:>width$} {}",
+                                    x.0 + self.first_line.row() + 1,
+                                    x.1,
+                                    width = self.margin_width - 1
+                                )),
+                            )
+                        })
+                        .into_iter()
+                }),
         )
     }
 
@@ -381,17 +399,16 @@ impl View {
         self.lines().nth(line_number.row())
     }
 
-    fn clean(&mut self) -> Result<(), TryFromIntError> {
+    fn clean(&mut self) {
         self.line_count = self.lines().count();
         self.update_margin_width()
     }
 
-    #[allow(clippy::cast_sign_loss)] // self.line_count >= 0, thus log10().ceil() >= 0.0
     #[allow(clippy::cast_possible_truncation)] // usize.log10().ceil() < usize.max_value()
-    fn update_margin_width(&mut self) -> Result<(), TryFromIntError> {
-        self.margin_width = (f64::from(u32::try_from(self.line_count + 1)?)).log10().ceil() as usize + 1;
-
-        Ok(())
+    #[allow(clippy::cast_precision_loss)] // self.line_count should be small enough to be precisely represented by f64
+    #[allow(clippy::cast_sign_loss)] // self.line_count >= 0, thus log10().ceil() >= 0.0
+    fn update_margin_width(&mut self) {
+        self.margin_width = (((self.line_count + 1) as f64).log10().ceil()) as usize + 1;
     }
 
     fn scroll(&mut self, movement: IndexType) {
@@ -402,10 +419,11 @@ impl View {
     }
 
     fn line_length(&self, place: Place) -> Option<Index> {
-        self.line(place.line).and_then(|x| Index::try_from(x.len()).ok())
+        self.line(place.line)
+            .and_then(|x| Index::try_from(x.len()).ok())
     }
 
-    fn put(&self) -> io::Result<()>  {
+    fn put(&self) -> io::Result<()> {
         fs::write(&self.path, &self.data)
     }
 }
@@ -437,15 +455,21 @@ impl Adjustment {
     /// Creates an `Adjustment` based on the given context.
     fn create(c: char, place: Place, view: &View) -> Option<Self> {
         match c {
-            ui::BACKSPACE => {
+            BACKSPACE => {
                 if place.column == 0 {
-                    view.line_length(place)
-                        .map(|x| Self::new(place.line, NEGATIVE_ONE, IndexType::from(x), Change::Clear))
+                    view.line_length(place).map(|x| {
+                        Self::new(place.line, NEGATIVE_ONE, IndexType::from(x), Change::Clear)
+                    })
                 } else {
-                    Some(Self::new(place.line, NEGATIVE_ONE, NEGATIVE_ONE, Change::Backspace))
+                    Some(Self::new(
+                        place.line,
+                        NEGATIVE_ONE,
+                        NEGATIVE_ONE,
+                        Change::Backspace,
+                    ))
                 }
             }
-            ui::ENTER => Some(Self::new(place.line, 1, -place.column, Change::Clear)),
+            ENTER => Some(Self::new(place.line, 1, -place.column, Change::Clear)),
             _ => Some(Self::new(place.line, 1, 1, Change::Insert(c))),
         }
     }
@@ -484,7 +508,7 @@ impl Default for Edge {
 
 impl Display for Edge {
     #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Edge::Start => write!(f, "Starting edge"),
             Edge::End => write!(f, "Ending edge"),
@@ -516,7 +540,7 @@ impl Mark {
 }
 
 impl Display for Mark {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}{}", self.place, self.pointer)
     }
 }
@@ -550,7 +574,7 @@ impl Default for Pointer {
 }
 
 impl Display for Pointer {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "[{}]",
@@ -598,7 +622,10 @@ impl Section {
     #[inline]
     fn line(line: LineNumber) -> Self {
         Self {
-            start: Place { line, column: Index::from(0) },
+            start: Place {
+                line,
+                column: Index::from(0),
+            },
             length: END,
         }
     }
@@ -616,7 +643,7 @@ impl RegionWrapper for Section {
 
 impl Display for Section {
     #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}->{}", self.start, self.length)
     }
 }
@@ -660,7 +687,7 @@ impl ShrAssign<IndexType> for Place {
 
 impl Display for Place {
     #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "ln {}, idx {}", self.line, self.column)
     }
 }
@@ -678,7 +705,7 @@ impl LineNumber {
         if value == 0 {
             None
         } else {
-            value.try_into().ok().map(LineNumber)
+            LineNumberType::try_from(value).ok().map(LineNumber)
         }
     }
 
@@ -713,7 +740,7 @@ impl Sub for LineNumber {
 
 impl Display for LineNumber {
     #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
@@ -752,7 +779,7 @@ impl std::error::Error for ParseLineNumberError {
 }
 
 impl Display for ParseLineNumberError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match *self {
             ParseLineNumberError::InvalidValue => write!(f, "Invalid line number provided."),
             ParseLineNumberError::ParseInt(ref err) => write!(f, "{}", err),
@@ -771,7 +798,12 @@ trait Filter: Debug {
     /// Returns the identifying character of the `Filter`.
     fn id(&self) -> char;
     /// Modifies `sections` such that it matches the given feature.
-    fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) -> Result<(), TryFromIntError>;
+    fn extract(
+        &self,
+        feature: &str,
+        sections: &mut Vec<Section>,
+        view: &View,
+    ) -> Result<(), TryFromIntError>;
 }
 
 /// The [`Filter`] used to match a line.
@@ -787,8 +819,7 @@ impl Default for LineFilter {
             pattern: Pattern::define(
                 "#" + ((tkn!(some(Digit) => "line") + End)
                     | (tkn!(some(Digit) => "start") + "." + tkn!(some(Digit) => "end"))
-                    | (tkn!(some(Digit) => "origin")
-                        + tkn!(Sign + some(Digit) => "movement"))),
+                    | (tkn!(some(Digit) => "origin") + tkn!(Sign + some(Digit) => "movement"))),
             ),
         }
     }
@@ -799,12 +830,20 @@ impl Filter for LineFilter {
         '#'
     }
 
-    fn extract(&self, feature: &str, sections: &mut Vec<Section>, _view: &View) -> Result<(), TryFromIntError> {
+    fn extract(
+        &self,
+        feature: &str,
+        sections: &mut Vec<Section>,
+        _view: &View,
+    ) -> Result<(), TryFromIntError> {
         let tokens = self.pattern.tokenize(feature);
 
         if let Ok(line) = tokens.parse::<LineNumber>("line") {
             sections.retain(|&x| x.start.line == line);
-        } else if let (Ok(start), Ok(end)) = (tokens.parse::<LineNumber>("start"), tokens.parse::<LineNumber>("end")) {
+        } else if let (Ok(start), Ok(end)) = (
+            tokens.parse::<LineNumber>("start"),
+            tokens.parse::<LineNumber>("end"),
+        ) {
             let top = cmp::min(start, end);
             let bottom = cmp::max(start, end);
 
@@ -812,7 +851,10 @@ impl Filter for LineFilter {
                 let row = x.start.line;
                 row >= top && row <= bottom
             })
-        } else if let (Ok(origin), Ok(movement)) = (tokens.parse::<LineNumber>("origin"), tokens.parse::<IndexType>("movement")) {
+        } else if let (Ok(origin), Ok(movement)) = (
+            tokens.parse::<LineNumber>("origin"),
+            tokens.parse::<IndexType>("movement"),
+        ) {
             let end = origin + movement;
             let top = cmp::min(origin, end);
             let bottom = cmp::max(origin, end);
@@ -847,7 +889,12 @@ impl Filter for PatternFilter {
         '/'
     }
 
-    fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) -> Result<(), TryFromIntError> {
+    fn extract(
+        &self,
+        feature: &str,
+        sections: &mut Vec<Section>,
+        view: &View,
+    ) -> Result<(), TryFromIntError> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
             if let Ok(search_pattern) = Pattern::load(user_pattern) {
                 let target_sections = sections.clone();
@@ -856,14 +903,14 @@ impl Filter for PatternFilter {
                 for target_section in target_sections {
                     let start = usize::try_from(target_section.start.column)?;
 
-                    if let Some(target) = view.line(target_section.start.line).map(|x| {
-                        x.chars()
-                            .skip(start)
-                            .collect::<String>()
-                    }) {
+                    if let Some(target) = view
+                        .line(target_section.start.line)
+                        .map(|x| x.chars().skip(start).collect::<String>())
+                    {
                         for location in search_pattern.locate_iter(&target) {
                             sections.push(Section {
-                                start: target_section.start >> IndexType::try_from(location.start())?,
+                                start: target_section.start
+                                    >> IndexType::try_from(location.start())?,
                                 length: Length::try_from(location.length())?,
                             });
                         }
