@@ -36,9 +36,10 @@
     unused_results,
     clippy::nursery,
     clippy::pedantic,
-    clippy::restriction,
+    //clippy::restriction,
+    clippy::result_unwrap_used,
 )]
-#![allow(clippy::suspicious_op_assign_impl)] // This lint is not always correct; issues should be detected by tests.
+#![allow(clippy::suspicious_op_assign_impl, clippy::suspicious_arithmetic_impl)] // These lints are not always correct; issues should be detected by tests.
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 
 mod engine;
@@ -53,6 +54,7 @@ use std::cmp::{self, Ordering};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::fs;
+use std::io;
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use try_from::{TryFrom, TryInto, TryFromIntError};
@@ -119,8 +121,8 @@ impl Paper {
         Ok(())
     }
 
-    fn change_view(&mut self, path: &str) {
-        self.view = View::with_file(String::from(path));
+    fn change_view(&mut self, path: &str) -> Result<(), TryFromIntError> {
+        self.view = View::with_file(String::from(path))?;
         self.noises.clear();
 
         for line in 1..=self.view.line_count {
@@ -128,6 +130,8 @@ impl Paper {
                 self.noises.push(noise);
             }
         }
+
+        Ok(())
     }
 
     fn save_view(&self) {
@@ -160,14 +164,14 @@ impl Paper {
         &mut self.sketch
     }
 
-    fn draw_sketch(&self) -> Result<(), ui::Fault> {
-        self.ui
-            .apply(Edit::new(Region::row(Index::from(0)), Change::Row(self.sketch.clone())))
+    fn draw_sketch(&self) -> Result<(), engine::Failure> {
+        Ok(self.ui
+            .apply(Edit::new(Region::row(0)?, Change::Row(self.sketch.clone())))?)
     }
 
-    fn clear_background(&self) -> Result<(), ui::Fault> {
-        for row in (0..self.ui.grid_height().unwrap()).flat_map(|r| Index::try_from(r).into_iter()) {
-            self.format_region(Region::row(row), Color::Default)?;
+    fn clear_background(&self) -> Result<(), engine::Failure> {
+        for row in 0..self.ui.grid_height().unwrap() {
+            self.format_region(Region::row(row)?, Color::Default)?;
         }
 
         Ok(())
@@ -302,20 +306,20 @@ struct View {
     data: String,
     first_line: LineNumber,
     margin_width: usize,
-    line_count: u32,
+    line_count: usize,
     path: String,
 }
 
 impl View {
-    fn with_file(path: String) -> Self {
+    fn with_file(path: String) -> Result<Self, TryFromIntError> {
         let mut view = Self {
             data: fs::read_to_string(path.as_str()).unwrap().replace('\r', ""),
             path,
             ..Self::default()
         };
 
-        view.clean().unwrap();
-        view
+        view.clean()?;
+        Ok(view)
     }
 
     fn add(&mut self, mark: &Mark, c: char) -> Result<(), TryFromIntError> {
@@ -353,17 +357,19 @@ impl View {
             self.lines()
                 .skip(self.first_line.row())
                 .enumerate()
-                .map(move |x| {
-                    Edit::new(
-                        Region::row(Index::try_from(x.0).unwrap()),
-                        Change::Row(format!(
-                            "{:>width$} {}",
-                            x.0 + self.first_line.row() + 1,
-                            x.1,
-                            width = self.margin_width - 1
-                        )),
-                    )
-                }),
+                .flat_map(move |x| {
+                    Region::row(x.0).map(|region|
+                        Edit::new(
+                            region,
+                            Change::Row(format!(
+                                "{:>width$} {}",
+                                x.0 + self.first_line.row() + 1,
+                                x.1,
+                                width = self.margin_width - 1
+                            )),
+                        )
+                    ).into_iter()
+                })
         )
     }
 
@@ -376,12 +382,14 @@ impl View {
     }
 
     fn clean(&mut self) -> Result<(), TryFromIntError> {
-        self.line_count = u32::try_from(self.lines().count())?;
-        #[allow(clippy::cast_sign_loss)] // self.line_count >= 0, thus log10().ceil() >= 0.0
-        #[allow(clippy::cast_possible_truncation)] // self.line_count <= 4294967295, thus log10().ceil() <= 10.0
-        {
-            self.margin_width = (f64::from(self.line_count + 1)).log10().ceil() as usize + 1;
-        }
+        self.line_count = self.lines().count();
+        self.update_margin_width()
+    }
+
+    #[allow(clippy::cast_sign_loss)] // self.line_count >= 0, thus log10().ceil() >= 0.0
+    #[allow(clippy::cast_possible_truncation)] // usize.log10().ceil() < usize.max_value()
+    fn update_margin_width(&mut self) -> Result<(), TryFromIntError> {
+        self.margin_width = (f64::from(u32::try_from(self.line_count + 1)?)).log10().ceil() as usize + 1;
 
         Ok(())
     }
@@ -394,11 +402,11 @@ impl View {
     }
 
     fn line_length(&self, place: Place) -> Option<Index> {
-        self.line(place.line).map(|x| Index::try_from(x.len()).unwrap())
+        self.line(place.line).and_then(|x| Index::try_from(x.len()).ok())
     }
 
-    fn put(&self) {
-        fs::write(&self.path, &self.data).unwrap();
+    fn put(&self) -> io::Result<()>  {
+        fs::write(&self.path, &self.data)
     }
 }
 
@@ -411,6 +419,7 @@ struct Adjustment {
 }
 
 impl Adjustment {
+    /// Creates a new `Adjustment`.
     fn new(line: LineNumber, shift: IndexType, index_change: IndexType, change: Change) -> Self {
         let line_change = if change == Change::Clear { shift } else { 0 };
 
@@ -425,6 +434,7 @@ impl Adjustment {
         }
     }
 
+    /// Creates an `Adjustment` based on the given context.
     fn create(c: char, place: Place, view: &View) -> Option<Self> {
         match c {
             ui::BACKSPACE => {
@@ -466,12 +476,14 @@ pub enum Edge {
 }
 
 impl Default for Edge {
+    #[inline]
     fn default() -> Self {
         Edge::Start
     }
 }
 
 impl Display for Edge {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
             Edge::Start => write!(f, "Starting edge"),
@@ -490,6 +502,7 @@ struct Mark {
 }
 
 impl Mark {
+    /// Moves `Mark` as specified by the given [`Adjustment`].
     fn adjust(&mut self, adjustment: &Adjustment) {
         self.pointer += adjustment.shift;
         self.place.line = self.place.line + adjustment.line_change;
@@ -508,6 +521,7 @@ impl Display for Mark {
     }
 }
 
+/// Signifies an index of a character within [`View`].
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Debug)]
 struct Pointer(Option<Index>);
 
@@ -562,15 +576,20 @@ impl PartialOrd<Pointer> for IndexType {
     }
 }
 
+/// Signifies a type that can be converted to a [`Region`].
 trait RegionWrapper {
+    /// Returns the starting `Place`.
     fn start(&self) -> Place;
+    /// Returns the [`Length`].
     fn length(&self) -> Length;
 }
 
 /// Signifies adjacent [`Place`]s.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
 pub struct Section {
+    /// The [`Place`] at which `Section` starts.
     start: Place,
+    /// The [`Length`] of `Section`.
     length: Length,
 }
 
@@ -605,7 +624,9 @@ impl Display for Section {
 /// Signifies the location of a character within a view.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Place {
+    /// The [`LineNumber`] of `Place`.
     line: LineNumber,
+    /// The [`Index`] of the column of `Place`.
     column: Index,
 }
 
@@ -615,7 +636,7 @@ impl RegionWrapper for Place {
     }
 
     fn length(&self) -> Length {
-        Length::try_from(1).unwrap()
+        Length::from(1)
     }
 }
 
@@ -644,6 +665,7 @@ impl Display for Place {
     }
 }
 
+/// The type of the value stored in [`LineNumber`].
 type LineNumberType = u32;
 
 /// Signifies a line number.
@@ -651,7 +673,8 @@ type LineNumberType = u32;
 struct LineNumber(LineNumberType);
 
 impl LineNumber {
-    fn new(value: LineNumberType) -> Option<Self> {
+    /// Creates a new `LineNumber`.
+    fn new(value: usize) -> Option<Self> {
         if value == 0 {
             None
         } else {
@@ -659,6 +682,8 @@ impl LineNumber {
         }
     }
 
+    /// Converts `LineNumber` to its row index - assuming line number `1` as at row `0`.
+    #[allow(clippy::integer_arithmetic)] // self.0 >= 0
     fn row(self) -> usize {
         (self.0 - 1) as usize
     }
@@ -668,41 +693,21 @@ impl Add<IndexType> for LineNumber {
     type Output = Self;
 
     fn add(self, other: IndexType) -> Self::Output {
-        if other < 0 {
-            self - match (-other).try_into() {
-                Ok(subtrahend) => subtrahend,
-                Err(_) => LineNumberType::max_value(),
-            }
-        } else {
-            self + match other.try_into() {
-                Ok(addend) => addend,
-                Err(_) => LineNumberType::max_value(),
-            }
+        #[allow(clippy::integer_arithmetic)] // i64::min_value() <= u32 + i32 <= i64::max_value()
+        match LineNumberType::try_from(i64::from(self.0) + i64::from(other)) {
+            Err(TryFromIntError::Underflow) => Self::default(),
+            Err(TryFromIntError::Overflow) => Self(LineNumberType::max_value()),
+            Ok(sum) => LineNumber(sum),
         }
     }
 }
 
-impl Add<LineNumberType> for LineNumber {
-    type Output = Self;
-
-    fn add(self, other: LineNumberType) -> Self::Output {
-        LineNumber(self.0 + other)
-    }
-}
-
 impl Sub for LineNumber {
-    type Output = LineNumberType;
+    type Output = i64;
 
+    #[allow(clippy::integer_arithmetic)] // self.0 and other.0 <= u32::MAX
     fn sub(self, other: Self) -> Self::Output {
-        self.0 - other.0
-    }
-}
-
-impl Sub<LineNumberType> for LineNumber {
-    type Output = Self;
-
-    fn sub(self, other: LineNumberType) -> Self::Output {
-        LineNumber(self.0 - other)
+        i64::from(self.0) - i64::from(other.0)
     }
 }
 
@@ -724,13 +729,16 @@ impl std::str::FromStr for LineNumber {
     type Err = ParseLineNumberError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s.parse::<u32>()?).ok_or(ParseLineNumberError::InvalidValue)
+        Self::new(s.parse::<usize>()?).ok_or(ParseLineNumberError::InvalidValue)
     }
 }
 
+/// Signifies an error that occurs while parsing a [`LineNumber`] from a [`String`].
 #[derive(Debug)]
 enum ParseLineNumberError {
+    /// The parsed number was not a valid line number.
     InvalidValue,
+    /// There was an issue parsing the given string to an integer.
     ParseInt(std::num::ParseIntError),
 }
 
@@ -758,11 +766,15 @@ impl From<std::num::ParseIntError> for ParseLineNumberError {
     }
 }
 
+/// Used for modifying [`Section`]s to match a feature.
 trait Filter: Debug {
+    /// Returns the identifying character of the `Filter`.
     fn id(&self) -> char;
+    /// Modifies `sections` such that it matches the given feature.
     fn extract(&self, feature: &str, sections: &mut Vec<Section>, view: &View) -> Result<(), TryFromIntError>;
 }
 
+/// The [`Filter`] used to match a line.
 #[derive(Debug)]
 struct LineFilter {
     /// The [`Pattern`] used to match one or more [`LineNumber`]s.
@@ -842,15 +854,17 @@ impl Filter for PatternFilter {
                 sections.clear();
 
                 for target_section in target_sections {
+                    let start = usize::try_from(target_section.start.column)?;
+
                     if let Some(target) = view.line(target_section.start.line).map(|x| {
                         x.chars()
-                            .skip(usize::try_from(target_section.start.column).unwrap())
+                            .skip(start)
                             .collect::<String>()
                     }) {
                         for location in search_pattern.locate_iter(&target) {
                             sections.push(Section {
                                 start: target_section.start >> IndexType::try_from(location.start())?,
-                                length: Length::try_from(location.length()).unwrap(),
+                                length: Length::try_from(location.length())?,
                             });
                         }
                     }

@@ -5,7 +5,7 @@ use pancurses::Input;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::error::Error;
-use std::ops::{Add, AddAssign, Neg, Sub};
+use std::ops::{Add, AddAssign, Neg};
 use try_from::{TryFrom, TryFromIntError, TryInto};
 
 /// The [`Result`] returned by functions of this module.
@@ -370,11 +370,13 @@ impl Region {
     }
 
     /// Creates a new `Region` that signifies an entire row.
-    pub(crate) fn row(row: Index) -> Self {
-        Self {
-            start: Address::new(row, Index::from(0)),
-            length: END,
-        }
+    pub(crate) fn row(row: usize) -> Result<Self, TryFromIntError> {
+        Index::try_from(row).map(|row_index|
+            Self {
+                start: Address::new(row_index, Index::from(0)),
+                length: END,
+            }
+        )
     }
 }
 
@@ -435,9 +437,29 @@ pub(crate) type IndexType = i32;
 #[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Index(IndexType);
 
+impl TryFrom<IndexType> for Index {
+    type Err = TryFromIntError;
+
+    fn try_from(value: IndexType) -> Result<Self, Self::Err> {
+        if value < 0 {
+            Err(TryFromIntError::Underflow)
+        } else {
+            Ok(Index(value))
+        }
+    }
+}
+
 impl From<u8> for Index {
     fn from(value: u8) -> Self {
         Index(IndexType::from(value))
+    }
+}
+
+impl TryFrom<i64> for Index {
+    type Err = TryFromIntError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Err> {
+        IndexType::try_from(value).map(Index)
     }
 }
 
@@ -483,7 +505,7 @@ impl Add<IndexType> for Index {
     type Output = Self;
 
     fn add(self, other: IndexType) -> Self::Output {
-        Index(self.0.checked_add(other).unwrap_or_else(|| panic!("{} + {} wrapped", self.0, other)))
+        Index(self.0.checked_add(other).unwrap_or_else(|| panic!("{} + {} wrapped", self, other)))
     }
 }
 
@@ -538,6 +560,12 @@ const END_VALUE: IndexType = -1;
 
 /// The `Length` that represents the number of characters until the end of the row.
 pub(crate) const END: Length = Length(END_VALUE);
+
+impl From<u8> for Length {
+    fn from(value: u8) -> Self {
+        Length(IndexType::from(value))
+    }
+}
 
 impl TryFrom<usize> for Length {
     type Err = TryFromIntError;
