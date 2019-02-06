@@ -37,7 +37,7 @@
     clippy::nursery,
     clippy::pedantic,
     //clippy::restriction,
-    clippy::result_unwrap_used,
+    clippy::integer_arithmetic
 )]
 #![allow(clippy::suspicious_op_assign_impl, clippy::suspicious_arithmetic_impl)] // These lints are not always correct; issues should be detected by tests.
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
@@ -196,16 +196,7 @@ impl Paper {
                     .unwrap_or_else(|_| self.view.line_length(signal.start).unwrap_or_default())
             }
 
-            let mut pointer = Pointer(match place.line.row() {
-                0 => Some(Index::from(0)),
-                row => self
-                    .view
-                    .data
-                    .match_indices(ENTER)
-                    .nth(row - 1)
-                    .and_then(|x| Index::try_from(x.0 + 1).ok()),
-            });
-            pointer += place.column;
+            let pointer = Pointer(self.view.line_indices().nth(place.line.row()).and_then(|index_value| Index::try_from(index_value).ok())) + place.column;
             self.marks.push(Mark { place, pointer });
         }
     }
@@ -273,6 +264,7 @@ impl Paper {
     }
 
     /// Returns the height used for scrolling.
+    #[allow(clippy::integer_arithmetic)] // okay to divide usize by 4
     fn scroll_height(&self) -> Result<usize, TryFromIntError> {
         self.ui.grid_height().map(|height| height / 4)
     }
@@ -344,16 +336,25 @@ impl View {
                     _ => {}
                 }
             } else {
-                self.data.insert(data_index - 1, c);
+                self.data.insert(data_index.saturating_sub(1), c);
             }
         }
 
         Ok(())
     }
 
+    fn line_indices(&self) -> impl Iterator<Item = IndexType> + '_ {
+        iter::once(0).chain(self.data.match_indices(ENTER).flat_map(|(index, _)| index.checked_add(1).and_then(|i| IndexType::try_from(i).ok()).into_iter()))
+    }
+
+    #[allow(clippy::integer_arithmetic)] // self.margin_width < usize.max_value()
+    fn first_data_column(&self) -> Result<Index, TryFromIntError> {
+        Index::try_from(self.margin_width + 1)
+    }
+
     fn address_at(&self, place: Place) -> Option<Address> {
         match Index::try_from(place.line - self.first_line) {
-            Ok(row) => IndexType::try_from(self.margin_width)
+            Ok(row) => self.first_data_column()
                 .ok()
                 .map(|origin| Address::new(row, place.column + origin)),
             _ => None,
@@ -366,27 +367,36 @@ impl View {
     }
 
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
+        let first_line = self.first_line;
+
         // Clear the screen, then add each row.
         iter::once(Edit::new(Region::default(), Change::Clear)).chain(
-            self.lines()
-                .skip(self.first_line.row())
-                .enumerate()
-                .flat_map(move |x| {
-                    Region::with_row(x.0)
-                        .map(|region| {
-                            Edit::new(
-                                region,
-                                Change::Row(format!(
-                                    "{:>width$} {}",
-                                    x.0 + self.first_line.row() + 1,
-                                    x.1,
-                                    width = self.margin_width - 1
-                                )),
-                            )
-                        })
-                        .into_iter()
-                }),
+            first_line.into_iter().zip(self.lines().skip(self.first_line.row())).flat_map(move |(line_number, line)| {
+                self.region_at(&Section::line(line_number)).map(|region|
+                    Edit::new(region, Change::Row(format!("{:>width$} {}", line_number, line, width = self.margin_width)))
+                ).into_iter()
+            })
         )
+        //iter::once(Edit::new(Region::default(), Change::Clear)).chain(
+        //    self.lines()
+        //        .skip(self.first_line.row())
+        //        .enumerate()
+        //        .flat_map(move |(row, line)| {
+        //            Region::with_row(row)
+        //                .map(|region| {
+        //                    Edit::new(
+        //                        region,
+        //                        Change::Row(format!(
+        //                            "{:>width$} {}",
+        //                            self.first_line + row as i32,
+        //                            line,
+        //                            width = self.margin_width
+        //                        )),
+        //                    )
+        //                })
+        //                .into_iter()
+        //        }),
+        //)
     }
 
     fn lines(&self) -> std::str::Lines<'_> {
@@ -403,10 +413,10 @@ impl View {
     }
 
     #[allow(clippy::cast_possible_truncation)] // usize.log10().ceil() < usize.max_value()
-    #[allow(clippy::cast_precision_loss)] // self.line_count should be small enough to be precisely represented by f64
+    #[allow(clippy::cast_precision_loss)] // self.line_count is small enough to be precisely represented by f64
     #[allow(clippy::cast_sign_loss)] // self.line_count >= 0, thus log10().ceil() >= 0.0
     fn update_margin_width(&mut self) {
-        self.margin_width = (((self.line_count + 1) as f64).log10().ceil()) as usize + 1;
+        self.margin_width = (((self.line_count.saturating_add(1)) as f64).log10().ceil()) as usize;
     }
 
     fn scroll(&mut self, movement: IndexType) {
@@ -556,6 +566,14 @@ impl PartialEq<IndexType> for Pointer {
 impl PartialOrd<IndexType> for Pointer {
     fn partial_cmp(&self, other: &IndexType) -> Option<Ordering> {
         self.0.and_then(|x| x.partial_cmp(other))
+    }
+}
+
+impl<T: Borrow<IndexType>> Add<T> for Pointer {
+    type Output = Self;
+
+    fn add(self, other: T) -> Self::Output {
+        Pointer(self.0.map(|x| x + *other.borrow()))
     }
 }
 
@@ -755,6 +773,28 @@ impl std::str::FromStr for LineNumber {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::new(s.parse::<usize>()?).ok_or(ParseLineNumberError::InvalidValue)
+    }
+}
+
+impl IntoIterator for LineNumber {
+    type Item = Self;
+    type IntoIter = LineNumberIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        LineNumberIterator{ current: self}
+    }
+}
+
+struct LineNumberIterator {
+    current: LineNumber,
+}
+
+impl Iterator for LineNumberIterator {
+    type Item = LineNumber;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.current.0 += 1;
+        Some(self.current)
     }
 }
 

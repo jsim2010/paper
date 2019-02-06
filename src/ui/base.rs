@@ -22,13 +22,16 @@ const END_VALUE: IndexType = -1;
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Index(IndexType);
 
-impl Add<IndexType> for Index {
+impl<T> Add<T> for Index
+where
+    T: Borrow<IndexType> + Display,
+{
     type Output = Self;
 
-    fn add(self, other: IndexType) -> Self::Output {
+    fn add(self, other: T) -> Self::Output {
         Index(
             self.0
-                .checked_add(other)
+                .checked_add(*other.borrow())
                 .unwrap_or_else(|| panic!("{} + {} wrapped", self, other)),
         )
     }
@@ -94,7 +97,7 @@ impl TryFrom<IndexType> for Index {
     type Err = TryFromIntError;
 
     fn try_from(value: IndexType) -> Result<Self, Self::Err> {
-        if value < 0 {
+        if value.is_negative() {
             Err(TryFromIntError::Underflow)
         } else {
             Ok(Index(value))
@@ -107,11 +110,7 @@ impl TryFrom<Length> for Index {
 
     #[inline]
     fn try_from(value: Length) -> Result<Self, Self::Err> {
-        if value.0 >= 0 {
-            Ok(Index(value.0))
-        } else {
-            Err(LengthEndError)
-        }
+        Self::try_from(value.0).map_err(|_| LengthEndError)
     }
 }
 
