@@ -11,15 +11,12 @@ impl Operation for Op {
 
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
         if let OpCode::AddToSketch(input) = opcode {
-            match input {
-                BACKSPACE => {
-                    if paper.sketch_mut().pop().is_none() {
-                        return Ok(Some(Notice::Flash));
-                    }
+            if let BACKSPACE = input {
+                if paper.sketch_mut().pop().is_none() {
+                    return Ok(Some(Notice::Flash));
                 }
-                _ => {
-                    paper.sketch_mut().push(input);
-                }
+            } else {
+                paper.sketch_mut().push(input);
             }
 
             Ok(None)

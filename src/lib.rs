@@ -117,11 +117,11 @@ impl Paper {
     }
 
     /// Displays the view on the user interface.
-    fn display_view(&self) -> ui::Outcome {
+    fn display_view(&self) -> engine::Outcome<()> {
         for edit in self
             .view
             .redraw_edits()
-            .take(self.ui.grid_height().unwrap())
+            .take(self.ui.grid_height()?)
         {
             self.ui.apply(edit)?;
         }
@@ -173,14 +173,12 @@ impl Paper {
     }
 
     fn draw_sketch(&self) -> engine::Outcome<()> {
-        Ok(self.ui.apply(Edit::new(
-            Region::with_row(0)?,
-            Change::Row(self.sketch.clone()),
-        ))?)
+        self.ui.apply(Edit::new(Region::with_row(0)?, Change::Row(self.sketch.clone())))?;
+        Ok(())
     }
 
     fn clear_background(&self) -> engine::Outcome<()> {
-        for row in 0..self.ui.grid_height().unwrap() {
+        for row in 0..self.ui.grid_height()? {
             self.format_region(Region::with_row(row)?, Color::Default)?;
         }
 
@@ -212,7 +210,7 @@ impl Paper {
         }
     }
 
-    fn scroll(&mut self, movement: IndexType) -> ui::Outcome {
+    fn scroll(&mut self, movement: IndexType) -> engine::Outcome<()> {
         self.view.scroll(movement);
         self.display_view()
     }
@@ -275,8 +273,8 @@ impl Paper {
     }
 
     /// Returns the height used for scrolling.
-    fn scroll_height(&self) -> usize {
-        self.ui.grid_height().unwrap() / 4
+    fn scroll_height(&self) -> Result<usize, TryFromIntError> {
+        self.ui.grid_height().map(|height| height / 4)
     }
 }
 

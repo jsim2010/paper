@@ -12,7 +12,7 @@ impl Operation for Op {
 
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
         if let OpCode::Scroll(direction) = opcode {
-            let mut movement = IndexType::try_from(paper.scroll_height())?;
+            let mut movement = IndexType::try_from(paper.scroll_height()?)?;
 
             if let Direction::Up = direction {
                 movement = movement.checked_neg().ok_or(Failure::Conversion(TryFromIntError::Overflow))?;
