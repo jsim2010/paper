@@ -1,4 +1,5 @@
-use crate::engine::{OpCode, Operation, Paper, Output, Mode};
+//! Implements the [`Operation`] to change the mode.
+use crate::engine::{Mode, OpCode, Operation, Output, Paper};
 
 /// Changes the [`Mode`] of the application.
 #[derive(Clone, Debug)]

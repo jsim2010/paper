@@ -1,5 +1,6 @@
+//! Implements the [`Operation`] to scroll the view.
+use crate::engine::{Direction, Failure, OpCode, Operation, Output, Paper};
 use crate::{IndexType, TryFrom, TryFromIntError};
-use crate::engine::{Direction, Failure, Operation, Paper, OpCode, Output};
 
 /// Changes the part of the view that is visible.
 #[derive(Debug)]
@@ -15,7 +16,9 @@ impl Operation for Op {
             let mut movement = IndexType::try_from(paper.scroll_height()?)?;
 
             if let Direction::Up = direction {
-                movement = movement.checked_neg().ok_or(Failure::Conversion(TryFromIntError::Overflow))?;
+                movement = movement
+                    .checked_neg()
+                    .ok_or(Failure::Conversion(TryFromIntError::Overflow))?;
             }
 
             paper.scroll(movement)?;

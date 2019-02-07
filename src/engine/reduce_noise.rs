@@ -1,4 +1,5 @@
-use crate::engine::{Operation, Paper, OpCode, Output};
+//! Implements the [`Operation`] to reduce noise.
+use crate::engine::{OpCode, Operation, Output, Paper};
 
 /// Sets the noise equal to the signals that match the current filter.
 #[derive(Debug)]

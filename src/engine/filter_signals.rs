@@ -1,4 +1,5 @@
-use crate::engine::{tkn, Pattern, OpCode, Operation, Paper, Output, var, Element, Not, opt};
+//! Implements the [`Operation`] to filter signals.
+use crate::engine::{opt, tkn, var, Element, Not, OpCode, Operation, Output, Paper, Pattern};
 
 /// Sets signals to match filters described in the sketch.
 #[derive(Clone, Debug)]
@@ -8,7 +9,7 @@ pub(crate) struct Op {
 }
 
 impl Op {
-    // Creates a new `Op`.
+    /// Creates a new `Op`.
     pub(crate) fn new() -> Self {
         Self {
             first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),

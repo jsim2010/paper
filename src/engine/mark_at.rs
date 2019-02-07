@@ -1,4 +1,5 @@
-use crate::engine::{Operation, Paper, OpCode, Output};
+//! Implements the [`Operation`] to set [`Mark`]s.
+use crate::engine::{OpCode, Operation, Output, Paper};
 
 /// Sets the location of [`Mark`]s at an [`Edge`] of every signal.
 #[derive(Debug)]

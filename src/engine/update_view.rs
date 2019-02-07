@@ -1,5 +1,7 @@
-use crate::engine::{Operation, Paper, OpCode, Output};
+//! Implements the [`Operation`] to update the view.
+use crate::engine::{OpCode, Operation, Output, Paper};
 
+/// Updates the view.
 #[derive(Debug)]
 pub(crate) struct Op;
 

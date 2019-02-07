@@ -1,4 +1,8 @@
-use crate::engine::{tkn, Pattern, OpCode, Operation, Paper, Output, Notice, lazy_some, Any, End, some, Whitespace, var, Element};
+//! Implements the [`Operation`] to execute a command.
+use crate::engine::{
+    lazy_some, some, tkn, var, Any, Element, End, Notice, OpCode, Operation, Output, Paper,
+    Pattern, Whitespace,
+};
 
 /// Executes the command stored in the sketch.
 #[derive(Clone, Debug)]
@@ -10,7 +14,7 @@ pub(crate) struct Op {
 }
 
 impl Op {
-    // Creates a new `Op`.
+    /// Creates a new `Op`.
     pub(crate) fn new() -> Self {
         Self {
             command_pattern: Pattern::define(

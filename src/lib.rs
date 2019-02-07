@@ -36,20 +36,16 @@
     unused_results,
     clippy::nursery,
     clippy::pedantic,
-    //clippy::restriction,
-    clippy::integer_arithmetic
+    clippy::restriction
 )]
 #![allow(clippy::suspicious_op_assign_impl, clippy::suspicious_arithmetic_impl)] // These lints are not always correct; issues should be detected by tests.
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
+#![allow(clippy::missing_inline_in_public_items)]
 
 mod engine;
 mod ui;
 
 use engine::{Controller, Notice};
-use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface,
-    BACKSPACE, END, ENTER,
-};
 use rec::ChCls::{Any, Digit, End, Sign};
 use rec::{some, tkn, Element, Pattern};
 use std::borrow::Borrow;
@@ -62,7 +58,12 @@ use std::io;
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use try_from::{TryFrom, TryFromIntError};
+use ui::{
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, END,
+    ENTER,
+};
 
+/// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
 
 /// The paper application.
@@ -72,6 +73,7 @@ const NEGATIVE_ONE: IndexType = -1;
 pub struct Paper {
     /// User interface of the application.
     ui: UserInterface,
+    /// Manages all functionality the application.
     controller: Controller,
     /// Data of the file being edited.
     view: View,
@@ -81,10 +83,12 @@ pub struct Paper {
     ///
     /// [`Section`]: .struct.Section.html
     signals: Vec<Section>,
+    /// [`Section`]s of the view that are being searched.
     noises: Vec<Section>,
+    /// The current [`Mark`]s where [`Edit`]s may be made.
     marks: Vec<Mark>,
+    /// The [`Filters`] used by the application.
     filters: PaperFilters,
-    sketch_additions: String,
 }
 
 impl Paper {
@@ -118,17 +122,14 @@ impl Paper {
 
     /// Displays the view on the user interface.
     fn display_view(&self) -> engine::Outcome<()> {
-        for edit in self
-            .view
-            .redraw_edits()
-            .take(self.ui.grid_height()?)
-        {
+        for edit in self.view.redraw_edits().take(self.ui.grid_height()?) {
             self.ui.apply(edit)?;
         }
 
         Ok(())
     }
 
+    /// Sets the view.
     fn change_view(&mut self, path: &str) -> io::Result<()> {
         self.view = View::with_file(String::from(path))?;
         self.noises.clear();
@@ -142,14 +143,17 @@ impl Paper {
         Ok(())
     }
 
+    /// Saves the data of the view.
     fn save_view(&self) -> io::Result<()> {
         self.view.put()
     }
 
+    /// Sets the noise to match the current signals.
     fn reduce_noise(&mut self) {
         self.noises = self.signals.clone();
     }
 
+    /// Filters signals matching a feature from the current noise.
     fn filter_signals(&mut self, feature: &str) -> Result<(), TryFromIntError> {
         self.signals = self.noises.clone();
 
@@ -164,19 +168,26 @@ impl Paper {
         Ok(())
     }
 
+    /// Returns the sketch.
     fn sketch(&self) -> &String {
         &self.sketch
     }
 
+    /// Returns a mutable reference of the sketch.
     fn sketch_mut(&mut self) -> &mut String {
         &mut self.sketch
     }
 
+    /// Draws the sketch on the ui.
     fn draw_sketch(&self) -> engine::Outcome<()> {
-        self.ui.apply(Edit::new(Region::with_row(0)?, Change::Row(self.sketch.clone())))?;
+        self.ui.apply(Edit::new(
+            Region::with_row(0)?,
+            Change::Row(self.sketch.clone()),
+        ))?;
         Ok(())
     }
 
+    /// Clears the background of the entire display.
     fn clear_background(&self) -> engine::Outcome<()> {
         for row in 0..self.ui.grid_height()? {
             self.format_region(Region::with_row(row)?, Color::Default)?;
@@ -185,6 +196,7 @@ impl Paper {
         Ok(())
     }
 
+    /// Sets the [`Mark`]s of the application to be at the given [`Edge`] of all signals.
     fn set_marks(&mut self, edge: Edge) {
         self.marks.clear();
 
@@ -196,16 +208,23 @@ impl Paper {
                     .unwrap_or_else(|_| self.view.line_length(signal.start).unwrap_or_default())
             }
 
-            let pointer = Pointer(self.view.line_indices().nth(place.line.row()).and_then(|index_value| Index::try_from(index_value).ok())) + place.column;
+            let pointer = Pointer(
+                self.view
+                    .line_indices()
+                    .nth(place.line.row())
+                    .and_then(|index_value| Index::try_from(index_value).ok()),
+            ) + place.column;
             self.marks.push(Mark { place, pointer });
         }
     }
 
+    /// Scrolls the view.
     fn scroll(&mut self, movement: IndexType) -> engine::Outcome<()> {
         self.view.scroll(movement);
         self.display_view()
     }
 
+    /// Updates the formatting to show filter matches.
     fn draw_filter_backgrounds(&self) -> ui::Outcome {
         for noise in &self.noises {
             self.format_section(noise, Color::Blue)?;
@@ -228,10 +247,12 @@ impl Paper {
         Ok(())
     }
 
+    /// Formats a region to a given [`Color`].
     fn format_region(&self, region: Region, color: Color) -> ui::Outcome {
         self.ui.apply(Edit::new(region, Change::Format(color)))
     }
 
+    /// Adds a char to all [`Mark`]s and updates the view.
     fn update_view(&mut self, c: char) -> engine::Outcome<()> {
         let mut adjustment = Adjustment::default();
 
@@ -259,6 +280,7 @@ impl Paper {
         Ok(())
     }
 
+    /// Changes the mode of the application.
     fn change_mode(&mut self, mode: engine::Mode) {
         self.controller.set_mode(mode);
     }
@@ -270,13 +292,17 @@ impl Paper {
     }
 }
 
+/// Signifies all of the [`Filters`] used by the application.
 #[derive(Debug, Default)]
 struct PaperFilters {
+    /// The [`Filter`] that matches lines.
     line: LineFilter,
+    /// The [`Filter`] that matches patterns.
     pattern: PatternFilter,
 }
 
 impl PaperFilters {
+    /// Returns the [`Iterator`] of [`Filters`].
     fn iter(&self) -> PaperFiltersIter<'_> {
         PaperFiltersIter {
             index: 0,
@@ -285,8 +311,11 @@ impl PaperFilters {
     }
 }
 
+/// Signifies an [`Iterator`] through all of the [`Filters`].
 struct PaperFiltersIter<'a> {
+    /// The current index of the iteration.
     index: usize,
+    /// The filters to be iterated.
     filters: &'a PaperFilters,
 }
 
@@ -304,16 +333,23 @@ impl<'a> Iterator for PaperFiltersIter<'a> {
     }
 }
 
+/// Signfifies the data being viewed/edited.
 #[derive(Clone, Debug, Default)]
 struct View {
+    /// The data.
     data: String,
+    /// The first line that is displayed in the ui.
     first_line: LineNumber,
+    /// The number of columns needed to display the margin.
     margin_width: usize,
+    /// The number of lines stored in the view.
     line_count: usize,
+    /// The path where the view's data is stored.
     path: String,
 }
 
 impl View {
+    /// Creates a new `View` with data from the given path.
     fn with_file(path: String) -> io::Result<Self> {
         let mut view = Self {
             data: fs::read_to_string(path.as_str())?.replace('\r', ""),
@@ -325,6 +361,7 @@ impl View {
         Ok(view)
     }
 
+    /// Adds a character at a [`Mark`].
     fn add(&mut self, mark: &Mark, c: char) -> Result<(), TryFromIntError> {
         if let Some(index) = mark.pointer.0 {
             let data_index = usize::try_from(index)?;
@@ -343,75 +380,81 @@ impl View {
         Ok(())
     }
 
+    /// Iterates through the indexes that indicate where each line starts.
     fn line_indices(&self) -> impl Iterator<Item = IndexType> + '_ {
-        iter::once(0).chain(self.data.match_indices(ENTER).flat_map(|(index, _)| index.checked_add(1).and_then(|i| IndexType::try_from(i).ok()).into_iter()))
+        iter::once(0).chain(self.data.match_indices(ENTER).flat_map(|(index, _)| {
+            index
+                .checked_add(1)
+                .and_then(|i| IndexType::try_from(i).ok())
+                .into_iter()
+        }))
     }
 
+    /// Returns the first column at which view data can be written.
     #[allow(clippy::integer_arithmetic)] // self.margin_width < usize.max_value()
     fn first_data_column(&self) -> Result<Index, TryFromIntError> {
         Index::try_from(self.margin_width + 1)
     }
 
+    /// Returns the [`Address`] associated with the given [`Place`].
     fn address_at(&self, place: Place) -> Option<Address> {
         match Index::try_from(place.line - self.first_line) {
-            Ok(row) => self.first_data_column()
+            Ok(row) => self
+                .first_data_column()
                 .ok()
                 .map(|origin| Address::new(row, place.column + origin)),
             _ => None,
         }
     }
 
-    fn region_at<T: RegionWrapper>(&self, region_wrapper: &T) -> Option<Region> {
-        self.address_at(region_wrapper.start())
-            .map(|address| Region::new(address, region_wrapper.length()))
+    /// Returns the [`Region`] associated with the given [`Area`].
+    fn region_at<T: Area>(&self, area: &T) -> Option<Region> {
+        self.address_at(area.start())
+            .map(|address| Region::new(address, area.length()))
     }
 
+    /// Updates the ui with the view's current data.
     fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
-        let first_line = self.first_line;
-
         // Clear the screen, then add each row.
         iter::once(Edit::new(Region::default(), Change::Clear)).chain(
-            first_line.into_iter().zip(self.lines().skip(self.first_line.row())).flat_map(move |(line_number, line)| {
-                self.region_at(&Section::line(line_number)).map(|region|
-                    Edit::new(region, Change::Row(format!("{:>width$} {}", line_number, line, width = self.margin_width)))
-                ).into_iter()
-            })
+            self.first_line
+                .into_iter()
+                .zip(self.lines().skip(self.first_line.row()))
+                .flat_map(move |(line_number, line)| {
+                    self.region_at(&Section::line(line_number))
+                        .map(|region| {
+                            Edit::new(
+                                region,
+                                Change::Row(format!(
+                                    "{:>width$} {}",
+                                    line_number,
+                                    line,
+                                    width = self.margin_width
+                                )),
+                            )
+                        })
+                        .into_iter()
+                }),
         )
-        //iter::once(Edit::new(Region::default(), Change::Clear)).chain(
-        //    self.lines()
-        //        .skip(self.first_line.row())
-        //        .enumerate()
-        //        .flat_map(move |(row, line)| {
-        //            Region::with_row(row)
-        //                .map(|region| {
-        //                    Edit::new(
-        //                        region,
-        //                        Change::Row(format!(
-        //                            "{:>width$} {}",
-        //                            self.first_line + row as i32,
-        //                            line,
-        //                            width = self.margin_width
-        //                        )),
-        //                    )
-        //                })
-        //                .into_iter()
-        //        }),
-        //)
     }
 
+    /// An [`Iterator`] of all lines in the view's data.
     fn lines(&self) -> std::str::Lines<'_> {
         self.data.lines()
     }
 
+    /// The data stored at the given [`LineNumber`].
     fn line(&self, line_number: LineNumber) -> Option<&str> {
         self.lines().nth(line_number.row())
     }
 
+    /// Updates the view's metadata.
     fn clean(&mut self) {
         self.line_count = self.lines().count();
         self.update_margin_width()
     }
 
+    /// Updates the margin width of view.
     #[allow(clippy::cast_possible_truncation)] // usize.log10().ceil() < usize.max_value()
     #[allow(clippy::cast_precision_loss)] // self.line_count is small enough to be precisely represented by f64
     #[allow(clippy::cast_sign_loss)] // self.line_count >= 0, thus log10().ceil() >= 0.0
@@ -419,6 +462,7 @@ impl View {
         self.margin_width = (((self.line_count.saturating_add(1)) as f64).log10().ceil()) as usize;
     }
 
+    /// Scrolls the view's data.
     fn scroll(&mut self, movement: IndexType) {
         self.first_line = cmp::min(
             self.first_line + movement,
@@ -426,21 +470,28 @@ impl View {
         );
     }
 
+    /// The length of the line that has a given [`Place`].
     fn line_length(&self, place: Place) -> Option<Index> {
         self.line(place.line)
             .and_then(|x| Index::try_from(x.len()).ok())
     }
 
+    /// Writes the view's data to its file.
     fn put(&self) -> io::Result<()> {
         fs::write(&self.path, &self.data)
     }
 }
 
+/// Signifies a modification of the view.
 #[derive(Clone, Debug, Default)]
 struct Adjustment {
+    /// The change made to the current line.
     shift: IndexType,
+    /// The changes made to the number of lines.
     line_change: IndexType,
+    /// A map of the indexes where a change was made.
     indexes_changed: HashMap<LineNumber, IndexType>,
+    /// The [`Change`] that best represents the `Adjustment`.
     change: Change,
 }
 
@@ -617,7 +668,7 @@ impl PartialOrd<Pointer> for IndexType {
 }
 
 /// Signifies a type that can be converted to a [`Region`].
-trait RegionWrapper {
+trait Area {
     /// Returns the starting `Place`.
     fn start(&self) -> Place;
     /// Returns the [`Length`].
@@ -647,7 +698,7 @@ impl Section {
     }
 }
 
-impl RegionWrapper for Section {
+impl Area for Section {
     fn start(&self) -> Place {
         self.start
     }
@@ -673,7 +724,7 @@ pub struct Place {
     column: Index,
 }
 
-impl RegionWrapper for Place {
+impl Area for Place {
     fn start(&self) -> Place {
         *self
     }
@@ -781,11 +832,13 @@ impl IntoIterator for LineNumber {
     type IntoIter = LineNumberIterator;
 
     fn into_iter(self) -> Self::IntoIter {
-        LineNumberIterator{ current: self}
+        LineNumberIterator { current: self }
     }
 }
 
+/// Signifies an [`Iterator`] of [`LineNumber`]s that steps by 1.
 struct LineNumberIterator {
+    /// The current [`LineNumber`].
     current: LineNumber,
 }
 

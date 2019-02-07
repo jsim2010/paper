@@ -11,7 +11,7 @@ mod scroll;
 mod update_view;
 
 use crate::{
-    error, io, fmt, some, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter, HashMap,
+    error, fmt, io, some, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter, HashMap,
     Paper, Pattern, TryFromIntError, BACKSPACE, ENTER,
 };
 use rec::ChCls::{Not, Whitespace};
@@ -290,10 +290,12 @@ impl Default for Operations {
 
 /// Signifies functionality for the application to implement.
 trait Operation: Debug {
+    /// Returns the name of the `Operation`.
     fn name(&self) -> String;
     /// Executes the `Operation`.
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output;
 
+    /// Returns the [`Failure`] indicating an invalid [`OpCode`].
     fn invalid_opcode_error(&self, opcode: OpCode) -> Failure {
         Failure::InvalidOpCode {
             operation: self.name(),
@@ -316,6 +318,7 @@ pub enum Failure {
     Ui(ui::Error),
     /// An attempt to convert one type to another was unsuccessful.
     Conversion(TryFromIntError),
+    /// An error occurred during the execution of an [`std::io`] command.
     Io(io::Error),
 }
 

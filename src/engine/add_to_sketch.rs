@@ -1,4 +1,5 @@
-use crate::engine::{Notice, OpCode, Operation, Paper, Output, BACKSPACE};
+//! Implements the [`Operation`] to add to the sketch.
+use crate::engine::{Notice, OpCode, Operation, Output, Paper, BACKSPACE};
 
 /// Adds a character to the sketch.
 #[derive(Clone, Debug)]

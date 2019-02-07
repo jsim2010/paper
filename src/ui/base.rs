@@ -157,6 +157,7 @@ impl TryFrom<Index> for usize {
 pub(crate) struct Length(IndexType);
 
 impl Length {
+    /// Returns the value of the `Length`.
     pub(crate) fn n(self) -> IndexType {
         self.0
     }
