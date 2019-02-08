@@ -4,7 +4,7 @@ mod base;
 
 pub(crate) use base::{Index, IndexType, Length, END};
 
-use crate::{fmt, Display, Formatter, TryFrom, TryFromIntError};
+use crate::{fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
 use pancurses::Input;
 use std::error;
 
@@ -263,13 +263,33 @@ impl Display for Region {
 ///
 /// All output is displayed in a grid of cells. Each cell contains one character and can change its
 /// background color.
+
+pub(crate) trait UserInterface: Debug {
+    /// Sets up the user interface for use.
+    fn init(&self) -> Outcome;
+    /// Closes the user interface.
+    fn close(&self) -> Outcome;
+    /// Returns the number of cells that make up the height of the grid.
+    fn grid_height(&self) -> Result<usize, TryFromIntError>;
+    /// Applies the edit to the output.
+    fn apply(&self, edit: Edit) -> Outcome;
+    /// Flashes the output.
+    fn flash(&self) -> Outcome;
+    /// Gets input from the user.
+    ///
+    /// Returns [`None`] if no character input is provided.
+    ///
+    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
+    fn receive_input(&self) -> Option<char>;
+}
+
 #[derive(Debug)]
-pub(crate) struct UserInterface {
+pub(crate) struct Terminal {
     /// The window that interfaces with the application.
     window: pancurses::Window,
 }
 
-impl UserInterface {
+impl Terminal {
     /// Converts given result of ui function to a [`Outcome`].
     fn process(result: i32, error: Error) -> Outcome {
         if result == pancurses::OK {
@@ -277,22 +297,6 @@ impl UserInterface {
         } else {
             Err(error)
         }
-    }
-
-    /// Sets up the user interface for use.
-    pub(crate) fn init(&self) -> Outcome {
-        self.start_color()?;
-        self.use_default_colors()?;
-        self.disable_echo()?;
-        self.define_color(Color::Red, pancurses::COLOR_RED)?;
-        self.define_color(Color::Blue, pancurses::COLOR_BLUE)?;
-
-        Ok(())
-    }
-
-    /// Closes the user interface.
-    pub(crate) fn close(&self) -> Outcome {
-        Self::process(pancurses::endwin(), Error::Endwin)
     }
 
     /// Overwrites the block at cursor with a character.
@@ -303,27 +307,6 @@ impl UserInterface {
     /// Writes a string starting at the cursor.
     fn add_str(&self, s: String) -> Outcome {
         Self::process(self.window.addstr(s), Error::Waddstr)
-    }
-
-    /// Applies the edit to the output.
-    pub(crate) fn apply(&self, edit: Edit) -> Outcome {
-        self.move_to(edit.region.start)?;
-
-        match edit.change {
-            Change::Backspace => {
-                // Add BACKSPACE (move cursor 1 cell to the left) and delete that character.
-                self.add_char(BACKSPACE)?;
-                self.delete_char()
-            }
-            Change::Clear => self.clear_all(),
-            Change::Format(color) => self.format(edit.region.length, color),
-            Change::Insert(c) => self.insert_char(c),
-            Change::Nothing => Ok(()),
-            Change::Row(s) => {
-                self.add_str(s)?;
-                self.clear_to_row_end()
-            }
-        }
     }
 
     /// Clears the entire window.
@@ -356,11 +339,6 @@ impl UserInterface {
         Self::process(pancurses::noecho(), Error::Noecho)
     }
 
-    /// Flashes the output.
-    pub(crate) fn flash(&self) -> Outcome {
-        Self::process(pancurses::flash(), Error::Flash)
-    }
-
     /// Sets the color of the next specified number of blocks from the cursor.
     fn format(&self, length: Length, color: Color) -> Outcome {
         Self::process(
@@ -368,12 +346,6 @@ impl UserInterface {
                 .chgat(length.n(), pancurses::A_NORMAL, color.cp()),
             Error::Wchgat,
         )
-    }
-
-    // TODO: Store this value and update when size is changed.
-    /// Returns the number of cells that make up the height of the grid.
-    pub(crate) fn grid_height(&self) -> Result<usize, TryFromIntError> {
-        usize::try_from(self.window.get_max_y())
     }
 
     /// Inserts a character at the cursor, shifting all subsequent blocks to the right.
@@ -384,18 +356,6 @@ impl UserInterface {
     /// Moves the cursor to an [`Address`].
     fn move_to(&self, address: Address) -> Outcome {
         Self::process(self.window.mv(address.y(), address.x()), Error::Wmove)
-    }
-
-    /// Gets input from the user.
-    ///
-    /// Returns [`None`] if no character input is provided.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    pub(crate) fn receive_input(&self) -> Option<char> {
-        match self.window.getch() {
-            Some(Input::Character(c)) => Some(c),
-            _ => None,
-        }
     }
 
     /// Initializes color processing.
@@ -411,11 +371,94 @@ impl UserInterface {
     }
 }
 
-impl Default for UserInterface {
+impl UserInterface for Terminal {
+    fn init(&self) -> Outcome {
+        self.start_color()?;
+        self.use_default_colors()?;
+        self.disable_echo()?;
+        self.define_color(Color::Red, pancurses::COLOR_RED)?;
+        self.define_color(Color::Blue, pancurses::COLOR_BLUE)?;
+
+        Ok(())
+    }
+
+    fn close(&self) -> Outcome {
+        Self::process(pancurses::endwin(), Error::Endwin)
+    }
+
+    fn flash(&self) -> Outcome {
+        Self::process(pancurses::flash(), Error::Flash)
+    }
+
+    fn apply(&self, edit: Edit) -> Outcome {
+        self.move_to(edit.region.start)?;
+
+        match edit.change {
+            Change::Backspace => {
+                // Add BACKSPACE (move cursor 1 cell to the left) and delete that character.
+                self.add_char(BACKSPACE)?;
+                self.delete_char()
+            }
+            Change::Clear => self.clear_all(),
+            Change::Format(color) => self.format(edit.region.length, color),
+            Change::Insert(c) => self.insert_char(c),
+            Change::Nothing => Ok(()),
+            Change::Row(s) => {
+                self.add_str(s)?;
+                self.clear_to_row_end()
+            }
+        }
+    }
+
+    // TODO: Store this value and update when size is changed.
+    fn grid_height(&self) -> Result<usize, TryFromIntError> {
+        usize::try_from(self.window.get_max_y())
+    }
+
+    fn receive_input(&self) -> Option<char> {
+        match self.window.getch() {
+            Some(Input::Character(c)) => Some(c),
+            _ => None,
+        }
+    }
+}
+
+impl Default for Terminal {
     fn default() -> Self {
         Self {
             // Must call initscr() first.
             window: pancurses::initscr(),
         }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct TestableUserInterface;
+
+#[cfg(test)]
+impl UserInterface for TestableUserInterface {
+    fn init(&self) -> Outcome {
+        Ok(())
+    }
+
+    fn close(&self) -> Outcome {
+        Ok(())
+    }
+
+    fn apply(&self, _edit: Edit) -> Outcome {
+        Ok(())
+    }
+
+    fn flash(&self) -> Outcome {
+        Ok(())
+    }
+
+    fn grid_height(&self) -> Result<usize, TryFromIntError> {
+        Ok(0)
+    }
+
+    fn receive_input(&self) -> Option<char> {
+        None
     }
 }
