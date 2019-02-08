@@ -27,7 +27,7 @@ impl Operation for Op {
 
 #[cfg(test)]
 mod tests {
-    use super::{BACKSPACE, Notice, Op, OpCode, Operation, Output, Paper};
+    use super::*;
     use spectral::prelude::*;
 
     fn add_to_sketch(paper: &mut Paper, input: char) -> Output {
@@ -39,7 +39,7 @@ mod tests {
         let mut paper = Paper::new();
         let output = add_to_sketch(&mut paper, BACKSPACE);
 
-        asserting!("Op.operate()").that(&output).is_ok().is_some().is_equal_to(Notice::Flash);
+        asserting!("AddToSketch output").that(&output).is_ok().is_some().is_equal_to(Notice::Flash);
     }
 
     #[test]
@@ -48,7 +48,7 @@ mod tests {
         paper.sketch.push_str("abc");
         let output = add_to_sketch(&mut paper, BACKSPACE);
 
-        asserting!("Op.operate()").that(&output).is_ok().is_none();
+        asserting!("AddToSketch output").that(&output).is_ok().is_none();
         asserting!("paper.sketch").that(&paper.sketch).is_equal_to(String::from("ab"));
     }
 
@@ -58,7 +58,7 @@ mod tests {
         paper.sketch.push_str("abc");
         let output = add_to_sketch(&mut paper, 'd');
 
-        asserting!("Op.operate()").that(&output).is_ok().is_none();
+        asserting!("AddToSketch output").that(&output).is_ok().is_none();
         asserting!("paper.sketch").that(&paper.sketch).is_equal_to(String::from("abcd"));
     }
 }
