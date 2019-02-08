@@ -1,3 +1,6 @@
 language: rust
 os: windows
 cache: cargo
+script:
+  - cargo clippy
+  - cargo test --verbose
