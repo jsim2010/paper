@@ -4,6 +4,7 @@
 
 view = the entire file
 window = the currently visible portion of the view
+sketch = a short part of data entered by user; used to enter commands or provide context
 
 ## process
 
