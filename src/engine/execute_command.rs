@@ -4,8 +4,6 @@ use crate::engine::{
     Pattern, Whitespace,
 };
 
-static command_pattern: Pattern = Pattern::define(tkn!(lazy_some(Any) => "command") + (End | (some(Whitespace) + tkn!(var(Any) => "args"))));
-
 /// Executes the command stored in the sketch.
 #[derive(Clone, Debug)]
 pub(crate) struct Op {
