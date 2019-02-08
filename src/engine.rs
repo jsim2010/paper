@@ -294,14 +294,6 @@ trait Operation: Debug {
     fn name(&self) -> String;
     /// Executes the `Operation`.
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output;
-
-    /// Returns the [`Failure`] indicating an invalid [`OpCode`].
-    fn invalid_opcode_error(&self, opcode: OpCode) -> Failure {
-        Failure::InvalidOpCode {
-            operation: self.name(),
-            opcode,
-        }
-    }
 }
 
 /// Signifies an [`error::Error`] that occurs during the execution of an [`Operation`].

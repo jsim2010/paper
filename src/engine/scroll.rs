@@ -23,9 +23,8 @@ impl Operation for Op {
 
             paper.scroll(movement)?;
             paper.display_view()?;
-            Ok(None)
-        } else {
-            Err(self.invalid_opcode_error(opcode))
         }
+
+        Ok(None)
     }
 }
