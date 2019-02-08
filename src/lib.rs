@@ -57,11 +57,16 @@ use std::fs;
 use std::io;
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
+use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
     Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, END,
     ENTER,
 };
+#[cfg(not(test))]
+use ui::Terminal;
+#[cfg(test)]
+use ui::TestableUserInterface;
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
@@ -69,10 +74,10 @@ const NEGATIVE_ONE: IndexType = -1;
 /// The paper application.
 // In general, Paper methods should contain as little logic as possible. Instead all logic should
 // be included in Operations.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Paper {
     /// User interface of the application.
-    ui: UserInterface,
+    ui: Rc<dyn UserInterface>,
     /// Manages all functionality the application.
     controller: Controller,
     /// Data of the file being edited.
@@ -95,7 +100,19 @@ impl Paper {
     /// Creates a new paper application.
     #[inline]
     pub fn new() -> Self {
-        Self::default()
+        Paper {
+            #[cfg(not(test))]
+            ui: Rc::new(Terminal::default()),
+            #[cfg(test)]
+            ui: Rc::new(TestableUserInterface),
+            controller: Controller::default(),
+            view: View::default(),
+            sketch: String::default(),
+            signals: Vec::default(),
+            noises: Vec::default(),
+            marks: Vec::default(),
+            filters: PaperFilters::default(),
+        }
     }
 
     /// Runs the application.

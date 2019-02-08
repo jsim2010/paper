@@ -51,3 +51,18 @@ impl Operation for Op {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spectral::prelude::*;
+
+    #[test]
+    fn end_returns_quit() {
+        let mut paper = Paper::new();
+        paper.sketch.push_str("end");
+        let output = Op::new().operate(&mut paper, OpCode::ExecuteCommand);
+
+        asserting!("ExecuteCommand output").that(&output).is_ok().is_some().is_equal_to(Notice::Quit);
+    }
+}

@@ -13,9 +13,8 @@ impl Operation for Op {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
         if let OpCode::UpdateView(input) = opcode {
             paper.update_view(input)?;
-            Ok(None)
-        } else {
-            Err(self.invalid_opcode_error(opcode))
         }
+
+        Ok(None)
     }
 }

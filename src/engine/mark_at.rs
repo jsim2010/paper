@@ -13,9 +13,8 @@ impl Operation for Op {
     fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
         if let OpCode::MarkAt(edge) = opcode {
             paper.set_marks(edge);
-            Ok(None)
-        } else {
-            Err(self.invalid_opcode_error(opcode))
         }
+
+        Ok(None)
     }
 }

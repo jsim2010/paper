@@ -14,8 +14,9 @@ edition = "2018"
 clap = "2.32.0"
 rec = "0.3.0"
 regex = "1.1.0"
-version-sync = "0.6"
+spectral = "0.6.0"
 try_from = "0.3.2"
+version-sync = "0.6"
 
 # Must specify win32 feature to ensure application does not open new window.
 [dependencies.pancurses]
