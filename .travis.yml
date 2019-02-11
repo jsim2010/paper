@@ -1,3 +1,7 @@
 language: rust
 os: windows
 cache: cargo
+install:
+  - cargo install --force cargo-make
+  - cargo make dev
+script: cargo make eval

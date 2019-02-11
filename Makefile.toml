@@ -1,0 +1,8 @@
+[tasks.dev]
+script = ["rustup component add clippy"]
+
+[tasks.eval]
+dependencies = ["check-format", "deny-clippy", "test-verbose"]
+
+[tasks.deny-clippy]
+script = ["cargo clippy -- -D warnings"]

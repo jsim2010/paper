@@ -1,5 +1,29 @@
 # paper
 
+## Development
+
+Clone the repository and enter the directory:
+
+```
+git clone https://github.com/jsim2010/paper.git
+cd paper
+```
+
+If cargo-make is not already installed on your system, install it:
+
+```
+cargo install --force cargo-make
+```
+
+Install all depenedencies needed for development:
+
+```
+cargo make dev
+```
+
+Now you can run the following commands:
+- Evaluate all lints and tests `cargo make eval`
+
 ## terms
 
 view = the entire file
