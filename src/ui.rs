@@ -283,6 +283,7 @@ pub(crate) trait UserInterface: Debug {
     fn receive_input(&self) -> Option<char>;
 }
 
+/// The user interface provided by a terminal.
 #[derive(Debug)]
 pub(crate) struct Terminal {
     /// The window that interfaces with the application.

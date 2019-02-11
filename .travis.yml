@@ -2,8 +2,6 @@ language: rust
 os: windows
 cache: cargo
 install:
-  - cargo build --verbose
-  - rustup component add clippy
-script:
-  - cargo clippy -- -D warnings
-  - cargo test --verbose
+  - cargo install --force cargo-make
+  - cargo make dev
+script: cargo make eval

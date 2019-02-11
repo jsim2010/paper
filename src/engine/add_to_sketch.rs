@@ -39,7 +39,11 @@ mod tests {
         let mut paper = Paper::new();
         let output = add_to_sketch(&mut paper, BACKSPACE);
 
-        asserting!("AddToSketch output").that(&output).is_ok().is_some().is_equal_to(Notice::Flash);
+        asserting!("AddToSketch output")
+            .that(&output)
+            .is_ok()
+            .is_some()
+            .is_equal_to(Notice::Flash);
     }
 
     #[test]
@@ -48,8 +52,13 @@ mod tests {
         paper.sketch.push_str("abc");
         let output = add_to_sketch(&mut paper, BACKSPACE);
 
-        asserting!("AddToSketch output").that(&output).is_ok().is_none();
-        asserting!("paper.sketch").that(&paper.sketch).is_equal_to(String::from("ab"));
+        asserting!("AddToSketch output")
+            .that(&output)
+            .is_ok()
+            .is_none();
+        asserting!("paper.sketch")
+            .that(&paper.sketch)
+            .is_equal_to(String::from("ab"));
     }
 
     #[test]
@@ -58,7 +67,12 @@ mod tests {
         paper.sketch.push_str("abc");
         let output = add_to_sketch(&mut paper, 'd');
 
-        asserting!("AddToSketch output").that(&output).is_ok().is_none();
-        asserting!("paper.sketch").that(&paper.sketch).is_equal_to(String::from("abcd"));
+        asserting!("AddToSketch output")
+            .that(&output)
+            .is_ok()
+            .is_none();
+        asserting!("paper.sketch")
+            .that(&paper.sketch)
+            .is_equal_to(String::from("abcd"));
     }
 }

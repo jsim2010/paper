@@ -59,14 +59,14 @@ use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
-use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, END,
-    ENTER,
-};
 #[cfg(not(test))]
 use ui::Terminal;
 #[cfg(test)]
 use ui::TestableUserInterface;
+use ui::{
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, END,
+    ENTER,
+};
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
@@ -100,19 +100,7 @@ impl Paper {
     /// Creates a new paper application.
     #[inline]
     pub fn new() -> Self {
-        Paper {
-            #[cfg(not(test))]
-            ui: Rc::new(Terminal::default()),
-            #[cfg(test)]
-            ui: Rc::new(TestableUserInterface),
-            controller: Controller::default(),
-            view: View::default(),
-            sketch: String::default(),
-            signals: Vec::default(),
-            noises: Vec::default(),
-            marks: Vec::default(),
-            filters: PaperFilters::default(),
-        }
+        Self::default()
     }
 
     /// Runs the application.
@@ -306,6 +294,24 @@ impl Paper {
     #[allow(clippy::integer_arithmetic)] // okay to divide usize by 4
     fn scroll_height(&self) -> Result<usize, TryFromIntError> {
         self.ui.grid_height().map(|height| height / 4)
+    }
+}
+
+impl Default for Paper {
+    fn default() -> Self {
+        Self {
+            #[cfg(not(test))]
+            ui: Rc::new(Terminal::default()),
+            #[cfg(test)]
+            ui: Rc::new(TestableUserInterface),
+            controller: Controller::default(),
+            view: View::default(),
+            sketch: String::default(),
+            signals: Vec::default(),
+            noises: Vec::default(),
+            marks: Vec::default(),
+            filters: PaperFilters::default(),
+        }
     }
 }
 

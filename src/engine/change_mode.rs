@@ -44,8 +44,13 @@ mod tests {
         paper.controller.mode = Mode::Display;
         let output = Op.operate(&mut paper, OpCode::ChangeMode(Mode::Command));
 
-        asserting!("ChangeMode output").that(&output).is_ok().is_none();
-        asserting!("paper.controller.mode").that(&paper.controller.mode).is_equal_to(Mode::Command);
+        asserting!("ChangeMode output")
+            .that(&output)
+            .is_ok()
+            .is_none();
+        asserting!("paper.controller.mode")
+            .that(&paper.controller.mode)
+            .is_equal_to(Mode::Command);
     }
 
     #[test]
@@ -54,8 +59,15 @@ mod tests {
         paper.sketch.push_str("abc");
         let output = Op.operate(&mut paper, OpCode::ChangeMode(Mode::Display));
 
-        asserting!("ChangeMode output").that(&output).is_ok().is_none();
-        asserting!("paper.sketch").that(&paper.sketch).is_equal_to(String::from(""));
-        asserting!("paper.controller.mode").that(&paper.controller.mode).is_equal_to(Mode::Display);
+        asserting!("ChangeMode output")
+            .that(&output)
+            .is_ok()
+            .is_none();
+        asserting!("paper.sketch")
+            .that(&paper.sketch)
+            .is_equal_to(String::from(""));
+        asserting!("paper.controller.mode")
+            .that(&paper.controller.mode)
+            .is_equal_to(Mode::Display);
     }
 }
