@@ -63,6 +63,7 @@
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 
 mod engine;
+mod num;
 mod ui;
 
 use engine::{Controller, Notice};
@@ -84,7 +85,7 @@ use ui::Terminal;
 #[cfg(test)]
 use ui::TestableUserInterface;
 use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, END,
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE,
     ENTER,
 };
 
@@ -571,7 +572,7 @@ impl Adjustment {
                     ))
                 }
             }
-            ENTER => Some(Self::new(place.line, 1, -place.column, Change::Clear)),
+            ENTER => Some(Self::new(place.line, 1, place.column.negate(), Change::Clear)),
             _ => Some(Self::new(place.line, 1, 1, Change::Insert(c))),
         }
     }
@@ -736,7 +737,7 @@ impl Section {
                 line,
                 column: Index::from(0),
             },
-            length: END,
+            length: Length::End,
         }
     }
 }

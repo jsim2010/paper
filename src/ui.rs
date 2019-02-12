@@ -1,8 +1,6 @@
 //! Implements how the user interfaces with the application.
 
-mod base;
-
-pub(crate) use base::{Index, IndexType, Length, END};
+pub(crate) use crate::num::{NonNegativeI32, Length};
 
 use crate::{fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
 use pancurses::Input;
@@ -10,6 +8,12 @@ use std::error;
 
 /// The [`Result`] returned by functions of this module.
 pub(crate) type Outcome = Result<(), Error>;
+/// The type specified by all grid index values
+///
+/// Specified by [`pancurses`].
+pub(crate) type IndexType = i32;
+/// The type of all grid index values.
+pub(crate) type Index = NonNegativeI32;
 
 /// The character that represents the `Backspace` key.
 pub(crate) const BACKSPACE: char = '\u{08}';
@@ -248,7 +252,7 @@ impl Region {
     pub(crate) fn with_row(row: usize) -> Result<Self, TryFromIntError> {
         Index::try_from(row).map(|row_index| Self {
             start: Address::new(row_index, Index::from(0)),
-            length: END,
+            length: Length::End,
         })
     }
 }
@@ -344,7 +348,7 @@ impl Terminal {
     fn format(&self, length: Length, color: Color) -> Outcome {
         Self::process(
             self.window
-                .chgat(length.n(), pancurses::A_NORMAL, color.cp()),
+                .chgat(length.into(), pancurses::A_NORMAL, color.cp()),
             Error::Wchgat,
         )
     }
