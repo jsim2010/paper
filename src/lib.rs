@@ -34,6 +34,7 @@
 //!
 //! Now you can run the following commands:
 //! - Evaluate all checks, lints and tests: `cargo make eval`
+//! - Fix stale README and formatting: `cargo make fix`
 
 #![warn(
     rust_2018_idioms,
