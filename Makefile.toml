@@ -1,8 +1,27 @@
 [tasks.dev]
-script = ["rustup component add clippy"]
+script = ["rustup component add clippy", "cargo install cargo-readme"]
 
 [tasks.eval]
-dependencies = ["check-format", "deny-clippy", "test-verbose"]
+dependencies = ["check-format", "check-readme", "deny-clippy", "test-verbose"]
+
+[tasks.fix]
+dependencies = ["format", "fix-readme"]
+
+[config]
+on_error_task = "delete-temp-readme"
+
+[tasks.fix-readme]
+script = ["cargo readme > README.md"]
 
 [tasks.deny-clippy]
 script = ["cargo clippy -- -D warnings"]
+
+[tasks.check-readme]
+dependencies = ["compare-readme"]
+run_task = "delete-temp-readme"
+
+[tasks.compare-readme]
+script = ["cargo readme > r", "fc r README.md"]
+
+[tasks.delete-temp-readme]
+script = ["if exist r rm r"]

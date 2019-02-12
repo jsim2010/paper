@@ -11,12 +11,31 @@
 //! - Implement suggestions for commands to improve user experience.
 //! - Support Language Server Protocol.
 //!
-//! # Usage
+//! # Development
 //!
-//! To use paper, install and run the binary. If you are developing a rust crate that runs paper,
-//! then create and run an instance by calling the following:
+//! Clone the repository and enter the directory:
+//!
+//! ```sh
+//! git clone https://github.com/jsim2010/paper.git
+//! cd paper
+//! ```
+//!
+//! If `cargo-make` is not already installed on your system, install it:
+//!
+//! ```sh
+//! cargo install --force cargo-make
+//! ```
+//!
+//! Install all dependencies needed for development:
+//!
+//! ```sh
+//! cargo make dev
+//! ```
+//!
+//! Now you can run the following commands:
+//! - Evaluate all checks, lints and tests: `cargo make eval`
+//! - Fix stale README and formatting: `cargo make fix`
 
-// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 #![warn(
     rust_2018_idioms,
     future_incompatible,
@@ -41,6 +60,7 @@
 #![allow(clippy::suspicious_op_assign_impl, clippy::suspicious_arithmetic_impl)] // These lints are not always correct; issues should be detected by tests.
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 #![allow(clippy::missing_inline_in_public_items)]
+// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 
 mod engine;
 mod ui;
