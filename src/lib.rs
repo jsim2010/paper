@@ -313,11 +313,19 @@ impl Paper {
         self.ui.grid_height().map(|height| height / 4)
     }
 
+    // This should be able to use .. Default::default() but that seems to cause issues with
+    // testing. Needs to be investigated more.
     #[cfg(test)]
     fn with_ui(ui: Rc<dyn UserInterface>) -> Self {
         Self {
             ui,
-            ..Default::default()
+            controller: Controller::default(),
+            view: View::default(),
+            sketch: String::default(),
+            signals: Vec::default(),
+            noises: Vec::default(),
+            marks: Vec::default(),
+            filters: PaperFilters::default(),
         }
     }
 }
