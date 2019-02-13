@@ -36,19 +36,13 @@ impl Operation for Op {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::mock::UserInterface as MockUserInterface;
     use spectral::prelude::*;
     use std::rc::Rc;
-    use crate::ui::mock::UserInterface as MockUserInterface;
 
     #[test]
     fn sets_mode() {
-        let mock_ui = MockUserInterface::new(
-            Ok(()), 
-            Ok(()),
-            Ok(()),
-            Ok(()),
-            Ok(0),
-            None);
+        let mock_ui = MockUserInterface::new(Ok(()), Ok(()), Ok(()), Ok(()), Ok(0), None);
         let mut paper = Paper::with_ui(Rc::new(mock_ui));
         paper.controller.mode = Mode::Display;
         let output = Op.operate(&mut paper, OpCode::ChangeMode(Mode::Command));
@@ -64,13 +58,7 @@ mod tests {
 
     #[test]
     fn display_clears_sketch() {
-        let mock_ui = MockUserInterface::new(
-            Ok(()), 
-            Ok(()),
-            Ok(()),
-            Ok(()),
-            Ok(0),
-            None);
+        let mock_ui = MockUserInterface::new(Ok(()), Ok(()), Ok(()), Ok(()), Ok(0), None);
         let mut paper = Paper::with_ui(Rc::new(mock_ui));
         paper.sketch.push_str("abc");
         let output = Op.operate(&mut paper, OpCode::ChangeMode(Mode::Display));

@@ -1,6 +1,6 @@
 //! Implements how the user interfaces with the application.
 
-pub(crate) use crate::num::{NonNegativeI32, Length};
+pub(crate) use crate::num::{Length, NonNegativeI32};
 
 use crate::{fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
 use pancurses::Input;
@@ -439,8 +439,8 @@ impl Default for Terminal {
 
 #[cfg(test)]
 pub(crate) mod mock {
-    use super::{Outcome, Edit, TryFromIntError};
-    use double::{mock_trait_no_default, mock_method, __private_mock_trait_new_impl};
+    use super::{Edit, Outcome, TryFromIntError};
+    use double::{__private_mock_trait_new_impl, mock_method, mock_trait_no_default};
 
     mock_trait_no_default!(
         pub UserInterface,

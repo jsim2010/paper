@@ -81,8 +81,8 @@ use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
-    Terminal, Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE,
-    ENTER,
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, Terminal, UserInterface,
+    BACKSPACE, ENTER,
 };
 
 /// An [`IndexType`] with a value of `-1`.
@@ -317,13 +317,7 @@ impl Paper {
     fn with_ui(ui: Rc<dyn UserInterface>) -> Self {
         Self {
             ui,
-            controller: Controller::default(),
-            view: View::default(),
-            sketch: String::default(),
-            signals: Vec::default(),
-            noises: Vec::default(),
-            marks: Vec::default(),
-            filters: PaperFilters::default(),
+            ..Default::default()
         }
     }
 }
@@ -579,7 +573,12 @@ impl Adjustment {
                     ))
                 }
             }
-            ENTER => Some(Self::new(place.line, 1, place.column.negate(), Change::Clear)),
+            ENTER => Some(Self::new(
+                place.line,
+                1,
+                place.column.negate(),
+                Change::Clear,
+            )),
             _ => Some(Self::new(place.line, 1, 1, Change::Insert(c))),
         }
     }
