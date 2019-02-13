@@ -80,12 +80,8 @@ use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
-#[cfg(not(test))]
-use ui::Terminal;
-#[cfg(test)]
-use ui::TestableUserInterface;
 use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE,
+    Terminal, Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE,
     ENTER,
 };
 
@@ -316,15 +312,26 @@ impl Paper {
     fn scroll_height(&self) -> Result<usize, TryFromIntError> {
         self.ui.grid_height().map(|height| height / 4)
     }
+
+    #[cfg(test)]
+    fn with_ui(ui: Rc<dyn UserInterface>) -> Self {
+        Self {
+            ui,
+            controller: Controller::default(),
+            view: View::default(),
+            sketch: String::default(),
+            signals: Vec::default(),
+            noises: Vec::default(),
+            marks: Vec::default(),
+            filters: PaperFilters::default(),
+        }
+    }
 }
 
 impl Default for Paper {
     fn default() -> Self {
         Self {
-            #[cfg(not(test))]
             ui: Rc::new(Terminal::default()),
-            #[cfg(test)]
-            ui: Rc::new(TestableUserInterface),
             controller: Controller::default(),
             view: View::default(),
             sketch: String::default(),

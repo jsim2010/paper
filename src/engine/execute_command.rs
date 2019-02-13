@@ -56,10 +56,12 @@ impl Operation for Op {
 mod tests {
     use super::*;
     use spectral::prelude::*;
+    use std::rc::Rc;
+    use crate::ui::TestableUserInterface;
 
     #[test]
     fn end_returns_quit() {
-        let mut paper = Paper::new();
+        let mut paper = Paper::with_ui(Rc::new(TestableUserInterface));
         paper.sketch.push_str("end");
         let output = Op::new().operate(&mut paper, OpCode::ExecuteCommand);
 

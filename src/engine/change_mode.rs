@@ -37,10 +37,12 @@ impl Operation for Op {
 mod tests {
     use super::*;
     use spectral::prelude::*;
+    use std::rc::Rc;
+    use crate::ui::TestableUserInterface;
 
     #[test]
     fn sets_mode() {
-        let mut paper = Paper::new();
+        let mut paper = Paper::with_ui(Rc::new(TestableUserInterface));
         paper.controller.mode = Mode::Display;
         let output = Op.operate(&mut paper, OpCode::ChangeMode(Mode::Command));
 
@@ -55,7 +57,7 @@ mod tests {
 
     #[test]
     fn display_clears_sketch() {
-        let mut paper = Paper::new();
+        let mut paper = Paper::with_ui(Rc::new(TestableUserInterface));
         paper.sketch.push_str("abc");
         let output = Op.operate(&mut paper, OpCode::ChangeMode(Mode::Display));
 
