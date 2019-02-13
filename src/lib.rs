@@ -313,10 +313,9 @@ impl Paper {
         self.ui.grid_height().map(|height| height / 4)
     }
 
-    // This should be able to use .. Default::default() but that seems to cause issues with
-    // testing. Needs to be investigated more.
     #[cfg(test)]
     fn with_ui(ui: Rc<dyn UserInterface>) -> Self {
+        // Can't use Default::default() due to Terminal::default() not always being supported.
         Self {
             ui,
             controller: Controller::default(),
