@@ -30,7 +30,7 @@ mod tests {
     use super::*;
     use spectral::prelude::*;
     use std::rc::Rc;
-    use crate::ui::TestableUserInterface;
+    use crate::ui::mock::UserInterface as MockUserInterface;
 
     fn add_to_sketch(paper: &mut Paper, input: char) -> Output {
         Op.operate(paper, OpCode::AddToSketch(input))
@@ -38,7 +38,14 @@ mod tests {
 
     #[test]
     fn flash_if_remove_from_empty_sketch() {
-        let mut paper = Paper::with_ui(Rc::new(TestableUserInterface));
+        let mock_ui = MockUserInterface::new(
+            Ok(()), 
+            Ok(()),
+            Ok(()),
+            Ok(()),
+            Ok(0),
+            None);
+        let mut paper = Paper::with_ui(Rc::new(mock_ui));
         let output = add_to_sketch(&mut paper, BACKSPACE);
 
         asserting!("AddToSketch output")
@@ -50,7 +57,14 @@ mod tests {
 
     #[test]
     fn remove_char_if_backspace() {
-        let mut paper = Paper::with_ui(Rc::new(TestableUserInterface));
+        let mock_ui = MockUserInterface::new(
+            Ok(()), 
+            Ok(()),
+            Ok(()),
+            Ok(()),
+            Ok(0),
+            None);
+        let mut paper = Paper::with_ui(Rc::new(mock_ui));
         paper.sketch.push_str("abc");
         let output = add_to_sketch(&mut paper, BACKSPACE);
 
@@ -65,7 +79,14 @@ mod tests {
 
     #[test]
     fn add_char() {
-        let mut paper = Paper::with_ui(Rc::new(TestableUserInterface));
+        let mock_ui = MockUserInterface::new(
+            Ok(()), 
+            Ok(()),
+            Ok(()),
+            Ok(()),
+            Ok(0),
+            None);
+        let mut paper = Paper::with_ui(Rc::new(mock_ui));
         paper.sketch.push_str("abc");
         let output = add_to_sketch(&mut paper, 'd');
 

@@ -206,7 +206,7 @@ impl Display for Color {
 /// [`Change`]: enum.Change.html
 /// [`Region`]: struct.Region.html
 /// [`Address`]: struct.Address.html
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) struct Edit {
     /// The [`Change`] to be made.
     change: Change,
@@ -438,32 +438,25 @@ impl Default for Terminal {
 }
 
 #[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct TestableUserInterface;
+pub(crate) mod mock {
+    use super::{Outcome, Edit, TryFromIntError};
+    use double::{mock_trait_no_default, mock_method, __private_mock_trait_new_impl};
 
-#[cfg(test)]
-impl UserInterface for TestableUserInterface {
-    fn init(&self) -> Outcome {
-        Ok(())
-    }
+    mock_trait_no_default!(
+        pub UserInterface,
+        init() -> Outcome,
+        close() -> Outcome,
+        apply(Edit) -> Outcome,
+        flash() -> Outcome,
+        grid_height() -> Result<usize, TryFromIntError>,
+        receive_input() -> Option<char>);
 
-    fn close(&self) -> Outcome {
-        Ok(())
-    }
-
-    fn apply(&self, _edit: Edit) -> Outcome {
-        Ok(())
-    }
-
-    fn flash(&self) -> Outcome {
-        Ok(())
-    }
-
-    fn grid_height(&self) -> Result<usize, TryFromIntError> {
-        Ok(0)
-    }
-
-    fn receive_input(&self) -> Option<char> {
-        None
+    impl super::UserInterface for UserInterface {
+        mock_method!(init(&self) -> Outcome);
+        mock_method!(close(&self) -> Outcome);
+        mock_method!(apply(&self, _edit: Edit) -> Outcome);
+        mock_method!(flash(&self) -> Outcome);
+        mock_method!(grid_height(&self) -> Result<usize, TryFromIntError>);
+        mock_method!(receive_input(&self) -> Option<char>);
     }
 }

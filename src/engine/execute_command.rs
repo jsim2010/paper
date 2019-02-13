@@ -57,11 +57,18 @@ mod tests {
     use super::*;
     use spectral::prelude::*;
     use std::rc::Rc;
-    use crate::ui::TestableUserInterface;
+    use crate::ui::mock::UserInterface as MockUserInterface;
 
     #[test]
     fn end_returns_quit() {
-        let mut paper = Paper::with_ui(Rc::new(TestableUserInterface));
+        let mock_ui = MockUserInterface::new(
+            Ok(()), 
+            Ok(()),
+            Ok(()),
+            Ok(()),
+            Ok(0),
+            None);
+        let mut paper = Paper::with_ui(Rc::new(mock_ui));
         paper.sketch.push_str("end");
         let output = Op::new().operate(&mut paper, OpCode::ExecuteCommand);
 
