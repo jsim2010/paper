@@ -63,6 +63,7 @@
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 
 mod engine;
+mod num;
 mod ui;
 
 use engine::{Controller, Notice};
@@ -79,13 +80,9 @@ use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
-#[cfg(not(test))]
-use ui::Terminal;
-#[cfg(test)]
-use ui::TestableUserInterface;
 use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, END,
-    ENTER,
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, Terminal, UserInterface,
+    BACKSPACE, ENTER,
 };
 
 /// An [`IndexType`] with a value of `-1`.
@@ -315,15 +312,27 @@ impl Paper {
     fn scroll_height(&self) -> Result<usize, TryFromIntError> {
         self.ui.grid_height().map(|height| height / 4)
     }
+
+    #[cfg(test)]
+    fn with_ui(ui: Rc<dyn UserInterface>) -> Self {
+        // Can't use Default::default() due to Terminal::default() not always being supported.
+        Self {
+            ui,
+            controller: Controller::default(),
+            view: View::default(),
+            sketch: String::default(),
+            signals: Vec::default(),
+            noises: Vec::default(),
+            marks: Vec::default(),
+            filters: PaperFilters::default(),
+        }
+    }
 }
 
 impl Default for Paper {
     fn default() -> Self {
         Self {
-            #[cfg(not(test))]
             ui: Rc::new(Terminal::default()),
-            #[cfg(test)]
-            ui: Rc::new(TestableUserInterface),
             controller: Controller::default(),
             view: View::default(),
             sketch: String::default(),
@@ -571,7 +580,12 @@ impl Adjustment {
                     ))
                 }
             }
-            ENTER => Some(Self::new(place.line, 1, -place.column, Change::Clear)),
+            ENTER => Some(Self::new(
+                place.line,
+                1,
+                place.column.negate(),
+                Change::Clear,
+            )),
             _ => Some(Self::new(place.line, 1, 1, Change::Insert(c))),
         }
     }
@@ -736,7 +750,7 @@ impl Section {
                 line,
                 column: Index::from(0),
             },
-            length: END,
+            length: Length::End,
         }
     }
 }

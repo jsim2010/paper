@@ -1,8 +1,6 @@
 //! Implements how the user interfaces with the application.
 
-mod base;
-
-pub(crate) use base::{Index, IndexType, Length, END};
+pub(crate) use crate::num::{Length, NonNegativeI32};
 
 use crate::{fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
 use pancurses::Input;
@@ -10,6 +8,12 @@ use std::error;
 
 /// The [`Result`] returned by functions of this module.
 pub(crate) type Outcome = Result<(), Error>;
+/// The type specified by all grid index values
+///
+/// Specified by [`pancurses`].
+pub(crate) type IndexType = i32;
+/// The type of all grid index values.
+pub(crate) type Index = NonNegativeI32;
 
 /// The character that represents the `Backspace` key.
 pub(crate) const BACKSPACE: char = '\u{08}';
@@ -202,7 +206,7 @@ impl Display for Color {
 /// [`Change`]: enum.Change.html
 /// [`Region`]: struct.Region.html
 /// [`Address`]: struct.Address.html
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) struct Edit {
     /// The [`Change`] to be made.
     change: Change,
@@ -248,7 +252,7 @@ impl Region {
     pub(crate) fn with_row(row: usize) -> Result<Self, TryFromIntError> {
         Index::try_from(row).map(|row_index| Self {
             start: Address::new(row_index, Index::from(0)),
-            length: END,
+            length: Length::End,
         })
     }
 }
@@ -344,7 +348,7 @@ impl Terminal {
     fn format(&self, length: Length, color: Color) -> Outcome {
         Self::process(
             self.window
-                .chgat(length.n(), pancurses::A_NORMAL, color.cp()),
+                .chgat(length.into(), pancurses::A_NORMAL, color.cp()),
             Error::Wchgat,
         )
     }
@@ -434,32 +438,25 @@ impl Default for Terminal {
 }
 
 #[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct TestableUserInterface;
+pub(crate) mod mock {
+    use super::{Edit, Outcome, TryFromIntError};
+    use double::{__private_mock_trait_new_impl, mock_method, mock_trait_no_default};
 
-#[cfg(test)]
-impl UserInterface for TestableUserInterface {
-    fn init(&self) -> Outcome {
-        Ok(())
-    }
+    mock_trait_no_default!(
+        pub UserInterface,
+        init() -> Outcome,
+        close() -> Outcome,
+        apply(Edit) -> Outcome,
+        flash() -> Outcome,
+        grid_height() -> Result<usize, TryFromIntError>,
+        receive_input() -> Option<char>);
 
-    fn close(&self) -> Outcome {
-        Ok(())
-    }
-
-    fn apply(&self, _edit: Edit) -> Outcome {
-        Ok(())
-    }
-
-    fn flash(&self) -> Outcome {
-        Ok(())
-    }
-
-    fn grid_height(&self) -> Result<usize, TryFromIntError> {
-        Ok(0)
-    }
-
-    fn receive_input(&self) -> Option<char> {
-        None
+    impl super::UserInterface for UserInterface {
+        mock_method!(init(&self) -> Outcome);
+        mock_method!(close(&self) -> Outcome);
+        mock_method!(apply(&self, _edit: Edit) -> Outcome);
+        mock_method!(flash(&self) -> Outcome);
+        mock_method!(grid_height(&self) -> Result<usize, TryFromIntError>);
+        mock_method!(receive_input(&self) -> Option<char>);
     }
 }
