@@ -64,7 +64,7 @@
 
 mod engine;
 mod num;
-mod ui;
+pub mod ui;
 
 use engine::{Controller, Notice};
 use rec::ChCls::{Any, Digit, End, Sign};
@@ -118,6 +118,21 @@ impl Paper {
     #[inline]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Crates a new paper application using a given [`UserInterface`].
+    pub fn with_ui(ui: Rc<dyn UserInterface>) -> Self {
+        // Can't use Default::default() due to Terminal::default() not always being supported.
+        Self {
+            ui,
+            controller: Controller::default(),
+            view: View::default(),
+            sketch: String::default(),
+            signals: Vec::default(),
+            noises: Vec::default(),
+            marks: Vec::default(),
+            filters: PaperFilters::default(),
+        }
     }
 
     /// Runs the application.
@@ -311,21 +326,6 @@ impl Paper {
     #[allow(clippy::integer_arithmetic)] // okay to divide usize by 4
     fn scroll_height(&self) -> Result<usize, TryFromIntError> {
         self.ui.grid_height().map(|height| height / 4)
-    }
-
-    #[cfg(test)]
-    fn with_ui(ui: Rc<dyn UserInterface>) -> Self {
-        // Can't use Default::default() due to Terminal::default() not always being supported.
-        Self {
-            ui,
-            controller: Controller::default(),
-            view: View::default(),
-            sketch: String::default(),
-            signals: Vec::default(),
-            noises: Vec::default(),
-            marks: Vec::default(),
-            filters: PaperFilters::default(),
-        }
     }
 }
 

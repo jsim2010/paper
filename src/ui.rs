@@ -7,7 +7,7 @@ use pancurses::Input;
 use std::error;
 
 /// The [`Result`] returned by functions of this module.
-pub(crate) type Outcome = Result<(), Error>;
+pub type Outcome = Result<(), Error>;
 /// The type specified by all grid index values
 ///
 /// Specified by [`pancurses`].
@@ -207,7 +207,7 @@ impl Display for Color {
 /// [`Region`]: struct.Region.html
 /// [`Address`]: struct.Address.html
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
-pub(crate) struct Edit {
+pub struct Edit {
     /// The [`Change`] to be made.
     change: Change,
     /// The [`Region`] on which the [`Change`] is intended.
@@ -268,7 +268,7 @@ impl Display for Region {
 /// All output is displayed in a grid of cells. Each cell contains one character and can change its
 /// background color.
 
-pub(crate) trait UserInterface: Debug {
+pub trait UserInterface: Debug {
     /// Sets up the user interface for use.
     fn init(&self) -> Outcome;
     /// Closes the user interface.
@@ -434,29 +434,5 @@ impl Default for Terminal {
             // Must call initscr() first.
             window: pancurses::initscr(),
         }
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod mock {
-    use super::{Edit, Outcome, TryFromIntError};
-    use double::{__private_mock_trait_new_impl, mock_method, mock_trait_no_default};
-
-    mock_trait_no_default!(
-        pub UserInterface,
-        init() -> Outcome,
-        close() -> Outcome,
-        apply(Edit) -> Outcome,
-        flash() -> Outcome,
-        grid_height() -> Result<usize, TryFromIntError>,
-        receive_input() -> Option<char>);
-
-    impl super::UserInterface for UserInterface {
-        mock_method!(init(&self) -> Outcome);
-        mock_method!(close(&self) -> Outcome);
-        mock_method!(apply(&self, _edit: Edit) -> Outcome);
-        mock_method!(flash(&self) -> Outcome);
-        mock_method!(grid_height(&self) -> Result<usize, TryFromIntError>);
-        mock_method!(receive_input(&self) -> Option<char>);
     }
 }
