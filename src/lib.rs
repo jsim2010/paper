@@ -78,10 +78,9 @@ use std::fs;
 use std::io;
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
-use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, Terminal, UserInterface,
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface,
     BACKSPACE, ENTER,
 };
 
@@ -92,9 +91,9 @@ const NEGATIVE_ONE: IndexType = -1;
 // In general, Paper methods should contain as little logic as possible. Instead all logic should
 // be included in Operations.
 #[derive(Debug)]
-pub struct Paper {
+pub struct Paper<'a> {
     /// User interface of the application.
-    ui: Rc<dyn UserInterface>,
+    ui: &'a dyn UserInterface,
     /// Manages all functionality the application.
     controller: Controller,
     /// Data of the file being edited.
@@ -113,16 +112,10 @@ pub struct Paper {
     filters: PaperFilters,
 }
 
-impl Paper {
+impl<'a> Paper<'a> {
     /// Creates a new paper application.
     #[inline]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Crates a new paper application using a given [`UserInterface`].
-    pub fn with_ui(ui: Rc<dyn UserInterface>) -> Self {
-        // Can't use Default::default() due to Terminal::default() not always being supported.
+    pub fn new(ui: &'a dyn UserInterface) -> Self {
         Self {
             ui,
             controller: Controller::default(),
@@ -326,21 +319,6 @@ impl Paper {
     #[allow(clippy::integer_arithmetic)] // okay to divide usize by 4
     fn scroll_height(&self) -> Result<usize, TryFromIntError> {
         self.ui.grid_height().map(|height| height / 4)
-    }
-}
-
-impl Default for Paper {
-    fn default() -> Self {
-        Self {
-            ui: Rc::new(Terminal::default()),
-            controller: Controller::default(),
-            view: View::default(),
-            sketch: String::default(),
-            signals: Vec::default(),
-            noises: Vec::default(),
-            marks: Vec::default(),
-            filters: PaperFilters::default(),
-        }
     }
 }
 

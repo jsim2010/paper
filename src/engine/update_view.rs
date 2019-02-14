@@ -10,7 +10,7 @@ impl Operation for Op {
         String::from("UpdateView")
     }
 
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
+    fn operate(&self, paper: &mut Paper<'_>, opcode: OpCode) -> Output {
         if let OpCode::UpdateView(input) = opcode {
             paper.update_view(input)?;
         }

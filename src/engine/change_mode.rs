@@ -10,7 +10,7 @@ impl Operation for Op {
         String::from("ChangeMode")
     }
 
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
+    fn operate(&self, paper: &mut Paper<'_>, opcode: OpCode) -> Output {
         if let OpCode::ChangeMode(mode) = opcode {
             match mode {
                 Mode::Display => {

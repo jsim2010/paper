@@ -22,7 +22,7 @@ pub(crate) const ENTER: char = '\n';
 // Currently ESC is set to Ctrl-C to allow manual testing within vim terminal where ESC is already
 // mapped.
 /// The character that represents the `Esc` key.
-pub(crate) const ESC: char = '';
+pub const ESC: char = '';
 
 /// Represents the default color.
 const DEFAULT_COLOR: i16 = -1;
@@ -284,17 +284,24 @@ pub trait UserInterface: Debug {
     /// Returns [`None`] if no character input is provided.
     ///
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    fn receive_input(&self) -> Option<char>;
+    fn receive_input(&self) -> Option<Input>;
 }
 
 /// The user interface provided by a terminal.
 #[derive(Debug)]
-pub(crate) struct Terminal {
+pub struct Terminal {
     /// The window that interfaces with the application.
     window: pancurses::Window,
 }
 
 impl Terminal {
+    /// Creates a new `Terminal`.
+    pub fn new() -> Self {
+        Self {
+            // Must call initscr() first.
+            window: pancurses::initscr(),
+        }
+    }
     /// Converts given result of ui function to a [`Outcome`].
     fn process(result: i32, error: Error) -> Outcome {
         if result == pancurses::OK {
@@ -420,19 +427,7 @@ impl UserInterface for Terminal {
         usize::try_from(self.window.get_max_y())
     }
 
-    fn receive_input(&self) -> Option<char> {
-        match self.window.getch() {
-            Some(Input::Character(c)) => Some(c),
-            _ => None,
-        }
-    }
-}
-
-impl Default for Terminal {
-    fn default() -> Self {
-        Self {
-            // Must call initscr() first.
-            window: pancurses::initscr(),
-        }
+    fn receive_input(&self) -> Option<Input> {
+        self.window.getch()
     }
 }

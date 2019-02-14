@@ -10,7 +10,7 @@ impl Operation for Op {
         String::from("MarkAt")
     }
 
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
+    fn operate(&self, paper: &mut Paper<'_>, opcode: OpCode) -> Output {
         if let OpCode::MarkAt(edge) = opcode {
             paper.set_marks(edge);
         }

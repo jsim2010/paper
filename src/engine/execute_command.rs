@@ -31,7 +31,7 @@ impl Operation for Op {
         String::from("ExecuteCommand")
     }
 
-    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Output {
+    fn operate(&self, paper: &mut Paper<'_>, _opcode: OpCode) -> Output {
         let command = paper.sketch().clone();
         let command_tokens = self.command_pattern.tokenize(&command);
 

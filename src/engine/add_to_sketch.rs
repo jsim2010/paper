@@ -10,7 +10,7 @@ impl Operation for Op {
         String::from("AddToSketch")
     }
 
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
+    fn operate(&self, paper: &mut Paper<'_>, opcode: OpCode) -> Output {
         if let OpCode::AddToSketch(input) = opcode {
             if let BACKSPACE = input {
                 if paper.sketch_mut().pop().is_none() {
