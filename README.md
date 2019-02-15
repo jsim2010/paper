@@ -4,6 +4,9 @@ A terminal-based editor with goals to maximize simplicity and efficiency.
 
 This project is very much in an alpha state.
 
+[![Waffle.io - Columns and their card
+count](https://badge.waffle.io/jsim2010/paper.svg?columns=all)](https://waffle.io/jsim2010/paper)
+
 Its features include:
 - Modal editing (keys implement different functionality depending on the current mode).
 - Extensive but relatively simple filter grammar that allows user to select any text.
@@ -13,7 +16,7 @@ Future items on the Roadmap:
 - Implement suggestions for commands to improve user experience.
 - Support Language Server Protocol.
 
-## Development
+### Development
 
 Clone the repository and enter the directory:
 
