@@ -1,13 +1,15 @@
 mod mock;
 
 use paper::Paper;
-use pancurses::Input;
 use mock::MockUserInterface;
 
+/// Startup should initiailize the user interface.
+///
+/// WHEN the application starts running,
+/// THEN the user interface should initialize.
 #[test]
 fn initializes_ui() {
-    let mock_ui = MockUserInterface::default();
-    mock_ui.receive_input.return_value(Some(Input::KeyClose));
+    let mock_ui = MockUserInterface::new(Vec::with_capacity(1));
     let mut paper = Paper::new(&mock_ui);
 
     paper.run().unwrap();

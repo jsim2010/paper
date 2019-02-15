@@ -1,5 +1,6 @@
 use double::{mock_method};
-use paper::ui::{Edit, Outcome, UserInterface};
+use paper::ui::{Change, Region, Address, Index, Edit, Outcome, UserInterface};
+use paper::num::Length;
 use try_from::TryFromIntError;
 use pancurses::Input;
 
@@ -13,16 +14,22 @@ pub struct MockUserInterface {
     pub receive_input: double::Mock<(), Option<Input>>,
 }
 
-impl Default for MockUserInterface {
-    fn default() -> Self {
-        Self {
+impl MockUserInterface {
+    /// Creates a new `MockUserInterface`.
+    ///
+    /// Adds `KeyClose` to end of inputs so that test stops running.
+    pub fn new(mut inputs: Vec<Option<Input>>) -> Self {
+        let mock_ui = Self {
             init: double::Mock::new(Ok(())),
             close: double::Mock::new(Ok(())),
             apply: double::Mock::new(Ok(())),
             flash: double::Mock::new(Ok(())),
             grid_height: double::Mock::new(Ok(0)),
             receive_input: double::Mock::default(),
-        }
+        };
+        inputs.push(Some(Input::KeyClose));
+        mock_ui.receive_input.return_values(inputs);
+        mock_ui
     }
 }
 
@@ -33,4 +40,8 @@ impl UserInterface for MockUserInterface {
     mock_method!(flash(&self) -> Outcome);
     mock_method!(grid_height(&self) -> Result<usize, TryFromIntError>);
     mock_method!(receive_input(&self) -> Option<Input>);
+}
+
+pub fn display_sketch_edit(sketch: String) -> Edit {
+    Edit::new(Region::new(Address::new(Index::from(0), Index::from(0)), Length::End), Change::Row(sketch))
 }

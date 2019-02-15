@@ -125,6 +125,7 @@ pub enum OpCode {
     MarkAt(Edge),
     /// Executes [`update_view::Op`].
     UpdateView(char),
+    /// Executes [`quit::Op`].
     Quit,
 }
 

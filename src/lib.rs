@@ -62,9 +62,10 @@
 #![allow(clippy::missing_inline_in_public_items)]
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 
-mod engine;
-mod num;
+pub mod num;
 pub mod ui;
+
+mod engine;
 
 use engine::{Controller, Notice};
 use rec::ChCls::{Any, Digit, End, Sign};

@@ -13,10 +13,10 @@ pub type Outcome = Result<(), Error>;
 /// Specified by [`pancurses`].
 pub(crate) type IndexType = i32;
 /// The type of all grid index values.
-pub(crate) type Index = NonNegativeI32;
+pub type Index = NonNegativeI32;
 
 /// The character that represents the `Backspace` key.
-pub(crate) const BACKSPACE: char = '\u{08}';
+pub const BACKSPACE: char = '\u{08}';
 /// The character that represents the `Enter` key.
 pub(crate) const ENTER: char = '\n';
 // Currently ESC is set to Ctrl-C to allow manual testing within vim terminal where ESC is already
@@ -92,7 +92,7 @@ impl error::Error for Error {}
 
 /// Signifies a specific cell in the grid.
 #[derive(Clone, Copy, Eq, Debug, Default, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct Address {
+pub struct Address {
     /// The index of the row that contains the cell (starts at 0).
     row: Index,
     /// The index of the column that contains the cell (starts at 0).
@@ -101,7 +101,7 @@ pub(crate) struct Address {
 
 impl Address {
     /// Creates a new `Address` with a given row and column.
-    pub(crate) fn new(row: Index, column: Index) -> Self {
+    pub fn new(row: Index, column: Index) -> Self {
         Self { row, column }
     }
 
@@ -132,7 +132,7 @@ impl Display for Address {
 
 /// Signifies a modification to the grid.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum Change {
+pub enum Change {
     /// Removes the previous cell, moving all subsequent cells to the left.
     Backspace,
     /// Clears all cells.
@@ -169,8 +169,8 @@ impl Display for Change {
 }
 
 /// Signifies a color.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum Color {
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Color {
     /// The default foreground on a blue background.
     Blue,
     /// The default foreground on the default background.
@@ -219,7 +219,7 @@ impl Edit {
     ///
     /// [`Region`]: struct.Region.html
     /// [`Change`]: enum.Change.html
-    pub(crate) fn new(region: Region, change: Change) -> Self {
+    pub fn new(region: Region, change: Change) -> Self {
         Self { region, change }
     }
 }
@@ -228,7 +228,7 @@ impl Edit {
 ///
 /// [`Address`]: struct.Address.html
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub(crate) struct Region {
+pub struct Region {
     /// The first [`Address`].
     ///
     /// [`Address`]: struct.Address.html
@@ -244,7 +244,7 @@ impl Region {
     ///
     /// [`Address`]: struct.Address.html
     /// [`Length`]: struct.Length.html
-    pub(crate) fn new(start: Address, length: Length) -> Self {
+    pub fn new(start: Address, length: Length) -> Self {
         Self { start, length }
     }
 
@@ -297,10 +297,7 @@ pub struct Terminal {
 impl Terminal {
     /// Creates a new `Terminal`.
     pub fn new() -> Self {
-        Self {
-            // Must call initscr() first.
-            window: pancurses::initscr(),
-        }
+        Self::default()
     }
     /// Converts given result of ui function to a [`Outcome`].
     fn process(result: i32, error: Error) -> Outcome {
@@ -380,6 +377,15 @@ impl Terminal {
     /// Initializes the default colors.
     fn use_default_colors(&self) -> Outcome {
         Self::process(pancurses::use_default_colors(), Error::UseDefaultColors)
+    }
+}
+
+impl Default for Terminal {
+    fn default() -> Self {
+        Self {
+            // Must call initscr() first.
+            window: pancurses::initscr(),
+        }
     }
 }
 
