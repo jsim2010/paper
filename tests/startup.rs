@@ -1,7 +1,7 @@
 mod mock;
 
-use paper::Paper;
 use mock::MockUserInterface;
+use paper::Paper;
 
 /// Startup should initiailize the user interface.
 ///

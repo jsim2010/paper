@@ -1,8 +1,8 @@
-use double::{mock_method};
-use paper::ui::{Change, Region, Address, Index, Edit, Outcome, UserInterface};
-use paper::num::Length;
-use try_from::TryFromIntError;
+use double::mock_method;
 use pancurses::Input;
+use paper::num::Length;
+use paper::ui::{Address, Change, Edit, Index, Outcome, Region, UserInterface};
+use try_from::TryFromIntError;
 
 #[derive(Debug, Clone)]
 pub struct MockUserInterface {
@@ -43,5 +43,8 @@ impl UserInterface for MockUserInterface {
 }
 
 pub fn display_sketch_edit(sketch: String) -> Edit {
-    Edit::new(Region::new(Address::new(Index::from(0), Index::from(0)), Length::End), Change::Row(sketch))
+    Edit::new(
+        Region::new(Address::new(Index::from(0), Index::from(0)), Length::End),
+        Change::Row(sketch),
+    )
 }

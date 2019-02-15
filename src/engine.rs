@@ -15,12 +15,12 @@ use crate::{
     error, fmt, io, some, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter, HashMap,
     Paper, Pattern, TryFromIntError, BACKSPACE, ENTER,
 };
+use pancurses::Input;
 use rec::ChCls::{Not, Whitespace};
 use rec::{lazy_some, opt, var};
 use std::mem::{discriminant, Discriminant};
 use std::rc::Rc;
 use ui::ESC;
-use pancurses::Input;
 
 /// Signifies a [`Result`] during the execution of an [`Operation`].
 pub(crate) type Outcome<T> = Result<T, Failure>;

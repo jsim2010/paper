@@ -1,8 +1,8 @@
 //! Tests the functionality of closing the application.
 mod mock;
 
-use paper::Paper;
 use mock::MockUserInterface;
+use paper::Paper;
 
 /// A `Close` input should close the user interface.
 ///

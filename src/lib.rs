@@ -45,7 +45,6 @@
     missing_copy_implementations,
     missing_debug_implementations,
     missing_docs,
-    single_use_lifetimes,
     trivial_casts,
     trivial_numeric_casts,
     unreachable_pub,
@@ -61,6 +60,7 @@
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 #![allow(clippy::missing_inline_in_public_items)]
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
+// single_use_lifetimes: issue rust-lang/rust#55057
 
 pub mod num;
 pub mod ui;
@@ -81,8 +81,7 @@ use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface,
-    BACKSPACE, ENTER,
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, ENTER,
 };
 
 /// An [`IndexType`] with a value of `-1`.

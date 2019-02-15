@@ -1,8 +1,8 @@
 mod mock;
 
-use paper::Paper;
 use mock::MockUserInterface;
 use pancurses::Input;
+use paper::Paper;
 use spectral::prelude::*;
 use std::iter;
 
@@ -18,7 +18,8 @@ fn period_enters_command_mode() {
 
     paper.run().unwrap();
 
-    assert_that!(mock_ui.apply.calls()).equals_iterator(&iter::once(&mock::display_sketch_edit(String::from(""))));
+    assert_that!(mock_ui.apply.calls())
+        .equals_iterator(&iter::once(&mock::display_sketch_edit(String::from(""))));
 }
 
 /// `#` in Display mode should enter Filter mode.
@@ -33,7 +34,8 @@ fn pound_sign_enters_filter_mode() {
 
     paper.run().unwrap();
 
-    assert_that!(mock_ui.apply.calls()).equals_iterator(&iter::once(&mock::display_sketch_edit(String::from("#"))));
+    assert_that!(mock_ui.apply.calls())
+        .equals_iterator(&iter::once(&mock::display_sketch_edit(String::from("#"))));
 }
 
 /// `/` in Display mode should enter Filter mode.
@@ -48,5 +50,6 @@ fn backslash_enters_filter_mode() {
 
     paper.run().unwrap();
 
-    assert_that!(mock_ui.apply.calls()).equals_iterator(&iter::once(&mock::display_sketch_edit(String::from("/"))));
+    assert_that!(mock_ui.apply.calls())
+        .equals_iterator(&iter::once(&mock::display_sketch_edit(String::from("/"))));
 }

@@ -1,6 +1,6 @@
 use clap::{crate_authors, crate_version, App};
-use paper::Paper;
 use paper::ui::Terminal;
+use paper::Paper;
 
 fn main() {
     let _matches = App::new("paper")
