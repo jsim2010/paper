@@ -7,22 +7,22 @@ use pancurses::Input;
 use std::error;
 
 /// The [`Result`] returned by functions of this module.
-pub(crate) type Outcome = Result<(), Error>;
+pub type Outcome = Result<(), Error>;
 /// The type specified by all grid index values
 ///
 /// Specified by [`pancurses`].
 pub(crate) type IndexType = i32;
 /// The type of all grid index values.
-pub(crate) type Index = NonNegativeI32;
+pub type Index = NonNegativeI32;
 
 /// The character that represents the `Backspace` key.
-pub(crate) const BACKSPACE: char = '\u{08}';
+pub const BACKSPACE: char = '\u{08}';
 /// The character that represents the `Enter` key.
 pub(crate) const ENTER: char = '\n';
 // Currently ESC is set to Ctrl-C to allow manual testing within vim terminal where ESC is already
 // mapped.
 /// The character that represents the `Esc` key.
-pub(crate) const ESC: char = '';
+pub const ESC: char = '';
 
 /// Represents the default color.
 const DEFAULT_COLOR: i16 = -1;
@@ -92,7 +92,7 @@ impl error::Error for Error {}
 
 /// Signifies a specific cell in the grid.
 #[derive(Clone, Copy, Eq, Debug, Default, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct Address {
+pub struct Address {
     /// The index of the row that contains the cell (starts at 0).
     row: Index,
     /// The index of the column that contains the cell (starts at 0).
@@ -101,7 +101,7 @@ pub(crate) struct Address {
 
 impl Address {
     /// Creates a new `Address` with a given row and column.
-    pub(crate) fn new(row: Index, column: Index) -> Self {
+    pub fn new(row: Index, column: Index) -> Self {
         Self { row, column }
     }
 
@@ -132,7 +132,7 @@ impl Display for Address {
 
 /// Signifies a modification to the grid.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum Change {
+pub enum Change {
     /// Removes the previous cell, moving all subsequent cells to the left.
     Backspace,
     /// Clears all cells.
@@ -169,8 +169,8 @@ impl Display for Change {
 }
 
 /// Signifies a color.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum Color {
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Color {
     /// The default foreground on a blue background.
     Blue,
     /// The default foreground on the default background.
@@ -207,7 +207,7 @@ impl Display for Color {
 /// [`Region`]: struct.Region.html
 /// [`Address`]: struct.Address.html
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
-pub(crate) struct Edit {
+pub struct Edit {
     /// The [`Change`] to be made.
     change: Change,
     /// The [`Region`] on which the [`Change`] is intended.
@@ -219,7 +219,7 @@ impl Edit {
     ///
     /// [`Region`]: struct.Region.html
     /// [`Change`]: enum.Change.html
-    pub(crate) fn new(region: Region, change: Change) -> Self {
+    pub fn new(region: Region, change: Change) -> Self {
         Self { region, change }
     }
 }
@@ -228,7 +228,7 @@ impl Edit {
 ///
 /// [`Address`]: struct.Address.html
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub(crate) struct Region {
+pub struct Region {
     /// The first [`Address`].
     ///
     /// [`Address`]: struct.Address.html
@@ -244,7 +244,7 @@ impl Region {
     ///
     /// [`Address`]: struct.Address.html
     /// [`Length`]: struct.Length.html
-    pub(crate) fn new(start: Address, length: Length) -> Self {
+    pub fn new(start: Address, length: Length) -> Self {
         Self { start, length }
     }
 
@@ -268,7 +268,7 @@ impl Display for Region {
 /// All output is displayed in a grid of cells. Each cell contains one character and can change its
 /// background color.
 
-pub(crate) trait UserInterface: Debug {
+pub trait UserInterface: Debug {
     /// Sets up the user interface for use.
     fn init(&self) -> Outcome;
     /// Closes the user interface.
@@ -284,17 +284,21 @@ pub(crate) trait UserInterface: Debug {
     /// Returns [`None`] if no character input is provided.
     ///
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    fn receive_input(&self) -> Option<char>;
+    fn receive_input(&self) -> Option<Input>;
 }
 
 /// The user interface provided by a terminal.
 #[derive(Debug)]
-pub(crate) struct Terminal {
+pub struct Terminal {
     /// The window that interfaces with the application.
     window: pancurses::Window,
 }
 
 impl Terminal {
+    /// Creates a new `Terminal`.
+    pub fn new() -> Self {
+        Self::default()
+    }
     /// Converts given result of ui function to a [`Outcome`].
     fn process(result: i32, error: Error) -> Outcome {
         if result == pancurses::OK {
@@ -376,6 +380,15 @@ impl Terminal {
     }
 }
 
+impl Default for Terminal {
+    fn default() -> Self {
+        Self {
+            // Must call initscr() first.
+            window: pancurses::initscr(),
+        }
+    }
+}
+
 impl UserInterface for Terminal {
     fn init(&self) -> Outcome {
         self.start_color()?;
@@ -420,43 +433,7 @@ impl UserInterface for Terminal {
         usize::try_from(self.window.get_max_y())
     }
 
-    fn receive_input(&self) -> Option<char> {
-        match self.window.getch() {
-            Some(Input::Character(c)) => Some(c),
-            _ => None,
-        }
-    }
-}
-
-impl Default for Terminal {
-    fn default() -> Self {
-        Self {
-            // Must call initscr() first.
-            window: pancurses::initscr(),
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod mock {
-    use super::{Edit, Outcome, TryFromIntError};
-    use double::{__private_mock_trait_new_impl, mock_method, mock_trait_no_default};
-
-    mock_trait_no_default!(
-        pub UserInterface,
-        init() -> Outcome,
-        close() -> Outcome,
-        apply(Edit) -> Outcome,
-        flash() -> Outcome,
-        grid_height() -> Result<usize, TryFromIntError>,
-        receive_input() -> Option<char>);
-
-    impl super::UserInterface for UserInterface {
-        mock_method!(init(&self) -> Outcome);
-        mock_method!(close(&self) -> Outcome);
-        mock_method!(apply(&self, _edit: Edit) -> Outcome);
-        mock_method!(flash(&self) -> Outcome);
-        mock_method!(grid_height(&self) -> Result<usize, TryFromIntError>);
-        mock_method!(receive_input(&self) -> Option<char>);
+    fn receive_input(&self) -> Option<Input> {
+        self.window.getch()
     }
 }

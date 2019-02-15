@@ -6,6 +6,7 @@ mod draw_sketch;
 mod execute_command;
 mod filter_signals;
 mod mark_at;
+mod quit;
 mod reduce_noise;
 mod scroll;
 mod update_view;
@@ -14,6 +15,7 @@ use crate::{
     error, fmt, io, some, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter, HashMap,
     Paper, Pattern, TryFromIntError, BACKSPACE, ENTER,
 };
+use pancurses::Input;
 use rec::ChCls::{Not, Whitespace};
 use rec::{lazy_some, opt, var};
 use std::mem::{discriminant, Discriminant};
@@ -44,12 +46,12 @@ pub(crate) struct Controller {
 
 impl Controller {
     /// Returns the [`Operation`]s to be executed based on the current [`Mode`].
-    pub(crate) fn process_input(&self, input: Option<char>) -> Vec<OpCode> {
-        if let Some(c) = input {
-            return self.mode().process_input(c);
+    pub(crate) fn process_input(&self, input: Option<Input>) -> Vec<OpCode> {
+        match input {
+            Some(Input::Character(c)) => self.mode().process_input(c),
+            Some(Input::KeyClose) => vec![OpCode::Quit],
+            _ => Vec::with_capacity(0),
         }
-
-        Vec::with_capacity(0)
     }
 
     /// Sets the current [`Mode`].
@@ -123,6 +125,8 @@ pub enum OpCode {
     MarkAt(Edge),
     /// Executes [`update_view::Op`].
     UpdateView(char),
+    /// Executes [`quit::Op`].
+    Quit,
 }
 
 impl OpCode {
@@ -144,6 +148,7 @@ impl Display for OpCode {
             OpCode::ReduceNoise => write!(f, "Reduce noise"),
             OpCode::MarkAt(edge) => write!(f, "Mark at {}", edge),
             OpCode::UpdateView(c) => write!(f, "Update view with '{}'", c),
+            OpCode::Quit => write!(f, "Quit"),
         }
     }
 }
@@ -246,7 +251,7 @@ pub(crate) struct Operations {
 
 impl Operations {
     /// Executes the [`Operation`] described by an [`OpCode`].
-    pub(crate) fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
+    pub(crate) fn operate(&self, paper: &mut Paper<'_>, opcode: OpCode) -> Output {
         self.ops.get(&opcode.id()).map_or(
             Err(Failure::InvalidOpCode {
                 operation: String::from("N/A"),
@@ -265,6 +270,7 @@ impl Default for Operations {
         let execute_command: Rc<dyn Operation> = Rc::new(execute_command::Op::new());
         let filter_signals: Rc<dyn Operation> = Rc::new(filter_signals::Op::new());
         let mark_at: Rc<dyn Operation> = Rc::new(mark_at::Op);
+        let quit: Rc<dyn Operation> = Rc::new(quit::Op);
         let reduce_noise: Rc<dyn Operation> = Rc::new(reduce_noise::Op);
         let scroll: Rc<dyn Operation> = Rc::new(scroll::Op);
         let update_view: Rc<dyn Operation> = Rc::new(update_view::Op);
@@ -277,6 +283,7 @@ impl Default for Operations {
                 (OpCode::ExecuteCommand.id(), execute_command),
                 (OpCode::FilterSignals.id(), filter_signals),
                 (OpCode::MarkAt(Edge::default()).id(), mark_at),
+                (OpCode::Quit.id(), quit),
                 (OpCode::ReduceNoise.id(), reduce_noise),
                 (OpCode::Scroll(Direction::default()).id(), scroll),
                 (OpCode::UpdateView(Default::default()).id(), update_view),
@@ -293,7 +300,7 @@ trait Operation: Debug {
     /// Returns the name of the `Operation`.
     fn name(&self) -> String;
     /// Executes the `Operation`.
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output;
+    fn operate(&self, paper: &mut Paper<'_>, opcode: OpCode) -> Output;
 }
 
 /// Signifies an [`error::Error`] that occurs during the execution of an [`Operation`].

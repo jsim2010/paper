@@ -10,7 +10,7 @@ impl Operation for Op {
         String::from("ReduceNoise")
     }
 
-    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Output {
+    fn operate(&self, paper: &mut Paper<'_>, _opcode: OpCode) -> Output {
         paper.reduce_noise();
         Ok(None)
     }

@@ -18,7 +18,7 @@ const END: i32 = -1;
 ///
 /// `i32::from(value) >= 0`
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct NonNegativeI32(i32);
+pub struct NonNegativeI32(i32);
 
 impl NonNegativeI32 {
     /// Returns the negative of `self`.
@@ -134,7 +134,7 @@ impl TryFrom<NonNegativeI32> for usize {
 
 /// Signifies the number of elements in a list.
 #[derive(Clone, Copy, Eq, Debug, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) enum Length {
+pub enum Length {
     /// The value that covers all indexes.
     Value(NonNegativeI32),
     /// The value needed to cover all elements from the current one to the end.

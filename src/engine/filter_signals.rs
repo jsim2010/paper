@@ -22,7 +22,7 @@ impl Operation for Op {
         String::from("FilterSignals")
     }
 
-    fn operate(&self, paper: &mut Paper, _opcode: OpCode) -> Output {
+    fn operate(&self, paper: &mut Paper<'_>, _opcode: OpCode) -> Output {
         let filter = paper.sketch().clone();
 
         if let Some(last_feature) = self

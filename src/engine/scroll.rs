@@ -11,7 +11,7 @@ impl Operation for Op {
         String::from("Scroll")
     }
 
-    fn operate(&self, paper: &mut Paper, opcode: OpCode) -> Output {
+    fn operate(&self, paper: &mut Paper<'_>, opcode: OpCode) -> Output {
         if let OpCode::Scroll(direction) = opcode {
             let mut movement = IndexType::try_from(paper.scroll_height()?)?;
 

@@ -45,7 +45,6 @@
     missing_copy_implementations,
     missing_debug_implementations,
     missing_docs,
-    single_use_lifetimes,
     trivial_casts,
     trivial_numeric_casts,
     unreachable_pub,
@@ -61,10 +60,12 @@
 #![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
 #![allow(clippy::missing_inline_in_public_items)]
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
+// single_use_lifetimes: issue rust-lang/rust#55057
+
+pub mod num;
+pub mod ui;
 
 mod engine;
-mod num;
-mod ui;
 
 use engine::{Controller, Notice};
 use rec::ChCls::{Any, Digit, End, Sign};
@@ -78,11 +79,9 @@ use std::fs;
 use std::io;
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
-use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, Terminal, UserInterface,
-    BACKSPACE, ENTER,
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, ENTER,
 };
 
 /// An [`IndexType`] with a value of `-1`.
@@ -92,9 +91,9 @@ const NEGATIVE_ONE: IndexType = -1;
 // In general, Paper methods should contain as little logic as possible. Instead all logic should
 // be included in Operations.
 #[derive(Debug)]
-pub struct Paper {
+pub struct Paper<'a> {
     /// User interface of the application.
-    ui: Rc<dyn UserInterface>,
+    ui: &'a dyn UserInterface,
     /// Manages all functionality the application.
     controller: Controller,
     /// Data of the file being edited.
@@ -113,11 +112,20 @@ pub struct Paper {
     filters: PaperFilters,
 }
 
-impl Paper {
+impl<'a> Paper<'a> {
     /// Creates a new paper application.
     #[inline]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(ui: &'a dyn UserInterface) -> Self {
+        Self {
+            ui,
+            controller: Controller::default(),
+            view: View::default(),
+            sketch: String::default(),
+            signals: Vec::default(),
+            noises: Vec::default(),
+            marks: Vec::default(),
+            filters: PaperFilters::default(),
+        }
     }
 
     /// Runs the application.
@@ -311,36 +319,6 @@ impl Paper {
     #[allow(clippy::integer_arithmetic)] // okay to divide usize by 4
     fn scroll_height(&self) -> Result<usize, TryFromIntError> {
         self.ui.grid_height().map(|height| height / 4)
-    }
-
-    #[cfg(test)]
-    fn with_ui(ui: Rc<dyn UserInterface>) -> Self {
-        // Can't use Default::default() due to Terminal::default() not always being supported.
-        Self {
-            ui,
-            controller: Controller::default(),
-            view: View::default(),
-            sketch: String::default(),
-            signals: Vec::default(),
-            noises: Vec::default(),
-            marks: Vec::default(),
-            filters: PaperFilters::default(),
-        }
-    }
-}
-
-impl Default for Paper {
-    fn default() -> Self {
-        Self {
-            ui: Rc::new(Terminal::default()),
-            controller: Controller::default(),
-            view: View::default(),
-            sketch: String::default(),
-            signals: Vec::default(),
-            noises: Vec::default(),
-            marks: Vec::default(),
-            filters: PaperFilters::default(),
-        }
     }
 }
 
