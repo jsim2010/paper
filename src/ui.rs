@@ -18,7 +18,7 @@ pub type Index = NonNegativeI32;
 /// The character that represents the `Backspace` key.
 pub const BACKSPACE: char = '\u{08}';
 /// The character that represents the `Enter` key.
-pub(crate) const ENTER: char = '\n';
+pub const ENTER: char = '\n';
 // Currently ESC is set to Ctrl-C to allow manual testing within vim terminal where ESC is already
 // mapped.
 /// The character that represents the `Esc` key.

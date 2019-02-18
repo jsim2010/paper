@@ -69,8 +69,9 @@ pub mod num;
 pub mod ui;
 
 mod engine;
+mod storage;
 
-use engine::{Controller, Notice};
+use engine::{Controller, Notice, Outcome};
 use rec::ChCls::{Any, Digit, End, Sign};
 use rec::{some, tkn, Element, Pattern};
 use std::borrow::Borrow;
@@ -78,14 +79,13 @@ use std::cmp::{self, Ordering};
 use std::collections::HashMap;
 use std::error;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::fs;
-use std::io;
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
     Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, ENTER,
 };
+use storage::File;
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
@@ -100,7 +100,7 @@ pub struct Paper<'a> {
     /// Manages all functionality the application.
     controller: Controller,
     /// Data of the file being edited.
-    view: View,
+    view: View<'a>,
     /// Characters being edited to be analyzed by the application.
     sketch: String,
     /// [`Section`]s of the view that match the current filter.
@@ -133,7 +133,7 @@ impl<'a> Paper<'a> {
 
     /// Runs the application.
     #[inline]
-    pub fn run(&mut self) -> engine::Outcome<()> {
+    pub fn run(&mut self) -> Outcome<()> {
         self.ui.init()?;
         let operations = engine::Operations::default();
 
@@ -154,7 +154,7 @@ impl<'a> Paper<'a> {
     }
 
     /// Displays the view on the user interface.
-    fn display_view(&self) -> engine::Outcome<()> {
+    fn display_view(&self) -> Outcome<()> {
         for edit in self.view.redraw_edits().take(self.ui.grid_height()?) {
             self.ui.apply(edit)?;
         }
@@ -163,7 +163,7 @@ impl<'a> Paper<'a> {
     }
 
     /// Sets the view.
-    fn change_view(&mut self, path: &str) -> io::Result<()> {
+    fn change_view(&mut self, path: &str) -> Outcome<()> {
         self.view = View::with_file(String::from(path))?;
         self.noises.clear();
 
@@ -177,7 +177,7 @@ impl<'a> Paper<'a> {
     }
 
     /// Saves the data of the view.
-    fn save_view(&self) -> io::Result<()> {
+    fn save_view(&self) -> Outcome<()> {
         self.view.put()
     }
 
@@ -212,7 +212,7 @@ impl<'a> Paper<'a> {
     }
 
     /// Draws the sketch on the ui.
-    fn draw_sketch(&self) -> engine::Outcome<()> {
+    fn draw_sketch(&self) -> Outcome<()> {
         self.ui.apply(Edit::new(
             Region::with_row(0)?,
             Change::Row(self.sketch.clone()),
@@ -221,7 +221,7 @@ impl<'a> Paper<'a> {
     }
 
     /// Clears the background of the entire display.
-    fn clear_background(&self) -> engine::Outcome<()> {
+    fn clear_background(&self) -> Outcome<()> {
         for row in 0..self.ui.grid_height()? {
             self.format_region(Region::with_row(row)?, Color::Default)?;
         }
@@ -252,7 +252,7 @@ impl<'a> Paper<'a> {
     }
 
     /// Scrolls the view.
-    fn scroll(&mut self, movement: IndexType) -> engine::Outcome<()> {
+    fn scroll(&mut self, movement: IndexType) -> Outcome<()> {
         self.view.scroll(movement);
         self.display_view()
     }
@@ -286,7 +286,7 @@ impl<'a> Paper<'a> {
     }
 
     /// Adds a char to all [`Mark`]s and updates the view.
-    fn update_view(&mut self, c: char) -> engine::Outcome<()> {
+    fn update_view(&mut self, c: char) -> Outcome<()> {
         let mut adjustment = Adjustment::default();
 
         for mark in &mut self.marks {
@@ -368,7 +368,7 @@ impl<'a> Iterator for PaperFiltersIter<'a> {
 
 /// Signfifies the data being viewed/edited.
 #[derive(Clone, Debug, Default)]
-struct View {
+struct View<'a> {
     /// The data.
     data: String,
     /// The first line that is displayed in the ui.
@@ -377,16 +377,17 @@ struct View {
     margin_width: usize,
     /// The number of lines stored in the view.
     line_count: usize,
-    /// The path where the view's data is stored.
-    path: String,
+    /// The file where the view's data is stored.
+    file: File<'a>,
 }
 
-impl View {
+impl View<'_> {
     /// Creates a new `View` with data from the given path.
-    fn with_file(path: String) -> io::Result<Self> {
+    fn with_file(path: String) -> Outcome<Self> {
+        let file = File::new(path);
         let mut view = Self {
-            data: fs::read_to_string(path.as_str())?.replace('\r', ""),
-            path,
+            data: file.read()?,
+            file,
             ..Self::default()
         };
 
@@ -510,8 +511,8 @@ impl View {
     }
 
     /// Writes the view's data to its file.
-    fn put(&self) -> io::Result<()> {
-        fs::write(&self.path, &self.data)
+    fn put(&self) -> Outcome<()> {
+        self.file.write(&self.data)
     }
 }
 
@@ -545,7 +546,7 @@ impl Adjustment {
     }
 
     /// Creates an `Adjustment` based on the given context.
-    fn create(c: char, place: Place, view: &View) -> Option<Self> {
+    fn create(c: char, place: Place, view: &View<'_>) -> Option<Self> {
         match c {
             BACKSPACE => {
                 if place.column == 0 {
@@ -931,7 +932,7 @@ trait Filter: Debug {
         &self,
         feature: &str,
         sections: &mut Vec<Section>,
-        view: &View,
+        view: &View<'_>,
     ) -> Result<(), TryFromIntError>;
 }
 
@@ -963,7 +964,7 @@ impl Filter for LineFilter {
         &self,
         feature: &str,
         sections: &mut Vec<Section>,
-        _view: &View,
+        _view: &View<'_>,
     ) -> Result<(), TryFromIntError> {
         let tokens = self.pattern.tokenize(feature);
 
@@ -1022,7 +1023,7 @@ impl Filter for PatternFilter {
         &self,
         feature: &str,
         sections: &mut Vec<Section>,
-        view: &View,
+        view: &View<'_>,
     ) -> Result<(), TryFromIntError> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
             if let Ok(search_pattern) = Pattern::load(user_pattern) {

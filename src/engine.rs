@@ -12,12 +12,13 @@ mod scroll;
 mod update_view;
 
 use crate::{
-    error, fmt, io, some, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter, HashMap,
+    error, fmt, some, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter, HashMap,
     Paper, Pattern, TryFromIntError, BACKSPACE, ENTER,
 };
 use pancurses::Input;
 use rec::ChCls::{Not, Whitespace};
 use rec::{lazy_some, opt, var};
+use std::io;
 use std::mem::{discriminant, Discriminant};
 use std::rc::Rc;
 use ui::ESC;
