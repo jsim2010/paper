@@ -21,7 +21,7 @@ impl Operation for Op {
                     .ok_or(Failure::Conversion(TryFromIntError::Overflow))?;
             }
 
-            paper.scroll(movement)?;
+            paper.scroll(movement);
             paper.display_view()?;
         }
 

@@ -18,7 +18,7 @@ pub type Index = NonNegativeI32;
 /// The character that represents the `Backspace` key.
 pub const BACKSPACE: char = '\u{08}';
 /// The character that represents the `Enter` key.
-pub const ENTER: char = '\n';
+pub(crate) const ENTER: char = '\n';
 // Currently ESC is set to Ctrl-C to allow manual testing within vim terminal where ESC is already
 // mapped.
 /// The character that represents the `Esc` key.
@@ -169,20 +169,22 @@ impl Display for Change {
 }
 
 /// Signifies a color.
+///
+/// Order must be kept as defined.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Color {
-    /// The default foreground on a blue background.
-    Blue,
     /// The default foreground on the default background.
     Default,
     /// The default foreground on a red background.
     Red,
+    Green,
+    Yellow,
+    /// The default foreground on a blue background.
+    Blue,
 }
 
 impl Color {
     /// Converts `self` to a `color-pair` as specified in [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
     fn cp(self) -> i16 {
         self as i16
     }
@@ -191,9 +193,11 @@ impl Color {
 impl Display for Color {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Color::Blue => write!(f, "Blue"),
             Color::Default => write!(f, "Default"),
             Color::Red => write!(f, "Red"),
+            Color::Green => write!(f, "Green"),
+            Color::Yellow => write!(f, "Yellow"),
+            Color::Blue => write!(f, "Blue"),
         }
     }
 }
@@ -330,6 +334,7 @@ impl Terminal {
 
     /// Defines [`Color`] as having a background color.
     fn define_color(&self, color: Color, background: i16) -> Outcome {
+        dbg!(color.cp());
         Self::process(
             pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
             Error::InitPair,

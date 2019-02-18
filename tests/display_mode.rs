@@ -1,9 +1,8 @@
 mod mock;
 
-use mock::MockUserInterface;
+use mock::{MockUserInterface, MockExplorer};
 use pancurses::Input;
-use paper::Paper;
-use paper::ui::ENTER;
+use paper::{Paper, File};
 use spectral::prelude::*;
 use std::iter;
 
@@ -55,33 +54,26 @@ fn backslash_enters_filter_mode() {
         .equals_iterator(&iter::once(&mock::display_sketch_edit(String::from("/"))));
 }
 
-/// 'j' in Display mode should scroll view down 1/4 of file.
+/// 'j' in Display mode should scroll view down 1/4 of screen
 ///
-/// GIVEN the application is in Display mode and viewing a file with 20 lines,
+/// GIVEN the application is in Display mode and the screen is 8 lines,
 /// WHEN the user enters 'j',
-/// THEN the user interface should display lines 6-20.
+/// THEN the user interface should display lines starting at line 3.
 #[test]
 fn j_scrolls_down() {
     let mock_ui = MockUserInterface::new(vec![
-        Some(Input::Character('s')),
-        Some(Input::Character('e')),
-        Some(Input::Character('e')),
-        Some(Input::Character(' ')),
-        Some(Input::Character('M')),
-        Some(Input::Character('O')),
-        Some(Input::Character('C')),
-        Some(Input::Character('K')),
-        Some(Input::Character(':')),
-        Some(Input::Character('/')),
-        Some(Input::Character('/')),
-        Some(Input::Character('t')),
-        Some(Input::Character('e')),
-        Some(Input::Character('s')),
-        Some(Input::Character('t')),
-        Some(Input::Character(ENTER)),
         Some(Input::Character('j')),
     ]);
-    let mut paper = Paper::new(&mock_ui);
+    let mock_explorer = MockExplorer::new();
+    let file = File::new(&mock_explorer, String::from("mock"));
+    mock_explorer.read.return_value(Ok(String::from("a\nb\nc\nd\ne\nf\ng\nh")));
 
+    let mut paper = Paper::with_file(&mock_ui, file);
+
+    mock_ui.grid_height.return_value(Ok(8));
     paper.run().unwrap();
+
+    assert_that!(mock_ui.apply.calls()[0]).is_equal_to(&mock::display_clear_edit());
+    assert_that!(mock_ui.apply.calls()[1]).is_equal_to(&mock::display_row_edit(0, 2, String::from("3 c")));
+    assert_that!(mock_ui.apply.calls().len()).is_equal_to(7);
 }

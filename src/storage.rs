@@ -1,19 +1,17 @@
-use crate::{Debug, Outcome};
+use crate::{fmt, Formatter, Display, Debug, Outcome};
 use std::fs;
+use std::io;
+use std::error;
 
 #[derive(Clone, Debug)]
-pub(crate) struct File<'a> {
+pub struct File<'a> {
     path: String,
     explorer: &'a dyn Explorer,
 }
 
-impl File<'_> {
-    pub(crate) fn new(path: String) -> Self {
-        if path.starts_with("MOCK://") {
-            Self {path, explorer: &MockExplorer}
-        } else {
-            Self {path, explorer: &Local}
-        }
+impl<'a> File<'a> {
+    pub fn new(explorer: &'a dyn Explorer, path: String) -> Self {
+        Self {path, explorer}
     }
 
     pub(crate) fn read(&self) -> Outcome<String> {
@@ -31,13 +29,13 @@ impl Default for File<'_> {
     }
 }
 
-trait Explorer: Debug {
+pub trait Explorer: Debug {
     fn read(&self, path: &String) -> Outcome<String>;
     fn write(&self, path: &String, data: &String) -> Outcome<()>;
 }
 
 #[derive(Debug)]
-struct Local;
+pub(crate) struct Local;
 
 impl Explorer for Local {
     fn read(&self, path: &String) -> Outcome<String> {
@@ -50,15 +48,23 @@ impl Explorer for Local {
     }
 }
 
-#[derive(Debug)]
-struct MockExplorer;
+#[derive(Clone, Debug)]
+pub struct Error {
+    kind: io::ErrorKind,
+}
 
-impl Explorer for MockExplorer {
-    fn read(&self, path: &String) -> Outcome<String> {
-        Ok(String::new())
+impl error::Error for Error {}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "IO Error")
     }
+}
 
-    fn write(&self, path: &String, data: &String) -> Outcome<()> {
-        Ok(())
+impl From<io::Error> for Error {
+    fn from(value: io::Error) -> Self {
+        Self {
+            kind: value.kind(),
+        }
     }
 }

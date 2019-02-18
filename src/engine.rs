@@ -13,7 +13,7 @@ mod update_view;
 
 use crate::{
     error, fmt, some, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter, HashMap,
-    Paper, Pattern, TryFromIntError, BACKSPACE, ENTER,
+    Paper, Pattern, TryFromIntError, BACKSPACE, ENTER, storage,
 };
 use pancurses::Input;
 use rec::ChCls::{Not, Whitespace};
@@ -24,7 +24,7 @@ use std::rc::Rc;
 use ui::ESC;
 
 /// Signifies a [`Result`] during the execution of an [`Operation`].
-pub(crate) type Outcome<T> = Result<T, Failure>;
+pub type Outcome<T> = Result<T, Failure>;
 /// Signifies the final [`Outcome`] of an [`Operation`].
 type Output = Outcome<Option<Notice>>;
 
@@ -305,7 +305,7 @@ trait Operation: Debug {
 }
 
 /// Signifies an [`error::Error`] that occurs during the execution of an [`Operation`].
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Failure {
     /// An [`OpCode`] does not match what was expected.
     InvalidOpCode {
@@ -318,8 +318,8 @@ pub enum Failure {
     Ui(ui::Error),
     /// An attempt to convert one type to another was unsuccessful.
     Conversion(TryFromIntError),
-    /// An error occurred during the execution of an [`std::io`] command.
-    Io(io::Error),
+    /// An error occurred during the execution of File command.
+    File(storage::Error),
 }
 
 impl error::Error for Failure {
@@ -328,7 +328,7 @@ impl error::Error for Failure {
             Failure::InvalidOpCode { .. } => None,
             Failure::Ui(error) => Some(error),
             Failure::Conversion(error) => Some(error),
-            Failure::Io(error) => Some(error),
+            Failure::File(error) => Some(error),
         }
     }
 }
@@ -346,7 +346,7 @@ impl Display for Failure {
             ),
             Failure::Ui(error) => write!(f, "{}", error),
             Failure::Conversion(error) => write!(f, "{}", error),
-            Failure::Io(error) => write!(f, "{}", error),
+            Failure::File(error) => write!(f, "{}", error),
         }
     }
 }
@@ -365,7 +365,7 @@ impl From<TryFromIntError> for Failure {
 
 impl From<io::Error> for Failure {
     fn from(error: io::Error) -> Self {
-        Failure::Io(error)
+        Failure::File(storage::Error::from(error))
     }
 }
 

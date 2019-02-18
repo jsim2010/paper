@@ -71,7 +71,10 @@ pub mod ui;
 mod engine;
 mod storage;
 
-use engine::{Controller, Notice, Outcome};
+pub use engine::Outcome;
+pub use storage::{File, Explorer};
+
+use engine::{Controller, Notice};
 use rec::ChCls::{Any, Digit, End, Sign};
 use rec::{some, tkn, Element, Pattern};
 use std::borrow::Borrow;
@@ -85,7 +88,6 @@ use try_from::{TryFrom, TryFromIntError};
 use ui::{
     Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, ENTER,
 };
-use storage::File;
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
@@ -131,6 +133,19 @@ impl<'a> Paper<'a> {
         }
     }
 
+    pub fn with_file(ui: &'a dyn UserInterface, file: File<'a>) -> Self {
+        Self {
+            ui,
+            controller: Controller::default(),
+            view: View::with_file(file).unwrap_or_default(),
+            sketch: String::default(),
+            signals: Vec::default(),
+            noises: Vec::default(),
+            marks: Vec::default(),
+            filters: PaperFilters::default(),
+        }
+    }
+
     /// Runs the application.
     #[inline]
     pub fn run(&mut self) -> Outcome<()> {
@@ -164,7 +179,7 @@ impl<'a> Paper<'a> {
 
     /// Sets the view.
     fn change_view(&mut self, path: &str) -> Outcome<()> {
-        self.view = View::with_file(String::from(path))?;
+        self.view = View::with_file(File::new(&storage::Local, String::from(path)))?;
         self.noises.clear();
 
         for line in 1..=self.view.line_count {
@@ -252,9 +267,8 @@ impl<'a> Paper<'a> {
     }
 
     /// Scrolls the view.
-    fn scroll(&mut self, movement: IndexType) -> Outcome<()> {
+    fn scroll(&mut self, movement: IndexType) -> () {
         self.view.scroll(movement);
-        self.display_view()
     }
 
     /// Updates the formatting to show filter matches.
@@ -381,10 +395,9 @@ struct View<'a> {
     file: File<'a>,
 }
 
-impl View<'_> {
-    /// Creates a new `View` with data from the given path.
-    fn with_file(path: String) -> Outcome<Self> {
-        let file = File::new(path);
+impl<'a> View<'a> {
+    /// Creates a new `View` with data from the given [`File`].
+    fn with_file(file: File<'a>) -> Outcome<Self> {
         let mut view = Self {
             data: file.read()?,
             file,
@@ -885,8 +898,9 @@ impl Iterator for LineNumberIterator {
     type Item = LineNumber;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let line_number = LineNumber(self.current.0);
         self.current.0 += 1;
-        Some(self.current)
+        Some(line_number)
     }
 }
 
