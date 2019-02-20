@@ -169,20 +169,23 @@ impl Display for Change {
 }
 
 /// Signifies a color.
+// Order must be kept as defined to match pancurses.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Color {
-    /// The default foreground on a blue background.
-    Blue,
     /// The default foreground on the default background.
     Default,
     /// The default foreground on a red background.
     Red,
+    /// The default foreground on a green background.
+    Green,
+    /// The default foreground on a yellow background.
+    Yellow,
+    /// The default foreground on a blue background.
+    Blue,
 }
 
 impl Color {
     /// Converts `self` to a `color-pair` as specified in [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
     fn cp(self) -> i16 {
         self as i16
     }
@@ -191,9 +194,11 @@ impl Color {
 impl Display for Color {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Color::Blue => write!(f, "Blue"),
             Color::Default => write!(f, "Default"),
             Color::Red => write!(f, "Red"),
+            Color::Green => write!(f, "Green"),
+            Color::Yellow => write!(f, "Yellow"),
+            Color::Blue => write!(f, "Blue"),
         }
     }
 }
@@ -330,6 +335,7 @@ impl Terminal {
 
     /// Defines [`Color`] as having a background color.
     fn define_color(&self, color: Color, background: i16) -> Outcome {
+        dbg!(color.cp());
         Self::process(
             pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
             Error::InitPair,

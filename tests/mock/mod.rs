@@ -1,15 +1,17 @@
 use double::mock_method;
 use pancurses::Input;
 use paper::num::Length;
-use paper::ui::{Address, Change, Edit, Index, Outcome, Region, UserInterface};
+use paper::ui;
+use paper::ui::{Address, Change, Edit, Index, Region, UserInterface};
+use paper::{Explorer, Outcome};
 use try_from::TryFromIntError;
 
 #[derive(Debug, Clone)]
 pub struct MockUserInterface {
-    pub init: double::Mock<(), Outcome>,
-    pub close: double::Mock<(), Outcome>,
-    pub apply: double::Mock<(Edit), Outcome>,
-    pub flash: double::Mock<(), Outcome>,
+    pub init: double::Mock<(), ui::Outcome>,
+    pub close: double::Mock<(), ui::Outcome>,
+    pub apply: double::Mock<(Edit), ui::Outcome>,
+    pub flash: double::Mock<(), ui::Outcome>,
     pub grid_height: double::Mock<(), Result<usize, TryFromIntError>>,
     pub receive_input: double::Mock<(), Option<Input>>,
 }
@@ -34,17 +36,58 @@ impl MockUserInterface {
 }
 
 impl UserInterface for MockUserInterface {
-    mock_method!(init(&self) -> Outcome);
-    mock_method!(close(&self) -> Outcome);
-    mock_method!(apply(&self, _edit: Edit) -> Outcome);
-    mock_method!(flash(&self) -> Outcome);
+    mock_method!(init(&self) -> ui::Outcome);
+    mock_method!(close(&self) -> ui::Outcome);
+    mock_method!(apply(&self, _edit: Edit) -> ui::Outcome);
+    mock_method!(flash(&self) -> ui::Outcome);
     mock_method!(grid_height(&self) -> Result<usize, TryFromIntError>);
     mock_method!(receive_input(&self) -> Option<Input>);
 }
 
+#[derive(Debug, Clone)]
+pub struct MockExplorer {
+    pub read: double::Mock<(String), Outcome<String>>,
+    pub write: double::Mock<(String, String), Outcome<()>>,
+}
+
+impl MockExplorer {
+    pub fn new() -> Self {
+        Self {
+            read: double::Mock::new(Ok(String::new())),
+            write: double::Mock::new(Ok(())),
+        }
+    }
+}
+
+impl Explorer for MockExplorer {
+    mock_method!(read(&self, path: &str) -> Outcome<String>, self, {
+        self.read.call(path.to_owned())
+    });
+    mock_method!(write(&self, path: &str, data: &str) -> Outcome<()>, self, {
+        self.write(&path.to_owned(), &data.to_owned())
+    });
+}
+
 pub fn display_sketch_edit(sketch: String) -> Edit {
+    display_row_edit(0, 0, sketch)
+}
+
+pub fn display_row_edit(row: u16, column: u16, line: String) -> Edit {
     Edit::new(
-        Region::new(Address::new(Index::from(0), Index::from(0)), Length::End),
-        Change::Row(sketch),
+        Region::new(
+            Address::new(Index::from(row), Index::from(column)),
+            Length::End,
+        ),
+        Change::Row(line),
+    )
+}
+
+pub fn display_clear_edit() -> Edit {
+    Edit::new(
+        Region::new(
+            Address::new(Index::from(0), Index::from(0)),
+            Length::Value(Index::from(0)),
+        ),
+        Change::Clear,
     )
 }
