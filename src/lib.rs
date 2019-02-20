@@ -518,10 +518,10 @@ impl<'a> View<'a> {
         );
 
         if new_first_line == self.first_line {
-            return false;
+            false
         } else {
             self.first_line = new_first_line;
-            return true;
+            true
         }
     }
 
@@ -537,6 +537,7 @@ impl<'a> View<'a> {
     }
 }
 
+/// Represents if the user interface display needs to change.
 type IsChanging = bool;
 
 /// Signifies a modification of the view.
