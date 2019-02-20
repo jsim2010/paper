@@ -1,8 +1,8 @@
 use double::mock_method;
 use pancurses::Input;
 use paper::num::Length;
-use paper::ui::{Address, Change, Edit, Index, Region, UserInterface};
 use paper::ui;
+use paper::ui::{Address, Change, Edit, Index, Region, UserInterface};
 use paper::{Explorer, Outcome};
 use try_from::TryFromIntError;
 
@@ -60,8 +60,12 @@ impl MockExplorer {
 }
 
 impl Explorer for MockExplorer {
-    mock_method!(read(&self, path: &String) -> Outcome<String>);
-    mock_method!(write(&self, path: &String, data: &String) -> Outcome<()>);
+    mock_method!(read(&self, path: &str) -> Outcome<String>, self, {
+        self.read.call(path.to_owned())
+    });
+    mock_method!(write(&self, path: &str, data: &str) -> Outcome<()>, self, {
+        self.write(&path.to_owned(), &data.to_owned())
+    });
 }
 
 pub fn display_sketch_edit(sketch: String) -> Edit {
@@ -69,9 +73,21 @@ pub fn display_sketch_edit(sketch: String) -> Edit {
 }
 
 pub fn display_row_edit(row: u16, column: u16, line: String) -> Edit {
-    Edit::new(Region::new(Address::new(Index::from(row), Index::from(column)), Length::End), Change::Row(line))
+    Edit::new(
+        Region::new(
+            Address::new(Index::from(row), Index::from(column)),
+            Length::End,
+        ),
+        Change::Row(line),
+    )
 }
 
 pub fn display_clear_edit() -> Edit {
-    Edit::new(Region::new(Address::new(Index::from(0), Index::from(0)), Length::Value(Index::from(0))), Change::Clear)
+    Edit::new(
+        Region::new(
+            Address::new(Index::from(0), Index::from(0)),
+            Length::Value(Index::from(0)),
+        ),
+        Change::Clear,
+    )
 }

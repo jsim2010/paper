@@ -169,15 +169,16 @@ impl Display for Change {
 }
 
 /// Signifies a color.
-///
-/// Order must be kept as defined.
+// Order must be kept as defined to match pancurses.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Color {
     /// The default foreground on the default background.
     Default,
     /// The default foreground on a red background.
     Red,
+    /// The default foreground on a green background.
     Green,
+    /// The default foreground on a yellow background.
     Yellow,
     /// The default foreground on a blue background.
     Blue,

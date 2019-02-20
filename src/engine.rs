@@ -12,8 +12,8 @@ mod scroll;
 mod update_view;
 
 use crate::{
-    error, fmt, some, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter, HashMap,
-    Paper, Pattern, TryFromIntError, BACKSPACE, ENTER, storage,
+    error, fmt, some, storage, tkn, ui, Any, Debug, Display, Edge, Element, End, Formatter,
+    HashMap, Paper, Pattern, TryFromIntError, BACKSPACE, ENTER,
 };
 use pancurses::Input;
 use rec::ChCls::{Not, Whitespace};

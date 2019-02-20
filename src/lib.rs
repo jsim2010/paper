@@ -72,7 +72,7 @@ mod engine;
 mod storage;
 
 pub use engine::Outcome;
-pub use storage::{File, Explorer};
+pub use storage::{Explorer, File};
 
 use engine::{Controller, Notice};
 use rec::ChCls::{Any, Digit, End, Sign};
@@ -133,6 +133,7 @@ impl<'a> Paper<'a> {
         }
     }
 
+    /// Creates a new paper application with the given [`File`].
     pub fn with_file(ui: &'a dyn UserInterface, file: File<'a>) -> Self {
         Self {
             ui,
@@ -267,8 +268,8 @@ impl<'a> Paper<'a> {
     }
 
     /// Scrolls the view.
-    fn scroll(&mut self, movement: IndexType) -> () {
-        self.view.scroll(movement);
+    fn scroll(&mut self, movement: IndexType) -> IsChanging {
+        self.view.scroll(movement)
     }
 
     /// Updates the formatting to show filter matches.
@@ -510,11 +511,18 @@ impl<'a> View<'a> {
     }
 
     /// Scrolls the view's data.
-    fn scroll(&mut self, movement: IndexType) {
-        self.first_line = cmp::min(
+    fn scroll(&mut self, movement: IndexType) -> IsChanging {
+        let new_first_line = cmp::min(
             self.first_line + movement,
             LineNumber::new(self.line_count).unwrap_or_default(),
         );
+
+        if new_first_line == self.first_line {
+            return false;
+        } else {
+            self.first_line = new_first_line;
+            return true;
+        }
     }
 
     /// The length of the line that has a given [`Place`].
@@ -528,6 +536,8 @@ impl<'a> View<'a> {
         self.file.write(&self.data)
     }
 }
+
+type IsChanging = bool;
 
 /// Signifies a modification of the view.
 #[derive(Clone, Debug, Default)]
