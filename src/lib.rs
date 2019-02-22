@@ -840,8 +840,9 @@ impl LineNumber {
     }
 
     /// Converts `LineNumber` to its row index - assuming line number `1` as at row `0`.
-    #[allow(clippy::integer_arithmetic)] // self.0 >= 0
+    #[allow(clippy::integer_arithmetic)] // self.0 > 0
     fn row(self) -> usize {
+        dbg!(self.0);
         (self.0 - 1) as usize
     }
 }
@@ -851,10 +852,10 @@ impl Add<IndexType> for LineNumber {
 
     fn add(self, other: IndexType) -> Self::Output {
         #[allow(clippy::integer_arithmetic)] // i64::min_value() <= u32 + i32 <= i64::max_value()
-        match LineNumberType::try_from(i64::from(self.0) + i64::from(other)) {
+        match usize::try_from(i64::from(self.0) + i64::from(other)) {
+            Ok(sum) => LineNumber::new(sum).unwrap_or_default(),
             Err(TryFromIntError::Underflow) => Self::default(),
             Err(TryFromIntError::Overflow) => Self(LineNumberType::max_value()),
-            Ok(sum) => LineNumber(sum),
         }
     }
 }
