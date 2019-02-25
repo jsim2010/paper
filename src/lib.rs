@@ -123,13 +123,7 @@ impl<'a> Paper<'a> {
     pub fn new(ui: &'a dyn UserInterface) -> Self {
         Self {
             ui,
-            controller: Controller::default(),
-            view: View::default(),
-            sketch: String::default(),
-            signals: Vec::default(),
-            noises: Vec::default(),
-            marks: Vec::default(),
-            filters: PaperFilters::default(),
+            ..Self::default()
         }
     }
 
@@ -137,13 +131,8 @@ impl<'a> Paper<'a> {
     pub fn with_file(ui: &'a dyn UserInterface, file: File<'a>) -> Self {
         Self {
             ui,
-            controller: Controller::default(),
             view: View::with_file(file).unwrap_or_default(),
-            sketch: String::default(),
-            signals: Vec::default(),
-            noises: Vec::default(),
-            marks: Vec::default(),
-            filters: PaperFilters::default(),
+            ..Self::default()
         }
     }
 
@@ -337,6 +326,21 @@ impl<'a> Paper<'a> {
     #[allow(clippy::integer_arithmetic)] // okay to divide usize by 4
     fn scroll_height(&self) -> Result<usize, TryFromIntError> {
         self.ui.grid_height().map(|height| height / 4)
+    }
+}
+
+impl Default for Paper<'_> {
+    fn default() -> Self {
+        Self {
+            ui: &ui::NullUserInterface,
+            controller: Controller::default(),
+            view: View::default(),
+            sketch: String::default(),
+            signals: Vec::default(),
+            noises: Vec::default(),
+            marks: Vec::default(),
+            filters: PaperFilters::default(),
+        }
     }
 }
 

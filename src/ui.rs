@@ -30,6 +30,8 @@ const DEFAULT_COLOR: i16 = -1;
 /// Describes possible errors during ui functions.
 #[derive(Clone, Copy, Debug)]
 pub enum Error {
+    /// Describes an error due to no user interface being created.
+    NoUi,
     /// Describes a possible error during call to `endwin()`.
     Endwin,
     /// Describes a possible error during call to `flash()`.
@@ -78,13 +80,17 @@ impl Error {
             Error::Wdelch => "wdelch",
             Error::Winsch => "winsch",
             Error::Wmove => "wmove",
+            Error::NoUi => "",
         }
     }
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "Failed while calling {}().", self.get_function())
+        match self {
+            Error::NoUi => write!(f, "No UserInterface was created."),
+            _ => write!(f, "Failed while calling {}().", self.get_function())
+        }
     }
 }
 
@@ -272,7 +278,6 @@ impl Display for Region {
 ///
 /// All output is displayed in a grid of cells. Each cell contains one character and can change its
 /// background color.
-
 pub trait UserInterface: Debug {
     /// Sets up the user interface for use.
     fn init(&self) -> Outcome;
@@ -290,6 +295,36 @@ pub trait UserInterface: Debug {
     ///
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     fn receive_input(&self) -> Option<Input>;
+}
+
+#[derive(Debug)]
+pub(crate) struct NullUserInterface;
+
+impl UserInterface for NullUserInterface {
+    fn init(&self) -> Outcome {
+        Err(Error::NoUi)
+    }
+
+    fn close(&self) -> Outcome {
+        Err(Error::NoUi)
+    }
+
+    fn grid_height(&self) -> Result<usize, TryFromIntError> {
+        Ok(0)
+    }
+
+
+    fn apply(&self, _: Edit) -> Outcome {
+        Err(Error::NoUi)
+    }
+
+    fn flash(&self) -> Outcome {
+        Err(Error::NoUi)
+    }
+
+    fn receive_input(&self) -> Option<Input> {
+        None
+    }
 }
 
 /// The user interface provided by a terminal.
