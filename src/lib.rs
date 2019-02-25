@@ -853,7 +853,7 @@ impl Add<IndexType> for LineNumber {
     fn add(self, other: IndexType) -> Self::Output {
         #[allow(clippy::integer_arithmetic)] // i64::min_value() <= u32 + i32 <= i64::max_value()
         match usize::try_from(i64::from(self.0) + i64::from(other)) {
-            Ok(sum) => LineNumber::new(sum).unwrap_or_default(),
+            Ok(sum) => Self::new(sum).unwrap_or_default(),
             Err(TryFromIntError::Underflow) => Self::default(),
             Err(TryFromIntError::Overflow) => Self(LineNumberType::max_value()),
         }

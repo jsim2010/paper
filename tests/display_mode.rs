@@ -189,7 +189,9 @@ fn k_scrolls_up() {
     ]);
     let mock_explorer = MockExplorer::new();
     let file = File::new(&mock_explorer, String::from("mock"));
-    mock_explorer.read.return_value(Ok(String::from("a\nb\nc\nd\ne")));
+    mock_explorer
+        .read
+        .return_value(Ok(String::from("a\nb\nc\nd\ne")));
     mock_ui.grid_height.return_value(Ok(8));
     let mut paper = Paper::with_file(&mock_ui, file);
 
@@ -206,16 +208,25 @@ fn k_scrolls_up() {
                     break;
                 }
             }
-            None => panic!("Unable to fine the last edit from setup in {:?}", mock_ui.apply.calls()),
+            None => panic!(
+                "Unable to fine the last edit from setup in {:?}",
+                mock_ui.apply.calls()
+            ),
         }
     }
 
     assert_that!(edits.next())
         .is_some()
         .is_equal_to(&mock::display_clear_edit());
-    assert_that!(edits.next()).is_some().is_equal_to(&mock::display_row_edit(0, 2, String::from("3 c")));
-    assert_that!(edits.next()).is_some().is_equal_to(&mock::display_row_edit(1, 2, String::from("4 d")));
-    assert_that!(edits.next()).is_some().is_equal_to(&mock::display_row_edit(2, 2, String::from("5 e")));
+    assert_that!(edits.next())
+        .is_some()
+        .is_equal_to(&mock::display_row_edit(0, 2, String::from("3 c")));
+    assert_that!(edits.next())
+        .is_some()
+        .is_equal_to(&mock::display_row_edit(1, 2, String::from("4 d")));
+    assert_that!(edits.next())
+        .is_some()
+        .is_equal_to(&mock::display_row_edit(2, 2, String::from("5 e")));
     assert_that!(edits.next()).is_none();
 }
 
@@ -252,15 +263,22 @@ fn k_does_not_scroll_past_first_line() {
                     break;
                 }
             }
-            None => panic!("Unable to fine the last edit from setup in {:?}", mock_ui.apply.calls()),
+            None => panic!(
+                "Unable to fine the last edit from setup in {:?}",
+                mock_ui.apply.calls()
+            ),
         }
     }
 
     assert_that!(edits.next())
         .is_some()
         .is_equal_to(&mock::display_clear_edit());
-    assert_that!(edits.next()).is_some().is_equal_to(&mock::display_row_edit(0, 2, String::from("1 a")));
-    assert_that!(edits.next()).is_some().is_equal_to(&mock::display_row_edit(1, 2, String::from("2 b")));
+    assert_that!(edits.next())
+        .is_some()
+        .is_equal_to(&mock::display_row_edit(0, 2, String::from("1 a")));
+    assert_that!(edits.next())
+        .is_some()
+        .is_equal_to(&mock::display_row_edit(1, 2, String::from("2 b")));
     assert_that!(edits.next()).is_none();
 }
 
@@ -271,9 +289,7 @@ fn k_does_not_scroll_past_first_line() {
 /// THEN the user interface should do nothing.
 #[test]
 fn k_at_first_line_does_nothing() {
-    let mock_ui = MockUserInterface::new(vec![
-        Some(Input::Character('k')),
-    ]);
+    let mock_ui = MockUserInterface::new(vec![Some(Input::Character('k'))]);
     let mock_explorer = MockExplorer::new();
     let file = File::new(&mock_explorer, String::from("mock"));
     mock_explorer.read.return_value(Ok(String::from("a")));
