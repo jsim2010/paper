@@ -89,7 +89,7 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Error::NoUi => write!(f, "No UserInterface was created."),
-            _ => write!(f, "Failed while calling {}().", self.get_function())
+            _ => write!(f, "Failed while calling {}().", self.get_function()),
         }
     }
 }
@@ -297,6 +297,7 @@ pub trait UserInterface: Debug {
     fn receive_input(&self) -> Option<Input>;
 }
 
+/// An empty instance of a [`UserInterface`].
 #[derive(Debug)]
 pub(crate) struct NullUserInterface;
 
@@ -312,7 +313,6 @@ impl UserInterface for NullUserInterface {
     fn grid_height(&self) -> Result<usize, TryFromIntError> {
         Ok(0)
     }
-
 
     fn apply(&self, _: Edit) -> Outcome {
         Err(Error::NoUi)

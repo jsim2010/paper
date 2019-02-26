@@ -46,12 +46,12 @@ impl Controller {
                 'j' => vec![OpCode::Scroll(Direction::Down)],
                 'k' => vec![OpCode::Scroll(Direction::Up)],
                 _ => Vec::with_capacity(0),
-            }
+            },
             (Mode::Command, Some(Input::Character(c))) => match c {
                 ENTER => vec![OpCode::ExecuteCommand, OpCode::ChangeMode(Mode::Display)],
                 ESC => vec![OpCode::ChangeMode(Mode::Display)],
                 _ => vec![OpCode::AddToSketch(c), OpCode::DrawSketch],
-            }
+            },
             (Mode::Filter, Some(Input::Character(c))) => match c {
                 ENTER => vec![OpCode::ChangeMode(Mode::Action)],
                 '\t' => vec![
@@ -67,17 +67,17 @@ impl Controller {
                     OpCode::DrawSketch,
                     OpCode::FilterSignals,
                 ],
-            }
+            },
             (Mode::Action, Some(Input::Character(c))) => match c {
                 ESC => vec![OpCode::ChangeMode(Mode::Display)],
                 'i' => vec![OpCode::MarkAt(Edge::Start), OpCode::ChangeMode(Mode::Edit)],
                 'I' => vec![OpCode::MarkAt(Edge::End), OpCode::ChangeMode(Mode::Edit)],
                 _ => Vec::with_capacity(0),
-            }
+            },
             (Mode::Edit, Some(Input::Character(c))) => match c {
                 ESC => vec![OpCode::ChangeMode(Mode::Display)],
                 _ => vec![OpCode::UpdateView(c)],
-            }
+            },
             (_, _) => Vec::with_capacity(0),
         }
     }
