@@ -33,42 +33,58 @@ type Output = Outcome<Option<Notice>>;
 pub(crate) struct Controller {
     /// The current [`Mode`].
     mode: Mode,
-    /// The implementation of [`DisplayMode`].
-    display: DisplayMode,
-    /// The implementation of [`CommandMode`].
-    command: CommandMode,
-    /// The implementation of [`FilterMode`].
-    filter: FilterMode,
-    /// The implementation of [`ActionMode`].
-    action: ActionMode,
-    /// The implementation of [`EditMode`].
-    edit: EditMode,
 }
 
 impl Controller {
     /// Returns the [`Operation`]s to be executed based on the current [`Mode`].
     pub(crate) fn process_input(&self, input: Option<Input>) -> Vec<OpCode> {
-        match input {
-            Some(Input::Character(c)) => self.mode().process_input(c),
-            Some(Input::KeyClose) => vec![OpCode::Quit],
-            _ => Vec::with_capacity(0),
+        match (self.mode, input) {
+            (_, Some(Input::KeyClose)) => vec![OpCode::Quit],
+            (Mode::Display, Some(Input::Character(c))) => match c {
+                '.' => vec![OpCode::ChangeMode(Mode::Command)],
+                '#' | '/' => vec![OpCode::AddToSketch(c), OpCode::ChangeMode(Mode::Filter)],
+                'j' => vec![OpCode::Scroll(Direction::Down)],
+                'k' => vec![OpCode::Scroll(Direction::Up)],
+                _ => Vec::with_capacity(0),
+            },
+            (Mode::Command, Some(Input::Character(c))) => match c {
+                ENTER => vec![OpCode::ExecuteCommand, OpCode::ChangeMode(Mode::Display)],
+                ESC => vec![OpCode::ChangeMode(Mode::Display)],
+                _ => vec![OpCode::AddToSketch(c), OpCode::DrawSketch],
+            },
+            (Mode::Filter, Some(Input::Character(c))) => match c {
+                ENTER => vec![OpCode::ChangeMode(Mode::Action)],
+                '\t' => vec![
+                    OpCode::ReduceNoise,
+                    OpCode::AddToSketch('&'),
+                    OpCode::AddToSketch('&'),
+                    OpCode::DrawSketch,
+                    OpCode::FilterSignals,
+                ],
+                ESC => vec![OpCode::ChangeMode(Mode::Display)],
+                _ => vec![
+                    OpCode::AddToSketch(c),
+                    OpCode::DrawSketch,
+                    OpCode::FilterSignals,
+                ],
+            },
+            (Mode::Action, Some(Input::Character(c))) => match c {
+                ESC => vec![OpCode::ChangeMode(Mode::Display)],
+                'i' => vec![OpCode::MarkAt(Edge::Start), OpCode::ChangeMode(Mode::Edit)],
+                'I' => vec![OpCode::MarkAt(Edge::End), OpCode::ChangeMode(Mode::Edit)],
+                _ => Vec::with_capacity(0),
+            },
+            (Mode::Edit, Some(Input::Character(c))) => match c {
+                ESC => vec![OpCode::ChangeMode(Mode::Display)],
+                _ => vec![OpCode::UpdateView(c)],
+            },
+            (_, _) => Vec::with_capacity(0),
         }
     }
 
     /// Sets the current [`Mode`].
     pub(crate) fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
-    }
-
-    /// Returns the [`ModeHandler`] of the current [`Mode`].
-    fn mode(&self) -> &dyn ModeHandler {
-        match self.mode {
-            Mode::Display => &self.display,
-            Mode::Command => &self.command,
-            Mode::Filter => &self.filter,
-            Mode::Action => &self.action,
-            Mode::Edit => &self.edit,
-        }
     }
 }
 
@@ -150,95 +166,6 @@ impl Display for OpCode {
             OpCode::MarkAt(edge) => write!(f, "Mark at {}", edge),
             OpCode::UpdateView(c) => write!(f, "Update view with '{}'", c),
             OpCode::Quit => write!(f, "Quit"),
-        }
-    }
-}
-
-/// Defines the functionality implemented while the application is in a [`Mode`].
-trait ModeHandler {
-    /// Returns the [`Operation`]s appropriate for an input.
-    fn process_input(&self, input: char) -> Vec<OpCode>;
-}
-
-/// Implements the functionality while the application is in [`Mode::Display`].
-#[derive(Debug, Default)]
-struct DisplayMode;
-
-impl ModeHandler for DisplayMode {
-    fn process_input(&self, input: char) -> Vec<OpCode> {
-        match input {
-            '.' => vec![OpCode::ChangeMode(Mode::Command)],
-            '#' | '/' => vec![OpCode::AddToSketch(input), OpCode::ChangeMode(Mode::Filter)],
-            'j' => vec![OpCode::Scroll(Direction::Down)],
-            'k' => vec![OpCode::Scroll(Direction::Up)],
-            _ => Vec::with_capacity(0),
-        }
-    }
-}
-
-/// Implements the functionality while the application is in [`Mode::Command`].
-#[derive(Debug, Default)]
-struct CommandMode;
-
-impl ModeHandler for CommandMode {
-    fn process_input(&self, input: char) -> Vec<OpCode> {
-        match input {
-            ENTER => vec![OpCode::ExecuteCommand, OpCode::ChangeMode(Mode::Display)],
-            ESC => vec![OpCode::ChangeMode(Mode::Display)],
-            _ => vec![OpCode::AddToSketch(input), OpCode::DrawSketch],
-        }
-    }
-}
-
-/// Implements the functionality while the application is in [`Mode::Filter`].
-#[derive(Debug, Default)]
-struct FilterMode;
-
-impl ModeHandler for FilterMode {
-    fn process_input(&self, input: char) -> Vec<OpCode> {
-        match input {
-            ENTER => vec![OpCode::ChangeMode(Mode::Action)],
-            '\t' => vec![
-                OpCode::ReduceNoise,
-                OpCode::AddToSketch('&'),
-                OpCode::AddToSketch('&'),
-                OpCode::DrawSketch,
-                OpCode::FilterSignals,
-            ],
-            ESC => vec![OpCode::ChangeMode(Mode::Display)],
-            _ => vec![
-                OpCode::AddToSketch(input),
-                OpCode::DrawSketch,
-                OpCode::FilterSignals,
-            ],
-        }
-    }
-}
-
-/// Implements the functionality while the application is in [`Mode::Action`].
-#[derive(Debug, Default)]
-struct ActionMode;
-
-impl ModeHandler for ActionMode {
-    fn process_input(&self, input: char) -> Vec<OpCode> {
-        match input {
-            ESC => vec![OpCode::ChangeMode(Mode::Display)],
-            'i' => vec![OpCode::MarkAt(Edge::Start), OpCode::ChangeMode(Mode::Edit)],
-            'I' => vec![OpCode::MarkAt(Edge::End), OpCode::ChangeMode(Mode::Edit)],
-            _ => Vec::with_capacity(0),
-        }
-    }
-}
-
-/// Implements the functionality while the application in in [`Mode::Edit`].
-#[derive(Debug, Default)]
-struct EditMode;
-
-impl ModeHandler for EditMode {
-    fn process_input(&self, input: char) -> Vec<OpCode> {
-        match input {
-            ESC => vec![OpCode::ChangeMode(Mode::Display)],
-            _ => vec![OpCode::UpdateView(input)],
         }
     }
 }
