@@ -18,20 +18,15 @@ pub struct MockUserInterface {
 
 impl MockUserInterface {
     /// Creates a new `MockUserInterface`.
-    ///
-    /// Adds `KeyClose` to end of inputs so that test stops running.
-    pub fn new(mut inputs: Vec<Option<Input>>) -> Self {
-        let mock_ui = Self {
+    pub fn new() -> Self {
+        Self {
             init: double::Mock::new(Ok(())),
             close: double::Mock::new(Ok(())),
             apply: double::Mock::new(Ok(())),
             flash: double::Mock::new(Ok(())),
             grid_height: double::Mock::new(Ok(0)),
             receive_input: double::Mock::default(),
-        };
-        inputs.push(Some(Input::KeyClose));
-        mock_ui.receive_input.return_values(inputs);
-        mock_ui
+        }
     }
 }
 

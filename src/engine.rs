@@ -50,6 +50,7 @@ pub enum Failure {
     Conversion(TryFromIntError),
     /// An error occurred during the execution of File command.
     File(storage::Error),
+    Quit,
 }
 
 impl error::Error for Failure {
@@ -58,6 +59,7 @@ impl error::Error for Failure {
             Failure::Ui(error) => Some(error),
             Failure::Conversion(error) => Some(error),
             Failure::File(error) => Some(error),
+            Failure::Quit => None,
         }
     }
 }
@@ -68,6 +70,7 @@ impl Display for Failure {
             Failure::Ui(error) => write!(f, "{}", error),
             Failure::Conversion(error) => write!(f, "{}", error),
             Failure::File(error) => write!(f, "{}", error),
+            Failure::Quit => write!(f, "Quit"),
         }
     }
 }
