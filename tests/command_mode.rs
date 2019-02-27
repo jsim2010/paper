@@ -6,12 +6,6 @@ use paper::ui::BACKSPACE;
 use paper::Paper;
 use spectral::prelude::*;
 
-fn in_command_mode(mut inputs: Vec<Option<Input>>) -> Vec<Option<Input>> {
-    let mut full_inputs = vec![Some(Input::Character('.'))];
-    full_inputs.append(&mut inputs);
-    full_inputs
-}
-
 /// Entering characters in Command mode should add text to sketch and display.
 ///
 /// GIVEN the application is in Command mode,
