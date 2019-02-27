@@ -28,16 +28,14 @@ pub type Outcome<T> = Result<T, Failure>;
 /// Signifies the final [`Outcome`] of an [`Operation`].
 type Output = Outcome<Option<Notice>>;
 
-/// Manages the functionality of the different [`Mode`]s.
 #[derive(Debug, Default)]
-pub(crate) struct Controller {
-    /// The current [`Mode`].
+pub(crate) struct Interpreter {
     mode: Mode,
 }
 
-impl Controller {
+impl Interpreter {
     /// Returns the [`Operation`]s to be executed based on the current [`Mode`].
-    pub(crate) fn process_input(&self, input: Option<Input>) -> Vec<OpCode> {
+    pub(crate) fn interpret(&self, input: Option<Input>) -> Vec<OpCode> {
         match (self.mode, input) {
             (_, Some(Input::KeyClose)) => vec![OpCode::Quit],
             (Mode::Display, Some(Input::Character(c))) => match c {

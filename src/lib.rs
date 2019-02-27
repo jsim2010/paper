@@ -74,7 +74,7 @@ mod storage;
 pub use engine::Outcome;
 pub use storage::{Explorer, File};
 
-use engine::{Controller, Notice};
+use engine::{Interpreter, Notice};
 use rec::ChCls::{Any, Digit, End, Sign};
 use rec::{some, tkn, Element, Pattern};
 use std::borrow::Borrow;
@@ -99,8 +99,7 @@ const NEGATIVE_ONE: IndexType = -1;
 pub struct Paper<'a> {
     /// User interface of the application.
     ui: &'a dyn UserInterface,
-    /// Manages all functionality the application.
-    controller: Controller,
+    interpreter: Interpreter,
     /// Data of the file being edited.
     view: View<'a>,
     /// Characters being edited to be analyzed by the application.
@@ -143,7 +142,7 @@ impl<'a> Paper<'a> {
         let operations = engine::Operations::default();
 
         'main: loop {
-            for opcode in self.controller.process_input(self.ui.receive_input()) {
+            for opcode in self.interpreter.interpret(self.ui.receive_input()) {
                 match operations.operate(self, opcode)? {
                     Some(Notice::Quit) => break 'main,
                     Some(Notice::Flash) => {
@@ -319,7 +318,7 @@ impl<'a> Paper<'a> {
 
     /// Changes the mode of the application.
     fn change_mode(&mut self, mode: engine::Mode) {
-        self.controller.set_mode(mode);
+        self.interpreter.set_mode(mode);
     }
 
     /// Returns the height used for scrolling.
@@ -333,7 +332,7 @@ impl Default for Paper<'_> {
     fn default() -> Self {
         Self {
             ui: &ui::NullUserInterface,
-            controller: Controller::default(),
+            interpreter: Interpreter::default(),
             view: View::default(),
             sketch: String::default(),
             signals: Vec::default(),
