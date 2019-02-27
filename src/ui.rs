@@ -370,7 +370,6 @@ impl Terminal {
 
     /// Defines [`Color`] as having a background color.
     fn define_color(&self, color: Color, background: i16) -> Outcome {
-        dbg!(color.cp());
         Self::process(
             pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
             Error::InitPair,
