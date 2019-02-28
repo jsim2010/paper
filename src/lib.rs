@@ -60,7 +60,7 @@
     clippy::restriction
 )]
 #![allow(clippy::suspicious_op_assign_impl, clippy::suspicious_arithmetic_impl)] // These lints are not always correct; issues should be detected by tests.
-#![doc(html_root_url = "https://docs.rs/paper/0.2.0")]
+#![doc(html_root_url = "https://docs.rs/paper/0.3.0")]
 #![allow(clippy::missing_inline_in_public_items)]
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 // single_use_lifetimes: issue rust-lang/rust#55057
