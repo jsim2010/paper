@@ -27,10 +27,14 @@ fn characters_are_displayed_as_sketch() {
     }
 
     mock_ui.apply.reset_calls();
-    mock_ui.receive_input.return_value(Some(Input::Character('c')));
+    mock_ui
+        .receive_input
+        .return_value(Some(Input::Character('c')));
     paper.step().unwrap();
 
-    assert!(mock_ui.apply.has_calls_exactly(vec![mock::display_sketch_edit(String::from("abc"))]));
+    assert!(mock_ui
+        .apply
+        .has_calls_exactly(vec![mock::display_sketch_edit(String::from("abc"))]));
 }
 
 /// Entering BS in Command mode should remove text from sketch and display.
@@ -55,8 +59,12 @@ fn backspace_removes_character_from_sketch() {
     }
 
     mock_ui.apply.reset_calls();
-    mock_ui.receive_input.return_value(Some(Input::Character(BACKSPACE)));
+    mock_ui
+        .receive_input
+        .return_value(Some(Input::Character(BACKSPACE)));
     paper.step().unwrap();
 
-    assert_that!(mock_ui.apply.has_calls_exactly(vec![mock::display_sketch_edit(String::from("ab"))]));
+    assert_that!(mock_ui
+        .apply
+        .has_calls_exactly(vec![mock::display_sketch_edit(String::from("ab"))]));
 }

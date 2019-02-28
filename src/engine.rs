@@ -1,8 +1,5 @@
 //! Implements the state machine of the application.
-use crate::{
-    error, fmt, storage, ui, Display, Formatter,
-    TryFromIntError,
-};
+use crate::{error, fmt, storage, ui, Display, Formatter, TryFromIntError};
 use std::io;
 
 /// Signifies a [`Result`] during the execution of an [`Operation`].
@@ -50,6 +47,7 @@ pub enum Failure {
     Conversion(TryFromIntError),
     /// An error occurred during the execution of File command.
     File(storage::Error),
+    /// Notifies the application to quit.
     Quit,
 }
 

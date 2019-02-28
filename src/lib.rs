@@ -75,8 +75,9 @@ pub use engine::Outcome;
 pub use storage::{Explorer, File};
 
 use engine::{Failure, Mode};
-use rec::ChCls::{Not, Any, Whitespace, Digit, End, Sign};
-use rec::{opt, some, var, tkn, Element, lazy_some, Pattern};
+use pancurses::Input;
+use rec::ChCls::{Any, Digit, End, Not, Sign, Whitespace};
+use rec::{lazy_some, opt, some, tkn, var, Element, Pattern};
 use std::borrow::Borrow;
 use std::cmp::{self, Ordering};
 use std::collections::HashMap;
@@ -86,9 +87,9 @@ use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, ENTER, ESC,
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE,
+    ENTER, ESC,
 };
-use pancurses::Input;
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
@@ -112,8 +113,11 @@ pub struct Paper<'a> {
     marks: Vec<Mark>,
     /// The [`Filters`] used by the application.
     filters: PaperFilters,
+    /// The pattern of a paper command.
     command_pattern: Pattern,
+    /// The current [`Mode`] of the application.
     mode: Mode,
+    /// The pattern of the first feature in a filter.
     first_feature_pattern: Pattern,
 }
 
@@ -151,6 +155,7 @@ impl<'a> Paper<'a> {
         Ok(())
     }
 
+    /// Processes 1 input from the user.
     pub fn step(&mut self) -> Outcome<()> {
         match (self.mode, self.ui.receive_input()) {
             (Mode::Display, Some(Input::Character(c))) => match c {
@@ -172,14 +177,16 @@ impl<'a> Paper<'a> {
                 }
                 'k' => {
                     let mut movement = IndexType::try_from(self.scroll_height()?)?;
-                    movement = movement.checked_neg().ok_or(Failure::Conversion(TryFromIntError::Overflow))?;
+                    movement = movement
+                        .checked_neg()
+                        .ok_or(Failure::Conversion(TryFromIntError::Overflow))?;
 
                     if self.scroll(movement) {
                         self.display_view()?;
                     }
                 }
                 _ => {}
-            }
+            },
             (Mode::Command, Some(Input::Character(c))) => match c {
                 ENTER => {
                     let command = self.sketch.clone();
@@ -220,7 +227,7 @@ impl<'a> Paper<'a> {
 
                     self.draw_sketch()?;
                 }
-            }
+            },
             (Mode::Filter, Some(Input::Character(c))) => match c {
                 ENTER => {
                     self.change_mode(Mode::Action);
@@ -231,7 +238,12 @@ impl<'a> Paper<'a> {
                     self.draw_sketch()?;
                     let filter = self.sketch.clone();
 
-                    if let Some(last_feature) = self.first_feature_pattern.tokenize_iter(&filter).last().and_then(|tokens| tokens.get("feature")) {
+                    if let Some(last_feature) = self
+                        .first_feature_pattern
+                        .tokenize_iter(&filter)
+                        .last()
+                        .and_then(|tokens| tokens.get("feature"))
+                    {
                         self.filter_signals(last_feature)?;
                     }
 
@@ -254,14 +266,19 @@ impl<'a> Paper<'a> {
                     self.draw_sketch()?;
                     let filter = self.sketch.clone();
 
-                    if let Some(last_feature) = self.first_feature_pattern.tokenize_iter(&filter).last().and_then(|tokens| tokens.get("feature")) {
+                    if let Some(last_feature) = self
+                        .first_feature_pattern
+                        .tokenize_iter(&filter)
+                        .last()
+                        .and_then(|tokens| tokens.get("feature"))
+                    {
                         self.filter_signals(last_feature)?;
                     }
 
                     self.clear_background()?;
                     self.draw_filter_backgrounds()?;
                 }
-            }
+            },
             (Mode::Action, Some(Input::Character(c))) => match c {
                 ESC => {
                     self.sketch.clear();
@@ -279,14 +296,13 @@ impl<'a> Paper<'a> {
                     self.change_mode(Mode::Edit);
                 }
                 _ => {}
-            }
-            (Mode::Edit, Some(Input::Character(c))) => match c {
-                ESC => {
+            },
+            (Mode::Edit, Some(Input::Character(c))) => {
+                if c == ESC {
                     self.sketch.clear();
                     self.display_view()?;
                     self.change_mode(Mode::Display);
-                }
-                _ => {
+                } else {
                     self.update_view(c)?;
                 }
             }
@@ -469,7 +485,8 @@ impl Default for Paper<'_> {
             filters: PaperFilters::default(),
             mode: Mode::default(),
             command_pattern: Pattern::define(
-                tkn!(lazy_some(Any) => "command") + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
+                tkn!(lazy_some(Any) => "command")
+                    + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
             ),
             first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
         }
