@@ -1,6 +1,6 @@
 [package]
 name = "paper"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Justin Simerly <jsim2010@gmail.com>"]
 description = "A terminal-based editor with goals to maximize simplicity and efficiency."
 license = "MIT"
