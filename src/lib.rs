@@ -74,9 +74,10 @@ mod storage;
 pub use engine::Outcome;
 pub use storage::{Explorer, File};
 
-use engine::{Controller, Notice};
-use rec::ChCls::{Any, Digit, End, Sign};
-use rec::{some, tkn, Element, Pattern};
+use engine::{Failure, Mode};
+use pancurses::Input;
+use rec::ChCls::{Any, Digit, End, Not, Sign, Whitespace};
+use rec::{lazy_some, opt, some, tkn, var, Element, Pattern};
 use std::borrow::Borrow;
 use std::cmp::{self, Ordering};
 use std::collections::HashMap;
@@ -86,21 +87,18 @@ use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
-    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE, ENTER,
+    Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE,
+    ENTER, ESC,
 };
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
 
 /// The paper application.
-// In general, Paper methods should contain as little logic as possible. Instead all logic should
-// be included in Operations.
 #[derive(Debug)]
 pub struct Paper<'a> {
     /// User interface of the application.
     ui: &'a dyn UserInterface,
-    /// Manages all functionality the application.
-    controller: Controller,
     /// Data of the file being edited.
     view: View<'a>,
     /// Characters being edited to be analyzed by the application.
@@ -115,6 +113,12 @@ pub struct Paper<'a> {
     marks: Vec<Mark>,
     /// The [`Filters`] used by the application.
     filters: PaperFilters,
+    /// The pattern of a paper command.
+    command_pattern: Pattern,
+    /// The current [`Mode`] of the application.
+    mode: Mode,
+    /// The pattern of the first feature in a filter.
+    first_feature_pattern: Pattern,
 }
 
 impl<'a> Paper<'a> {
@@ -140,21 +144,171 @@ impl<'a> Paper<'a> {
     #[inline]
     pub fn run(&mut self) -> Outcome<()> {
         self.ui.init()?;
-        let operations = engine::Operations::default();
 
-        'main: loop {
-            for opcode in self.controller.process_input(self.ui.receive_input()) {
-                match operations.operate(self, opcode)? {
-                    Some(Notice::Quit) => break 'main,
-                    Some(Notice::Flash) => {
-                        self.ui.flash()?;
-                    }
-                    None => {}
-                }
+        loop {
+            if let Err(Failure::Quit) = self.step() {
+                break;
             }
         }
 
         self.ui.close()?;
+        Ok(())
+    }
+
+    /// Processes 1 input from the user.
+    pub fn step(&mut self) -> Outcome<()> {
+        match (self.mode, self.ui.receive_input()) {
+            (Mode::Display, Some(Input::Character(c))) => match c {
+                '.' => {
+                    self.draw_sketch()?;
+                    self.change_mode(Mode::Command);
+                }
+                '#' | '/' => {
+                    self.sketch.push(c);
+                    self.draw_sketch()?;
+                    self.change_mode(Mode::Filter);
+                }
+                'j' => {
+                    let movement = IndexType::try_from(self.scroll_height()?)?;
+
+                    if self.scroll(movement) {
+                        self.display_view()?;
+                    }
+                }
+                'k' => {
+                    let mut movement = IndexType::try_from(self.scroll_height()?)?;
+                    movement = movement
+                        .checked_neg()
+                        .ok_or(Failure::Conversion(TryFromIntError::Overflow))?;
+
+                    if self.scroll(movement) {
+                        self.display_view()?;
+                    }
+                }
+                _ => {}
+            },
+            (Mode::Command, Some(Input::Character(c))) => match c {
+                ENTER => {
+                    let command = self.sketch.clone();
+                    let command_tokens = self.command_pattern.tokenize(&command);
+
+                    match command_tokens.get("command") {
+                        Some("see") => {
+                            if let Some(path) = command_tokens.get("args") {
+                                self.change_view(path)?;
+                            }
+                        }
+                        Some("put") => {
+                            self.save_view()?;
+                        }
+                        Some("end") => {
+                            return Err(Failure::Quit);
+                        }
+                        Some(_) | None => {}
+                    }
+
+                    self.sketch.clear();
+                    self.display_view()?;
+                    self.change_mode(Mode::Display);
+                }
+                ESC => {
+                    self.sketch.clear();
+                    self.display_view()?;
+                    self.change_mode(Mode::Display);
+                }
+                _ => {
+                    if c == BACKSPACE {
+                        if self.sketch.pop().is_none() {
+                            self.ui.flash()?;
+                        }
+                    } else {
+                        self.sketch.push(c);
+                    }
+
+                    self.draw_sketch()?;
+                }
+            },
+            (Mode::Filter, Some(Input::Character(c))) => match c {
+                ENTER => {
+                    self.change_mode(Mode::Action);
+                }
+                '\t' => {
+                    self.reduce_noise();
+                    self.sketch.push_str("&&");
+                    self.draw_sketch()?;
+                    let filter = self.sketch.clone();
+
+                    if let Some(last_feature) = self
+                        .first_feature_pattern
+                        .tokenize_iter(&filter)
+                        .last()
+                        .and_then(|tokens| tokens.get("feature"))
+                    {
+                        self.filter_signals(last_feature)?;
+                    }
+
+                    self.clear_background()?;
+                    self.draw_filter_backgrounds()?;
+                }
+                ESC => {
+                    self.sketch.clear();
+                    self.display_view()?;
+                    self.change_mode(Mode::Display);
+                }
+                _ => {
+                    if let BACKSPACE = c {
+                        if self.sketch.pop().is_none() {
+                            self.ui.flash()?;
+                        }
+                    } else {
+                        self.sketch.push(c);
+                    }
+                    self.draw_sketch()?;
+                    let filter = self.sketch.clone();
+
+                    if let Some(last_feature) = self
+                        .first_feature_pattern
+                        .tokenize_iter(&filter)
+                        .last()
+                        .and_then(|tokens| tokens.get("feature"))
+                    {
+                        self.filter_signals(last_feature)?;
+                    }
+
+                    self.clear_background()?;
+                    self.draw_filter_backgrounds()?;
+                }
+            },
+            (Mode::Action, Some(Input::Character(c))) => match c {
+                ESC => {
+                    self.sketch.clear();
+                    self.display_view()?;
+                    self.change_mode(Mode::Display);
+                }
+                'i' => {
+                    self.set_marks(Edge::Start);
+                    self.display_view()?;
+                    self.change_mode(Mode::Edit);
+                }
+                'I' => {
+                    self.set_marks(Edge::End);
+                    self.display_view()?;
+                    self.change_mode(Mode::Edit);
+                }
+                _ => {}
+            },
+            (Mode::Edit, Some(Input::Character(c))) => {
+                if c == ESC {
+                    self.sketch.clear();
+                    self.display_view()?;
+                    self.change_mode(Mode::Display);
+                } else {
+                    self.update_view(c)?;
+                }
+            }
+            (_, _) => {}
+        }
+
         Ok(())
     }
 
@@ -204,16 +358,6 @@ impl<'a> Paper<'a> {
         }
 
         Ok(())
-    }
-
-    /// Returns the sketch.
-    fn sketch(&self) -> &String {
-        &self.sketch
-    }
-
-    /// Returns a mutable reference of the sketch.
-    fn sketch_mut(&mut self) -> &mut String {
-        &mut self.sketch
     }
 
     /// Draws the sketch on the ui.
@@ -318,8 +462,8 @@ impl<'a> Paper<'a> {
     }
 
     /// Changes the mode of the application.
-    fn change_mode(&mut self, mode: engine::Mode) {
-        self.controller.set_mode(mode);
+    fn change_mode(&mut self, mode: Mode) {
+        self.mode = mode;
     }
 
     /// Returns the height used for scrolling.
@@ -333,13 +477,18 @@ impl Default for Paper<'_> {
     fn default() -> Self {
         Self {
             ui: &ui::NullUserInterface,
-            controller: Controller::default(),
             view: View::default(),
             sketch: String::default(),
             signals: Vec::default(),
             noises: Vec::default(),
             marks: Vec::default(),
             filters: PaperFilters::default(),
+            mode: Mode::default(),
+            command_pattern: Pattern::define(
+                tkn!(lazy_some(Any) => "command")
+                    + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
+            ),
+            first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
         }
     }
 }
@@ -846,7 +995,6 @@ impl LineNumber {
     /// Converts `LineNumber` to its row index - assuming line number `1` as at row `0`.
     #[allow(clippy::integer_arithmetic)] // self.0 > 0
     fn row(self) -> usize {
-        dbg!(self.0);
         (self.0 - 1) as usize
     }
 }

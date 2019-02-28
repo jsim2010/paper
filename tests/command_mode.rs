@@ -6,12 +6,6 @@ use paper::ui::BACKSPACE;
 use paper::Paper;
 use spectral::prelude::*;
 
-fn in_command_mode(mut inputs: Vec<Option<Input>>) -> Vec<Option<Input>> {
-    let mut full_inputs = vec![Some(Input::Character('.'))];
-    full_inputs.append(&mut inputs);
-    full_inputs
-}
-
 /// Entering characters in Command mode should add text to sketch and display.
 ///
 /// GIVEN the application is in Command mode,
@@ -19,18 +13,28 @@ fn in_command_mode(mut inputs: Vec<Option<Input>>) -> Vec<Option<Input>> {
 /// THEN the user interface should display the sketch `"abc"`.
 #[test]
 fn characters_are_displayed_as_sketch() {
-    let mock_ui = MockUserInterface::new(in_command_mode(vec![
+    let mock_ui = MockUserInterface::new();
+    let mut paper = Paper::new(&mock_ui);
+    let setup_inputs = vec![
+        Some(Input::Character('.')),
         Some(Input::Character('a')),
         Some(Input::Character('b')),
-        Some(Input::Character('c')),
-    ]));
-    let mut paper = Paper::new(&mock_ui);
+    ];
 
-    paper.run().unwrap();
+    for input in setup_inputs {
+        mock_ui.receive_input.return_value(input);
+        paper.step().unwrap();
+    }
 
-    assert_that!(mock_ui.apply.calls().last())
-        .is_some()
-        .is_equal_to(&mock::display_sketch_edit(String::from("abc")));
+    mock_ui.apply.reset_calls();
+    mock_ui
+        .receive_input
+        .return_value(Some(Input::Character('c')));
+    paper.step().unwrap();
+
+    assert!(mock_ui
+        .apply
+        .has_calls_exactly(vec![mock::display_sketch_edit(String::from("abc"))]));
 }
 
 /// Entering BS in Command mode should remove text from sketch and display.
@@ -40,17 +44,27 @@ fn characters_are_displayed_as_sketch() {
 /// THEN the user interface should display the sketch `"ab"`.
 #[test]
 fn backspace_removes_character_from_sketch() {
-    let mock_ui = MockUserInterface::new(in_command_mode(vec![
+    let mock_ui = MockUserInterface::new();
+    let mut paper = Paper::new(&mock_ui);
+    let setup_inputs = vec![
+        Some(Input::Character('.')),
         Some(Input::Character('a')),
         Some(Input::Character('b')),
         Some(Input::Character('c')),
-        Some(Input::Character(BACKSPACE)),
-    ]));
-    let mut paper = Paper::new(&mock_ui);
+    ];
 
-    paper.run().unwrap();
+    for input in setup_inputs {
+        mock_ui.receive_input.return_value(input);
+        paper.step().unwrap();
+    }
 
-    assert_that!(mock_ui.apply.calls().last())
-        .is_some()
-        .is_equal_to(&mock::display_sketch_edit(String::from("ab")));
+    mock_ui.apply.reset_calls();
+    mock_ui
+        .receive_input
+        .return_value(Some(Input::Character(BACKSPACE)));
+    paper.step().unwrap();
+
+    assert_that!(mock_ui
+        .apply
+        .has_calls_exactly(vec![mock::display_sketch_edit(String::from("ab"))]));
 }
