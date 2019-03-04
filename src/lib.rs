@@ -91,6 +91,7 @@ use ui::{
     Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE,
     ENTER, ESC,
 };
+use std::cell::RefCell;
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
@@ -324,7 +325,7 @@ impl<'a> Paper<'a> {
 
     /// Sets the view.
     fn change_view(&mut self, path: &str) -> Outcome<()> {
-        self.view = View::with_file(File::new(Rc::new(storage::Local), String::from(path)))?;
+        self.view = View::with_file(File::new(Rc::new(RefCell::new(storage::Local::new())), String::from(path)))?;
         self.noises.clear();
 
         for line in 1..=self.view.line_count {
