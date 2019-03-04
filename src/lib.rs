@@ -85,6 +85,7 @@ use std::error;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
+use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
     Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE,
@@ -100,7 +101,7 @@ pub struct Paper<'a> {
     /// User interface of the application.
     ui: &'a dyn UserInterface,
     /// Data of the file being edited.
-    view: View<'a>,
+    view: View,
     /// Characters being edited to be analyzed by the application.
     sketch: String,
     /// [`Section`]s of the view that match the current filter.
@@ -132,7 +133,7 @@ impl<'a> Paper<'a> {
     }
 
     /// Creates a new paper application with the given [`File`].
-    pub fn with_file(ui: &'a dyn UserInterface, file: File<'a>) -> Self {
+    pub fn with_file(ui: &'a dyn UserInterface, file: File) -> Self {
         Self {
             ui,
             view: View::with_file(file).unwrap_or_default(),
@@ -323,7 +324,7 @@ impl<'a> Paper<'a> {
 
     /// Sets the view.
     fn change_view(&mut self, path: &str) -> Outcome<()> {
-        self.view = View::with_file(File::new(&storage::Local, String::from(path)))?;
+        self.view = View::with_file(File::new(Rc::new(storage::Local), String::from(path)))?;
         self.noises.clear();
 
         for line in 1..=self.view.line_count {
@@ -536,7 +537,7 @@ impl<'a> Iterator for PaperFiltersIter<'a> {
 
 /// Signfifies the data being viewed/edited.
 #[derive(Clone, Debug, Default)]
-struct View<'a> {
+struct View {
     /// The data.
     data: String,
     /// The first line that is displayed in the ui.
@@ -546,12 +547,12 @@ struct View<'a> {
     /// The number of lines stored in the view.
     line_count: usize,
     /// The file where the view's data is stored.
-    file: File<'a>,
+    file: File,
 }
 
-impl<'a> View<'a> {
+impl View {
     /// Creates a new `View` with data from the given [`File`].
-    fn with_file(file: File<'a>) -> Outcome<Self> {
+    fn with_file(file: File) -> Outcome<Self> {
         let mut view = Self {
             data: file.read()?,
             file,
@@ -723,7 +724,7 @@ impl Adjustment {
     }
 
     /// Creates an `Adjustment` based on the given context.
-    fn create(c: char, place: Place, view: &View<'_>) -> Option<Self> {
+    fn create(c: char, place: Place, view: &View) -> Option<Self> {
         match c {
             BACKSPACE => {
                 if place.column == 0 {
@@ -1110,7 +1111,7 @@ trait Filter: Debug {
         &self,
         feature: &str,
         sections: &mut Vec<Section>,
-        view: &View<'_>,
+        view: &View,
     ) -> Result<(), TryFromIntError>;
 }
 
@@ -1142,7 +1143,7 @@ impl Filter for LineFilter {
         &self,
         feature: &str,
         sections: &mut Vec<Section>,
-        _view: &View<'_>,
+        _view: &View,
     ) -> Result<(), TryFromIntError> {
         let tokens = self.pattern.tokenize(feature);
 
@@ -1201,7 +1202,7 @@ impl Filter for PatternFilter {
         &self,
         feature: &str,
         sections: &mut Vec<Section>,
-        view: &View<'_>,
+        view: &View,
     ) -> Result<(), TryFromIntError> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
             if let Ok(search_pattern) = Pattern::load(user_pattern) {

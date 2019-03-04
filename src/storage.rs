@@ -3,19 +3,20 @@ use crate::{fmt, Debug, Display, Formatter, Outcome};
 use std::error;
 use std::fs;
 use std::io;
+use std::rc::Rc;
 
 /// Signifies a file.
 #[derive(Clone, Debug)]
-pub struct File<'a> {
+pub struct File {
     /// The path of the file.
     path: String,
     /// The [`Explorer`] used for interacting with the file.
-    explorer: &'a dyn Explorer,
+    explorer: Rc<dyn Explorer>,
 }
 
-impl<'a> File<'a> {
+impl File {
     /// Creates a new `File`.
-    pub fn new(explorer: &'a dyn Explorer, path: String) -> Self {
+    pub fn new(explorer: Rc<dyn Explorer>, path: String) -> Self {
         Self { path, explorer }
     }
 
@@ -30,11 +31,11 @@ impl<'a> File<'a> {
     }
 }
 
-impl Default for File<'_> {
+impl Default for File {
     fn default() -> Self {
         Self {
             path: String::new(),
-            explorer: &Local,
+            explorer: Rc::new(Local),
         }
     }
 }

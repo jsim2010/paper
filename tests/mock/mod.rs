@@ -4,6 +4,8 @@ use paper::num::Length;
 use paper::ui;
 use paper::ui::{Address, Change, Edit, Index, Region, UserInterface};
 use paper::{Explorer, Outcome};
+use std::cell::RefCell;
+use std::rc::Rc;
 use try_from::TryFromIntError;
 
 #[derive(Debug, Clone)]
@@ -39,28 +41,40 @@ impl UserInterface for MockUserInterface {
     mock_method!(receive_input(&self) -> Option<Input>);
 }
 
+#[derive(Debug, Default)]
+pub struct ExplorerController {
+    file: String,
+}
+
+impl ExplorerController {
+    pub fn set_file(&mut self, file: String) {
+        self.file = file;
+    }
+
+    pub fn file(&self) -> &String {
+        &self.file
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MockExplorer {
-    pub read: double::Mock<(String), Outcome<String>>,
-    pub write: double::Mock<(String, String), Outcome<()>>,
+    controller: Rc<RefCell<ExplorerController>>,
 }
 
 impl MockExplorer {
-    pub fn new() -> Self {
-        Self {
-            read: double::Mock::new(Ok(String::new())),
-            write: double::Mock::new(Ok(())),
-        }
+    pub fn new(controller: Rc<RefCell<ExplorerController>>) -> Self {
+        Self { controller }
     }
 }
 
 impl Explorer for MockExplorer {
-    mock_method!(read(&self, path: &str) -> Outcome<String>, self, {
-        self.read.call(path.to_owned())
-    });
-    mock_method!(write(&self, path: &str, data: &str) -> Outcome<()>, self, {
-        self.write(&path.to_owned(), &data.to_owned())
-    });
+    fn read(&self, path: &str) -> Outcome<String> {
+        Ok(self.controller.borrow().file().to_string())
+    }
+
+    fn write(&self, path: &str, data: &str) -> Outcome<()> {
+        Ok(())
+    }
 }
 
 pub fn display_sketch_edit(sketch: String) -> Edit {
