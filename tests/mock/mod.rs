@@ -1,12 +1,20 @@
 use double::mock_method;
 use pancurses::Input;
 use paper::num::Length;
-use paper::ui;
+use paper::{File, ui};
 use paper::ui::{Address, Change, Edit, Index, Region, UserInterface};
 use paper::{Explorer, Outcome};
 use std::cell::RefCell;
 use std::rc::Rc;
 use try_from::TryFromIntError;
+
+pub fn create_controller() -> Rc<RefCell<Controller>> {
+    Rc::new(RefCell::new(Controller::default()))
+}
+
+pub fn create_file(controller: &Rc<RefCell<Controller>>) -> File {
+    File::new(Rc::new(MockExplorer::new(Rc::clone(controller))), String::from("mock"))
+}
 
 #[derive(Debug, Clone)]
 pub struct MockUserInterface {
@@ -42,11 +50,11 @@ impl UserInterface for MockUserInterface {
 }
 
 #[derive(Debug, Default)]
-pub struct ExplorerController {
+pub struct Controller {
     file: String,
 }
 
-impl ExplorerController {
+impl Controller {
     pub fn set_file(&mut self, file: String) {
         self.file = file;
     }
@@ -58,11 +66,11 @@ impl ExplorerController {
 
 #[derive(Debug, Clone)]
 pub struct MockExplorer {
-    controller: Rc<RefCell<ExplorerController>>,
+    controller: Rc<RefCell<Controller>>,
 }
 
 impl MockExplorer {
-    pub fn new(controller: Rc<RefCell<ExplorerController>>) -> Self {
+    pub fn new(controller: Rc<RefCell<Controller>>) -> Self {
         Self { controller }
     }
 }
