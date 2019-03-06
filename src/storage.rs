@@ -4,12 +4,16 @@ use std::error;
 use std::fs;
 use std::io::{self, Write, Read, BufRead};
 use std::rc::Rc;
-use std::process::{Child, Command, Stdio};
+use std::process::{ChildStdin, Child, Command, Stdio};
 use lsp_types::request::Request;
+use lsp_types::notification::Notification;
+use lsp_types::{lsp_request, lsp_notification};
 use serde;
 use serde_json;
 use jsonrpc_core;
 use std::cell::RefCell;
+use std::thread;
+use std::sync::mpsc::{channel, Receiver};
 
 /// Signifies a file.
 #[derive(Clone, Debug)]
@@ -59,52 +63,100 @@ pub trait Explorer: Debug {
 
 #[derive(Debug)]
 struct LanguageClient {
-    process: Child,
-    reader: io::BufReader<std::process::ChildStdout>,
-    id: u64,
+    server: Child,
+    writer: ChildStdin,
+    request_id: u64,
+    text_document_sync: lsp_types::TextDocumentSyncKind,
+    is_document_symbol_provider: bool,
+    result_rx: Receiver<lsp_types::InitializeResult>,
 }
 
 impl LanguageClient {
     fn new(command: &str) -> Self {
-        let mut process = Command::new(command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok().unwrap();
-        let reader = std::io::BufReader::new(process.stdout.take().unwrap());
+        let mut server = Command::new(command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok().unwrap();
+        let mut reader = std::io::BufReader::new(server.stdout.take().unwrap());
+        let writer = server.stdin.take().unwrap();
+        let (result_tx, result_rx) = channel::<lsp_types::InitializeResult>();
+        let client = Self {server, writer, result_rx, request_id: 0, text_document_sync: lsp_types::TextDocumentSyncKind::None, is_document_symbol_provider: false};
 
-        Self {process, reader, id: 0}
+        thread::spawn(move || {
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line);
+                let mut split = line.trim().split(": ");
+                
+                if split.next() == Some("Content-Length") {
+                    let content_len = split.next().unwrap().parse().unwrap();
+                    let mut content = vec![0; content_len];
+                    reader.read_line(&mut line);
+                    reader.read_exact(&mut content).unwrap();
+                    let json_msg = String::from_utf8(content).unwrap();
+                    if let Ok(jsonrpc_core::Output::Success(message)) = serde_json::from_str(&json_msg) {
+                        result_tx.send(serde_json::from_value::<lsp_types::InitializeResult>(message.result).unwrap());
+                    }
+                }
+            }
+        });
+
+        client
+    }
+
+    fn initialize(&mut self) {
+        self.send_request::<lsp_request!("initialize")>(lsp_types::InitializeParams {
+            process_id: Some(u64::from(std::process::id())),
+            root_path: None,
+            root_uri: None,
+            initialization_options: None,
+            capabilities: lsp_types::ClientCapabilities::default(),
+            trace: None,
+            workspace_folders: None,
+        });
+        let initialize_result = self.result_rx.recv().unwrap();
+
+        if let Some(lsp_types::TextDocumentSyncCapability::Kind(text_document_sync_kind)) = initialize_result.capabilities.text_document_sync {
+            self.text_document_sync = text_document_sync_kind;
+        }
+
+        if let Some(is_document_symbol_provider) = initialize_result.capabilities.document_symbol_provider {
+            self.is_document_symbol_provider = is_document_symbol_provider;
+        }
+
+        self.send_notification::<lsp_notification!("initialized")>(lsp_types::InitializedParams{});
     }
 
     fn send_request<T: Request>(&mut self, params: T::Params) -> io::Result<()>
     where
-        T:: Params: serde::Serialize,
+        T::Params: serde::Serialize,
     {
         if let serde_json::value::Value::Object(params) = serde_json::to_value(params).unwrap() {
             let request = jsonrpc_core::Call::MethodCall(jsonrpc_core::MethodCall {
                 jsonrpc: Some(jsonrpc_core::Version::V2),
                 method: T::METHOD.to_string(),
                 params: jsonrpc_core::Params::Map(params),
-                id: jsonrpc_core::Id::Num(self.id),
+                id: jsonrpc_core::Id::Num(self.request_id),
             });
-            self.id += 1;
+            self.request_id += 1;
             let request_serde = serde_json::to_string(&request).unwrap();
-            write!(self.process.stdin.take().unwrap(), "Content-Length: {}\r\n\r\n{}", request_serde.len(), request_serde)
+            write!(self.writer, "Content-Length: {}\r\n\r\n{}", request_serde.len(), request_serde)
         } else {
             Ok(())
         }
     }
 
-    fn recv_message(&mut self) {
-        let mut line = String::new();
-        self.reader.read_line(&mut line);
-        let mut split = line.trim().split(": ");
-        
-        if split.next() == Some("Content-Length") {
-            let content_len = split.next().unwrap().parse().unwrap();
-            let mut content = vec![0; content_len];
-            self.reader.read_line(&mut line);
-            self.reader.read_exact(&mut content).unwrap();
-            let json_msg = String::from_utf8(content).unwrap();
-            if let Ok(jsonrpc_core::Output::Success(message)) = serde_json::from_str(&json_msg) {
-                dbg!(message.result);
-            }
+    fn send_notification<T: Notification>(&mut self, params: T::Params) -> io::Result<()>
+    where
+        T::Params: serde::Serialize,
+    {
+        if let serde_json::value::Value::Object(params) = serde_json::to_value(params).unwrap() {
+            let notification = jsonrpc_core::Call::Notification(jsonrpc_core::Notification {
+                jsonrpc: Some(jsonrpc_core::Version::V2),
+                method: T::METHOD.to_string(),
+                params: jsonrpc_core::Params::Map(params),
+            });
+            let notification_serde = serde_json::to_string(&notification).unwrap();
+            write!(self.writer, "Content-Length: {}\r\n\r\n{}", notification_serde.len(), notification_serde)
+        } else {
+            Ok(())
         }
     }
 }
@@ -139,16 +191,7 @@ impl Local {
 
 impl Explorer for Local {
     fn start(&mut self) {
-        self.language_client.send_request::<lsp_types::request::Initialize>(lsp_types::InitializeParams {
-            process_id: Some(u64::from(std::process::id())),
-            root_path: None,
-            root_uri: None,
-            initialization_options: None,
-            capabilities: lsp_types::ClientCapabilities::default(),
-            trace: None,
-            workspace_folders: None,
-        });
-        self.language_client.recv_message();
+        self.language_client.initialize();
     }
 
     fn read(&self, path: &str) -> Outcome<String> {
