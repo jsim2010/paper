@@ -77,9 +77,7 @@ fn j_scrolls_down() {
     let mock_ui = MockUserInterface::new();
     let controller = mock::create_controller();
     let file = mock::create_file(&controller);
-    controller
-        .borrow_mut()
-        .set_file(String::from("a\nb\nc"));
+    controller.borrow_mut().set_file(String::from("a\nb\nc"));
     let mut paper = Paper::with_file(&mock_ui, file);
 
     mock_ui.grid_height.return_value(Ok(8));
@@ -151,7 +149,9 @@ fn k_scrolls_up() {
     let mock_ui = MockUserInterface::new();
     let controller = mock::create_controller();
     let file = mock::create_file(&controller);
-    controller.borrow_mut().set_file(String::from("a\nb\nc\nd\ne"));
+    controller
+        .borrow_mut()
+        .set_file(String::from("a\nb\nc\nd\ne"));
     mock_ui.grid_height.return_value(Ok(8));
     let mut paper = Paper::with_file(&mock_ui, file);
     let setup_inputs = vec![Some(Input::Character('j')), Some(Input::Character('j'))];

@@ -1,8 +1,8 @@
 use double::mock_method;
 use pancurses::Input;
 use paper::num::Length;
-use paper::{File, ui};
 use paper::ui::{Address, Change, Edit, Index, Region, UserInterface};
+use paper::{ui, File};
 use paper::{Explorer, Outcome};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,7 +13,10 @@ pub fn create_controller() -> Rc<RefCell<Controller>> {
 }
 
 pub fn create_file(controller: &Rc<RefCell<Controller>>) -> File {
-    File::new(Rc::new(RefCell::new(MockExplorer::new(Rc::clone(controller)))), String::from("mock"))
+    File::new(
+        Rc::new(RefCell::new(MockExplorer::new(Rc::clone(controller)))),
+        String::from("mock"),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +79,8 @@ impl MockExplorer {
 }
 
 impl Explorer for MockExplorer {
-    fn start(&mut self) {
+    fn start(&mut self) -> Outcome<()> {
+        Ok(())
     }
 
     fn read(&self, path: &str) -> Outcome<String> {

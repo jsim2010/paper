@@ -47,6 +47,8 @@ pub enum Failure {
     Conversion(TryFromIntError),
     /// An error occurred during the execution of File command.
     File(storage::Error),
+    /// An error occurred during interaction with the language server.
+    Lsp(storage::LspError),
     /// Notifies the application to quit.
     Quit,
 }
@@ -57,6 +59,7 @@ impl error::Error for Failure {
             Failure::Ui(error) => Some(error),
             Failure::Conversion(error) => Some(error),
             Failure::File(error) => Some(error),
+            Failure::Lsp(error) => Some(error),
             Failure::Quit => None,
         }
     }
@@ -68,6 +71,7 @@ impl Display for Failure {
             Failure::Ui(error) => write!(f, "{}", error),
             Failure::Conversion(error) => write!(f, "{}", error),
             Failure::File(error) => write!(f, "{}", error),
+            Failure::Lsp(error) => write!(f, "{}", error),
             Failure::Quit => write!(f, "Quit"),
         }
     }
@@ -88,5 +92,11 @@ impl From<TryFromIntError> for Failure {
 impl From<io::Error> for Failure {
     fn from(error: io::Error) -> Self {
         Failure::File(storage::Error::from(error))
+    }
+}
+
+impl From<storage::LspError> for Failure {
+    fn from(error: storage::LspError) -> Self {
+        Failure::Lsp(error)
     }
 }
