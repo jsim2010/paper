@@ -10,7 +10,8 @@ use std::cell::RefCell;
 use std::error;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, RecvError};
 use std::thread::{self, JoinHandle};
@@ -19,14 +20,14 @@ use std::thread::{self, JoinHandle};
 #[derive(Clone, Debug)]
 pub struct File {
     /// The path of the file.
-    path: String,
+    path: PathBuf,
     /// The [`Explorer`] used for interacting with the file.
     explorer: Rc<RefCell<dyn Explorer>>,
 }
 
 impl File {
     /// Creates a new `File`.
-    pub fn new(explorer: Rc<RefCell<dyn Explorer>>, path: String) -> Self {
+    pub fn new(explorer: Rc<RefCell<dyn Explorer>>, path: PathBuf) -> Self {
         explorer
             .borrow_mut()
             .start()
@@ -48,7 +49,7 @@ impl File {
 impl Default for File {
     fn default() -> Self {
         Self {
-            path: String::new(),
+            path: PathBuf::new(),
             explorer: Rc::new(RefCell::new(NullExplorer::default())),
         }
     }
@@ -59,9 +60,9 @@ pub trait Explorer: Debug {
     /// Initializes all functionality needed by the Explorer.
     fn start(&mut self) -> Outcome<()>;
     /// Returns the data from the file at a given path.
-    fn read(&self, path: &str) -> Outcome<String>;
+    fn read(&mut self, path: &Path) -> Outcome<String>;
     /// Writes data to a file at the given path.
-    fn write(&self, path: &str, data: &str) -> Outcome<()>;
+    fn write(&self, path: &Path, data: &str) -> Outcome<()>;
 }
 
 /// The interface with the language server.
@@ -69,8 +70,6 @@ pub trait Explorer: Debug {
 struct LanguageClient {
     /// The thread running the language server.
     server: Child,
-    /// Writes the input to the language server.
-    writer: ChildStdin,
     /// The id for the next request to be sent by the `LanguageClient`.
     request_id: u64,
     /// How the language server expects to text documents to be synchronized.
@@ -116,10 +115,6 @@ impl LanguageClient {
                 .take()
                 .expect("Attempting to take stdout of language server process"),
         );
-        let writer = server
-            .stdin
-            .take()
-            .expect("Attempting to take stdin of language server process");
         let (result_tx, result_rx) = channel::<lsp_types::InitializeResult>();
         let receiver_thread = thread::spawn(move || loop {
             if let Some(content_length) = get_content_length(&mut reader) {
@@ -127,6 +122,7 @@ impl LanguageClient {
 
                 if reader.read_exact(&mut content).is_ok() {
                     if let Ok(json_string) = String::from_utf8(content) {
+                        dbg!(&json_string);
                         if let Ok(jsonrpc_core::Output::Success(message)) =
                             serde_json::from_str(&json_string)
                         {
@@ -148,7 +144,6 @@ impl LanguageClient {
 
         Self {
             server,
-            writer,
             result_rx,
             receiver_thread,
             request_id: 0,
@@ -215,6 +210,8 @@ impl LanguageClient {
                 method: T::METHOD.to_string(),
                 params: jsonrpc_core::Params::Map(params),
             });
+            let json_string = serde_json::to_string(&notification)?;
+            dbg!(&json_string);
             self.send_call(&notification)
         } else {
             Ok(())
@@ -224,8 +221,12 @@ impl LanguageClient {
     /// Sends the call to the language server.
     fn send_call(&mut self, call: &jsonrpc_core::Call) -> Result<(), LspError> {
         let json_string = serde_json::to_string(call)?;
+        // Currently pipe is broken if json_string.len() > 4096
         write!(
-            self.writer,
+            self.server
+                .stdin
+                .as_mut()
+                .expect("Attempting to open language server stdin"),
             "Content-Length: {}\r\n\r\n{}",
             json_string.len(),
             json_string
@@ -294,11 +295,11 @@ impl Explorer for NullExplorer {
         Err(Failure::Quit)
     }
 
-    fn read(&self, _path: &str) -> Outcome<String> {
+    fn read(&mut self, _path: &Path) -> Outcome<String> {
         Err(Failure::Quit)
     }
 
-    fn write(&self, _path: &str, _data: &str) -> Outcome<()> {
+    fn write(&self, _path: &Path, _data: &str) -> Outcome<()> {
         Err(Failure::Quit)
     }
 }
@@ -325,11 +326,18 @@ impl Explorer for Local {
         Ok(())
     }
 
-    fn read(&self, path: &str) -> Outcome<String> {
-        Ok(fs::read_to_string(path).map(|data| data.replace('\r', ""))?)
+    fn read(&mut self, path: &Path) -> Outcome<String> {
+        let content = fs::read_to_string(path).map(|data| data.replace('\r', ""))?;
+        //self.language_client.send_notification::<lsp_notification!("textDocument/didOpen")>(lsp_types::DidOpenTextDocumentParams{
+        //    text_document: lsp_types::TextDocumentItem::new(
+        //        lsp_types::Url::from_file_path(path).map_err(|_| Failure::Quit)?,
+        //        "rust".into(),
+        //        0,
+        //        content.clone())})?;
+        Ok(content)
     }
 
-    fn write(&self, path: &str, data: &str) -> Outcome<()> {
+    fn write(&self, path: &Path, data: &str) -> Outcome<()> {
         fs::write(path, data)?;
         Ok(())
     }

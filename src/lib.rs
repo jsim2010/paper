@@ -86,6 +86,7 @@ use std::error;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
+use std::path::Path;
 use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
@@ -197,7 +198,7 @@ impl<'a> Paper<'a> {
                     match command_tokens.get("command") {
                         Some("see") => {
                             if let Some(path) = command_tokens.get("args") {
-                                self.change_view(path)?;
+                                self.change_view(Path::new(path))?;
                             }
                         }
                         Some("put") => {
@@ -324,10 +325,18 @@ impl<'a> Paper<'a> {
     }
 
     /// Sets the view.
-    fn change_view(&mut self, path: &str) -> Outcome<()> {
+    fn change_view(&mut self, path: &Path) -> Outcome<()> {
+        let absolute_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            let mut new_path = std::env::current_dir()?;
+            new_path.push(path);
+            new_path
+        };
+
         self.view = View::with_file(File::new(
             Rc::new(RefCell::new(storage::Local::new())),
-            String::from(path),
+            absolute_path,
         ))?;
         self.noises.clear();
 

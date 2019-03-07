@@ -5,6 +5,7 @@ use paper::ui::{Address, Change, Edit, Index, Region, UserInterface};
 use paper::{ui, File};
 use paper::{Explorer, Outcome};
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use try_from::TryFromIntError;
 
@@ -15,7 +16,7 @@ pub fn create_controller() -> Rc<RefCell<Controller>> {
 pub fn create_file(controller: &Rc<RefCell<Controller>>) -> File {
     File::new(
         Rc::new(RefCell::new(MockExplorer::new(Rc::clone(controller)))),
-        String::from("mock"),
+        PathBuf::from("mock"),
     )
 }
 
@@ -83,11 +84,11 @@ impl Explorer for MockExplorer {
         Ok(())
     }
 
-    fn read(&self, path: &str) -> Outcome<String> {
+    fn read(&mut self, path: &Path) -> Outcome<String> {
         Ok(self.controller.borrow().file().to_string())
     }
 
-    fn write(&self, path: &str, data: &str) -> Outcome<()> {
+    fn write(&self, path: &Path, data: &str) -> Outcome<()> {
         Ok(())
     }
 }
