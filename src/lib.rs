@@ -60,6 +60,8 @@
     clippy::restriction
 )]
 #![allow(clippy::suspicious_op_assign_impl, clippy::suspicious_arithmetic_impl)] // These lints are not always correct; issues should be detected by tests.
+#![allow(clippy::implicit_return)]
+// This goes against rust convention and adds a ton of return calls in places it is definitely not helpful (i.e. closures).
 #![doc(html_root_url = "https://docs.rs/paper/0.3.0")]
 #![allow(clippy::missing_inline_in_public_items)]
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
@@ -854,7 +856,7 @@ impl<T: Borrow<IndexType>> Add<T> for Pointer {
     type Output = Self;
 
     fn add(self, other: T) -> Self::Output {
-        Pointer(self.0.map(|x| x + *other.borrow()))
+        Self(self.0.map(|x| x + *other.borrow()))
     }
 }
 
@@ -866,7 +868,7 @@ impl<T: Borrow<IndexType>> AddAssign<T> for Pointer {
 
 impl Default for Pointer {
     fn default() -> Self {
-        Pointer(Some(Index::from(0)))
+        Self(Some(Index::from(0)))
     }
 }
 
@@ -1002,7 +1004,7 @@ impl LineNumber {
         if value == 0 {
             None
         } else {
-            LineNumberType::try_from(value).ok().map(LineNumber)
+            LineNumberType::try_from(value).ok().map(Self)
         }
     }
 
@@ -1045,7 +1047,7 @@ impl Display for LineNumber {
 impl Default for LineNumber {
     #[inline]
     fn default() -> Self {
-        LineNumber(1)
+        Self(1)
     }
 }
 

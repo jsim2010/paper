@@ -11,9 +11,10 @@ use std::error;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, RecvError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
 /// Signifies a file.
@@ -31,7 +32,7 @@ impl File {
         explorer
             .borrow_mut()
             .start()
-            .expect("Attempting to start the Explorer");
+            .expect("Starting the Explorer");
         Self { path, explorer }
     }
 
@@ -78,8 +79,10 @@ struct LanguageClient {
     is_document_symbol_provider: bool,
     /// Receives the [`InitializeResult`] message.
     result_rx: Receiver<lsp_types::InitializeResult>,
-    /// The handle of the thread that processes the reception of messages from the language server.
-    receiver_thread: JoinHandle<()>,
+    /// Registrations received from language server.
+    registrations: lsp_types::RegistrationParams,
+    /// Handle of the receiver thread.
+    receiver_handle: Option<JoinHandle<()>>,
 }
 
 /// Returns the length of the content that is next to be read.
@@ -102,54 +105,101 @@ fn get_content_length(reader: &mut std::io::BufReader<ChildStdout>) -> Option<us
 
 impl LanguageClient {
     /// Creates a new `LanguageClient`.
-    fn new(command: &str) -> Self {
+    fn new(command: &str) -> Arc<Mutex<Self>> {
         let mut server = Command::new(command)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("Attempting to spawn language server process.");
+            .expect("Spawning the language server process.");
         let mut reader = std::io::BufReader::new(
             server
                 .stdout
                 .take()
-                .expect("Attempting to take stdout of language server process"),
+                .expect("Accessing stdout of language server process"),
         );
         let (result_tx, result_rx) = channel::<lsp_types::InitializeResult>();
-        let receiver_thread = thread::spawn(move || loop {
+        let new_client = Arc::new(Mutex::new(Self {
+            server,
+            result_rx,
+            request_id: 0,
+            text_document_sync: lsp_types::TextDocumentSyncKind::None,
+            is_document_symbol_provider: false,
+            registrations: lsp_types::RegistrationParams {
+                registrations: Vec::new(),
+            },
+            receiver_handle: None,
+        }));
+        let client = Arc::clone(&new_client);
+
+        let receiver_handle = thread::spawn(move || loop {
             if let Some(content_length) = get_content_length(&mut reader) {
                 let mut content = vec![0; content_length];
 
                 if reader.read_exact(&mut content).is_ok() {
                     if let Ok(json_string) = String::from_utf8(content) {
-                        dbg!(&json_string);
-                        if let Ok(jsonrpc_core::Output::Success(message)) =
-                            serde_json::from_str(&json_string)
-                        {
-                            if let Ok(initialize_result) =
-                                serde_json::from_value::<lsp_types::InitializeResult>(
-                                    message.result,
-                                )
-                            {
-                                if result_tx.send(initialize_result).is_err() {
-                                    dbg!("Error sending initialize result");
-                                    return;
+                        let message_result: Result<serde_json::Value, _> =
+                            serde_json::from_str(&json_string);
+
+                        if let Ok(message) = message_result {
+                            if let Some(id) = message.get("id") {
+                                if let Ok(id) = serde_json::from_value::<u64>(id.to_owned()) {
+                                    if let Some(_method) = message.get("method") {
+                                        if let Ok(params) =
+                                            serde_json::from_value::<lsp_types::RegistrationParams>(
+                                                message.get("params").unwrap().to_owned(),
+                                            )
+                                        {
+                                            let mut client = client
+                                                .lock()
+                                                .expect("Accessing language client from receiver");
+                                            client.registrations = params;
+                                            client.send_response::<lsp_types::request::RegisterCapability>((), id).expect("Sending RegisterCapability to language server");
+                                        } else {
+                                            dbg!(message);
+                                        }
+                                    } else if let Some(result) = message.get("result") {
+                                        if let Ok(initialize_result) =
+                                            serde_json::from_value::<lsp_types::InitializeResult>(
+                                                result.to_owned(),
+                                            )
+                                        {
+                                            result_tx.send(initialize_result).expect(
+                                                "Transferring InitializeResult to be processed",
+                                            );
+                                        } else {
+                                            dbg!(result);
+                                        }
+                                    } else {
+                                        dbg!(message);
+                                    }
+                                } else {
+                                    dbg!(message);
                                 }
+                            } else {
+                                dbg!(message);
                             }
+                        } else {
+                            dbg!(json_string);
                         }
                     }
                 }
             }
         });
 
-        Self {
-            server,
-            result_rx,
-            receiver_thread,
-            request_id: 0,
-            text_document_sync: lsp_types::TextDocumentSyncKind::None,
-            is_document_symbol_provider: false,
-        }
+        new_client
+            .lock()
+            .expect("Accessing language client")
+            .receiver_handle = Some(receiver_handle);
+        new_client
+    }
+
+    /// Returns a mutable reference to the stdin of the language server.
+    fn stdin_mut(&mut self) -> &mut ChildStdin {
+        self.server
+            .stdin
+            .as_mut()
+            .expect("Accessing stdin of language server process.")
     }
 
     /// Initializes the language server.
@@ -157,7 +207,10 @@ impl LanguageClient {
         self.send_request::<lsp_request!("initialize")>(lsp_types::InitializeParams {
             process_id: Some(u64::from(std::process::id())),
             root_path: None,
-            root_uri: None,
+            root_uri: Some(
+                lsp_types::Url::from_file_path(std::env::current_dir()?.as_path())
+                    .map_err(|_| LspError::Io)?,
+            ),
             initialization_options: None,
             capabilities: lsp_types::ClientCapabilities::default(),
             trace: None,
@@ -193,10 +246,23 @@ impl LanguageClient {
                 id: jsonrpc_core::Id::Num(self.request_id),
             });
             self.request_id += 1;
-            self.send_call(&request)
+            self.send_message(&request)
         } else {
             Ok(())
         }
+    }
+
+    /// Sends a response to the language server.
+    fn send_response<T: Request>(&mut self, result: T::Result, id: u64) -> Result<(), LspError>
+    where
+        T::Result: serde::Serialize,
+    {
+        let response = jsonrpc_core::Output::Success(jsonrpc_core::Success {
+            jsonrpc: Some(jsonrpc_core::Version::V2),
+            result: serde_json::to_value(result)?,
+            id: jsonrpc_core::Id::Num(id),
+        });
+        self.send_message(&response)
     }
 
     /// Sends a notification to the language server.
@@ -210,23 +276,17 @@ impl LanguageClient {
                 method: T::METHOD.to_string(),
                 params: jsonrpc_core::Params::Map(params),
             });
-            let json_string = serde_json::to_string(&notification)?;
-            dbg!(&json_string);
-            self.send_call(&notification)
+            self.send_message(&notification)
         } else {
             Ok(())
         }
     }
 
-    /// Sends the call to the language server.
-    fn send_call(&mut self, call: &jsonrpc_core::Call) -> Result<(), LspError> {
-        let json_string = serde_json::to_string(call)?;
-        // Currently pipe is broken if json_string.len() > 4096
+    /// Sends a message to the language server.
+    fn send_message<T: serde::Serialize>(&mut self, message: &T) -> Result<(), LspError> {
+        let json_string = serde_json::to_string(message)?;
         write!(
-            self.server
-                .stdin
-                .as_mut()
-                .expect("Attempting to open language server stdin"),
+            self.stdin_mut(),
             "Content-Length: {}\r\n\r\n{}",
             json_string.len(),
             json_string
@@ -308,7 +368,7 @@ impl Explorer for NullExplorer {
 #[derive(Debug)]
 pub(crate) struct Local {
     /// The [`LanguageClient`] fo the local storage [`Explorer`].
-    language_client: LanguageClient,
+    language_client: Arc<Mutex<LanguageClient>>,
 }
 
 impl Local {
@@ -318,22 +378,34 @@ impl Local {
             language_client: LanguageClient::new("rls"),
         }
     }
+
+    /// Returns a mutable reference to the language_client.
+    fn language_client_mut(&mut self) -> MutexGuard<'_, LanguageClient> {
+        self.language_client
+            .lock()
+            .expect("Accessing language_client")
+    }
 }
 
 impl Explorer for Local {
     fn start(&mut self) -> Outcome<()> {
-        self.language_client.initialize()?;
+        self.language_client_mut().initialize()?;
         Ok(())
     }
 
     fn read(&mut self, path: &Path) -> Outcome<String> {
         let content = fs::read_to_string(path).map(|data| data.replace('\r', ""))?;
-        //self.language_client.send_notification::<lsp_notification!("textDocument/didOpen")>(lsp_types::DidOpenTextDocumentParams{
-        //    text_document: lsp_types::TextDocumentItem::new(
-        //        lsp_types::Url::from_file_path(path).map_err(|_| Failure::Quit)?,
-        //        "rust".into(),
-        //        0,
-        //        content.clone())})?;
+        self.language_client_mut()
+            .send_notification::<lsp_notification!("textDocument/didOpen")>(
+                lsp_types::DidOpenTextDocumentParams {
+                    text_document: lsp_types::TextDocumentItem::new(
+                        lsp_types::Url::from_file_path(path).map_err(|_| Failure::Quit)?,
+                        "rust".into(),
+                        0,
+                        content.clone(),
+                    ),
+                },
+            )?;
         Ok(content)
     }
 
