@@ -39,6 +39,7 @@
 //! - Evaluate all checks, lints and tests: `cargo make eval`
 //! - Fix stale README and formatting: `cargo make fix`
 
+#![doc(html_root_url = "https://docs.rs/paper/0.3.0")]
 #![warn(
     rust_2018_idioms,
     future_incompatible,
@@ -57,12 +58,11 @@
     unused_results,
     clippy::nursery,
     clippy::pedantic,
-    clippy::restriction
+    clippy::restriction,
 )]
 #![allow(clippy::suspicious_op_assign_impl, clippy::suspicious_arithmetic_impl)] // These lints are not always correct; issues should be detected by tests.
 #![allow(clippy::implicit_return)]
-// This goes against rust convention and adds a ton of return calls in places it is definitely not helpful (i.e. closures).
-#![doc(html_root_url = "https://docs.rs/paper/0.3.0")]
+// This goes against rust convention and would require return calls in places it is not helpful (i.e. closures).
 #![allow(clippy::missing_inline_in_public_items)]
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 // single_use_lifetimes: issue rust-lang/rust#55057
