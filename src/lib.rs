@@ -101,9 +101,9 @@ const NEGATIVE_ONE: IndexType = -1;
 
 /// The paper application.
 #[derive(Debug)]
-pub struct Paper<'a> {
+pub struct Paper {
     /// User interface of the application.
-    ui: &'a dyn UserInterface,
+    ui: Rc<dyn UserInterface>,
     /// Data of the file being edited.
     view: View,
     /// Characters being edited to be analyzed by the application.
@@ -126,10 +126,10 @@ pub struct Paper<'a> {
     first_feature_pattern: Pattern,
 }
 
-impl<'a> Paper<'a> {
+impl Paper {
     /// Creates a new paper application.
     #[inline]
-    pub fn new(ui: &'a dyn UserInterface) -> Self {
+    pub fn new(ui: Rc<dyn UserInterface>) -> Self {
         Self {
             ui,
             ..Self::default()
@@ -137,7 +137,7 @@ impl<'a> Paper<'a> {
     }
 
     /// Creates a new paper application with the given [`File`].
-    pub fn with_file(ui: &'a dyn UserInterface, file: File) -> Self {
+    pub fn with_file(ui: Rc<dyn UserInterface>, file: File) -> Self {
         Self {
             ui,
             view: View::with_file(file).unwrap_or_default(),
@@ -489,10 +489,10 @@ impl<'a> Paper<'a> {
     }
 }
 
-impl Default for Paper<'_> {
+impl Default for Paper {
     fn default() -> Self {
         Self {
-            ui: &ui::NullUserInterface,
+            ui: Rc::new(ui::NullUserInterface),
             view: View::default(),
             sketch: String::default(),
             signals: Vec::default(),

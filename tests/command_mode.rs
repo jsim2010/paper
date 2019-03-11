@@ -1,10 +1,8 @@
 mod mock;
 
-use mock::{MockExplorer, MockUserInterface};
+use mock::Controller;
 use pancurses::Input;
 use paper::ui::{BACKSPACE, ESC};
-use paper::{File, Paper};
-use spectral::prelude::*;
 
 /// Entering characters in Command mode should add text to sketch and display.
 ///
@@ -13,28 +11,25 @@ use spectral::prelude::*;
 /// THEN the user interface should display the sketch `"abc"`.
 #[test]
 fn characters_are_displayed_as_sketch() {
-    let mock_ui = MockUserInterface::new();
-    let mut paper = Paper::new(&mock_ui);
-    let setup_inputs = vec![
-        Some(Input::Character('.')),
-        Some(Input::Character('a')),
-        Some(Input::Character('b')),
-    ];
+    let controller = Controller::new();
+    let mut paper = mock::create(
+        &controller,
+        vec![
+            Input::Character('.'),
+            Input::Character('a'),
+            Input::Character('b'),
+        ],
+    );
+    controller
+        .borrow_mut()
+        .set_input(Some(Input::Character('c')));
 
-    for input in setup_inputs {
-        mock_ui.receive_input.return_value(input);
-        paper.step().unwrap();
-    }
-
-    mock_ui.apply.reset_calls();
-    mock_ui
-        .receive_input
-        .return_value(Some(Input::Character('c')));
     paper.step().unwrap();
 
-    assert!(mock_ui
-        .apply
-        .has_calls_exactly(vec![mock::display_sketch_edit(String::from("abc"))]));
+    assert_eq!(
+        controller.borrow().apply_calls(),
+        &vec![mock::display_sketch_edit(String::from("abc"))]
+    );
 }
 
 /// Entering BS in Command mode should remove text from sketch and display.
@@ -44,29 +39,26 @@ fn characters_are_displayed_as_sketch() {
 /// THEN the user interface should display the sketch `"ab"`.
 #[test]
 fn backspace_removes_character_from_sketch() {
-    let mock_ui = MockUserInterface::new();
-    let mut paper = Paper::new(&mock_ui);
-    let setup_inputs = vec![
-        Some(Input::Character('.')),
-        Some(Input::Character('a')),
-        Some(Input::Character('b')),
-        Some(Input::Character('c')),
-    ];
+    let controller = Controller::new();
+    let mut paper = mock::create(
+        &controller,
+        vec![
+            Input::Character('.'),
+            Input::Character('a'),
+            Input::Character('b'),
+            Input::Character('c'),
+        ],
+    );
+    controller
+        .borrow_mut()
+        .set_input(Some(Input::Character(BACKSPACE)));
 
-    for input in setup_inputs {
-        mock_ui.receive_input.return_value(input);
-        paper.step().unwrap();
-    }
-
-    mock_ui.apply.reset_calls();
-    mock_ui
-        .receive_input
-        .return_value(Some(Input::Character(BACKSPACE)));
     paper.step().unwrap();
 
-    assert_that!(mock_ui
-        .apply
-        .has_calls_exactly(vec![mock::display_sketch_edit(String::from("ab"))]));
+    assert_eq!(
+        controller.borrow().apply_calls(),
+        &vec![mock::display_sketch_edit(String::from("ab"))]
+    );
 }
 
 /// Entering ESC in Command mode should return to Display mode.
@@ -76,27 +68,20 @@ fn backspace_removes_character_from_sketch() {
 /// THEN the user interface should display the current file.
 #[test]
 fn escape_returns_to_display_mode() {
-    let mock_ui = MockUserInterface::new();
-    let controller = mock::create_controller();
-    let file = mock::create_file(&controller);
-    controller.borrow_mut().set_file(String::from("a"));
-    mock_ui.grid_height.return_value(Ok(5));
-    let mut paper = Paper::with_file(&mock_ui, file);
-    let setup_inputs = vec![Some(Input::Character('.'))];
+    let controller = Controller::new();
+    controller.borrow_mut().set_grid_height(Ok(5));
+    let mut paper = mock::create_with_file(&controller, vec![Input::Character('.')], "a");
+    controller
+        .borrow_mut()
+        .set_input(Some(Input::Character(ESC)));
 
-    for input in setup_inputs {
-        mock_ui.receive_input.return_value(input);
-        paper.step().unwrap();
-    }
-
-    mock_ui.apply.reset_calls();
-    mock_ui
-        .receive_input
-        .return_value(Some(Input::Character(ESC)));
     paper.step().unwrap();
 
-    assert!(mock_ui.apply.has_calls_exactly_in_order(vec![
-        mock::display_clear_edit(),
-        mock::display_row_edit(0, 2, String::from("1 a")),
-    ]));
+    assert_eq!(
+        controller.borrow().apply_calls(),
+        &vec![
+            mock::display_clear_edit(),
+            mock::display_row_edit(0, 2, String::from("1 a")),
+        ]
+    );
 }
