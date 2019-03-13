@@ -10,51 +10,12 @@ use std::cell::RefCell;
 use std::error;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, RecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-
-/// Signifies a file.
-#[derive(Clone, Debug)]
-pub struct File {
-    /// The path of the file.
-    path: PathBuf,
-    /// The [`Explorer`] used for interacting with the file.
-    explorer: Rc<RefCell<dyn Explorer>>,
-}
-
-impl File {
-    /// Creates a new `File`.
-    pub fn new(explorer: Rc<RefCell<dyn Explorer>>, path: PathBuf) -> Self {
-        explorer
-            .borrow_mut()
-            .start()
-            .expect("Starting the Explorer");
-        Self { path, explorer }
-    }
-
-    /// Returns the data read from the `File`.
-    pub(crate) fn read(&self) -> Outcome<String> {
-        self.explorer.borrow_mut().read(&self.path)
-    }
-
-    /// Writes the given data to the `File`.
-    pub(crate) fn write(&self, data: &str) -> Outcome<()> {
-        self.explorer.borrow_mut().write(&self.path, data)
-    }
-}
-
-impl Default for File {
-    fn default() -> Self {
-        Self {
-            path: PathBuf::new(),
-            explorer: Rc::new(RefCell::new(NullExplorer::default())),
-        }
-    }
-}
 
 /// Interacts and processes file data.
 pub trait Explorer: Debug {
@@ -366,17 +327,17 @@ impl Explorer for NullExplorer {
 
 /// Signifies an [`Explorer`] of the local storage.
 #[derive(Debug)]
-pub(crate) struct Local {
+pub struct Local {
     /// The [`LanguageClient`] fo the local storage [`Explorer`].
     language_client: Arc<Mutex<LanguageClient>>,
 }
 
 impl Local {
     /// Creates a new Local.
-    pub(crate) fn new() -> Self {
-        Self {
+    pub fn new() -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(Self {
             language_client: LanguageClient::new("rls"),
-        }
+        }))
     }
 
     /// Returns a mutable reference to the language_client.

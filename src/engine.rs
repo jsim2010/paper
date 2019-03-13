@@ -1,19 +1,29 @@
 //! Implements the state machine of the application.
 use crate::{error, fmt, storage, ui, Display, Formatter, TryFromIntError};
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::io;
+use std::cell::RefCell;
 
 /// Signifies a [`Result`] during the execution of an [`Operation`].
 pub type Outcome<T> = Result<T, Failure>;
 
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub(crate) enum Command {
+    SetView(PathBuf),
+    Save,
+    Draw,
+}
+
 /// Signifies a state of the application.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) enum Mode {
     /// Displays the current view.
-    Display,
+    Display(Command),
     /// Displays the current command.
     Command,
     /// Displays the current filter expression and highlights the characters that match the filter.
-    Filter,
+    Filter(char, crate::View, usize),
     /// Displays the highlighting that has been selected.
     Action,
     /// Displays the current view along with the current edits.
@@ -23,9 +33,9 @@ pub(crate) enum Mode {
 impl Display for Mode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Mode::Display => write!(f, "Display"),
+            Mode::Display(_) => write!(f, "Display"),
             Mode::Command => write!(f, "Command"),
-            Mode::Filter => write!(f, "Filter"),
+            Mode::Filter(filter_type, _, _) => write!(f, "Filter {}", filter_type),
             Mode::Action => write!(f, "Action"),
             Mode::Edit => write!(f, "Edit"),
         }
@@ -34,7 +44,7 @@ impl Display for Mode {
 
 impl Default for Mode {
     fn default() -> Self {
-        Mode::Display
+        Mode::Display(Command::Draw)
     }
 }
 

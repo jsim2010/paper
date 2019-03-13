@@ -69,14 +69,14 @@
 
 pub mod num;
 pub mod ui;
+pub mod storage;
 
 mod engine;
-mod storage;
 
 pub use engine::Outcome;
-pub use storage::{Explorer, File};
+pub use storage::Explorer;
 
-use engine::{Failure, Mode};
+use engine::{Command, Failure, Mode};
 use pancurses::Input;
 use rec::ChCls::{Any, Digit, End, Not, Sign, Whitespace};
 use rec::{lazy_some, opt, some, tkn, var, Element, Pattern};
@@ -86,15 +86,17 @@ use std::cmp::{self, Ordering};
 use std::collections::HashMap;
 use std::error;
 use std::fmt::{self, Debug, Display, Formatter};
+use std::mem::{self, Discriminant};
 use std::iter;
 use std::ops::{Add, AddAssign, Shr, ShrAssign, Sub};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 use ui::{
     Address, Change, Color, Edit, Index, IndexType, Length, Region, UserInterface, BACKSPACE,
     ENTER, ESC,
 };
+use std::hash::{Hash, Hasher};
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
@@ -104,44 +106,349 @@ const NEGATIVE_ONE: IndexType = -1;
 pub struct Paper {
     /// User interface of the application.
     ui: Rc<dyn UserInterface>,
-    /// Data of the file being edited.
-    view: View,
-    /// Characters being edited to be analyzed by the application.
-    sketch: String,
-    /// [`Section`]s of the view that match the current filter.
-    ///
-    /// [`Section`]: .struct.Section.html
-    signals: Vec<Section>,
-    /// [`Section`]s of the view that are being searched.
-    noises: Vec<Section>,
     /// The current [`Mark`]s where [`Edit`]s may be made.
     marks: Vec<Mark>,
-    /// The [`Filters`] used by the application.
-    filters: PaperFilters,
-    /// The pattern of a paper command.
-    command_pattern: Pattern,
     /// The current [`Mode`] of the application.
     mode: Mode,
-    /// The pattern of the first feature in a filter.
+    mode_handlers: HashMap<Discriminant<Mode>, Rc<RefCell<dyn ModeHandler>>>,
+}
+
+trait ModeHandler: Debug {
+    fn init(&mut self, mode: &Mode) -> Outcome<Vec<Edit>>;
+    fn process(&mut self, input: char) -> Outcome<Operation>;
+}
+
+#[derive(Clone, Debug)]
+struct DisplayModeHandler {
+    ui: Rc<dyn UserInterface>,
+    explorer: Rc<RefCell<dyn Explorer>>,
+    view: Rc<RefCell<View>>,
+}
+
+enum Operation {
+    ChangeMode(Mode),
+    EditUi(Vec<Edit>),
+    Noop,
+}
+
+impl DisplayModeHandler {
+    fn new(ui: &Rc<dyn UserInterface>, explorer: Rc<RefCell<dyn Explorer>>) -> Self {
+        Self {
+            ui: Rc::clone(ui),
+            explorer: explorer,
+            view: Rc::new(RefCell::new(View::default())),
+        }
+    }
+
+    /// Returns the height used for scrolling.
+    #[allow(clippy::integer_arithmetic)] // okay to divide usize by 4
+    fn scroll_height(&self) -> Result<usize, TryFromIntError> {
+        self.ui.grid_height().map(|height| height / 4)
+    }
+
+    fn view_edits(&self) -> Outcome<Vec<Edit>> {
+        Ok(self.view.borrow_mut().redraw_edits().take(self.ui.grid_height()?).collect())
+    }
+}
+
+impl ModeHandler for DisplayModeHandler {
+    fn init(&mut self, mode: &Mode) -> Outcome<Vec<Edit>> {
+        if let Mode::Display(command) = mode {
+            match command {
+                Command::SetView(path) => {
+                    let absolute_path = if path.is_absolute() {
+                        path.to_path_buf()
+                    } else {
+                        let mut new_path = std::env::current_dir()?;
+                        new_path.push(path);
+                        new_path
+                    };
+
+                    self.view.borrow_mut().change(
+                        Rc::clone(&self.explorer),
+                        absolute_path,
+                    )?;
+                    //self.noises.clear();
+
+                    //for line in 1..=self.view.borrow_mut().line_count {
+                    //    if let Some(noise) = LineNumber::new(line).map(Section::line) {
+                    //        self.noises.push(noise);
+                    //    }
+                    //}
+                }
+                Command::Save => {
+                    let view = self.view.borrow_mut();
+                    self.explorer.borrow_mut().write(&view.path, &view.data)?;
+                }
+                Command::Draw => (),
+            }
+        }
+
+        self.view_edits()
+    }
+
+    fn process(&mut self, input: char) -> Outcome<Operation> {
+        return match input {
+            '.' => {
+                Ok(Operation::ChangeMode(Mode::Command))
+            }
+            '#' | '/' => {
+                let view = Rc::make_mut(&mut self.view).clone();
+                Ok(Operation::ChangeMode(Mode::Filter(input, view.into_inner(), self.ui.grid_height()?)))
+            }
+            'j' => {
+                let movement = IndexType::try_from(self.scroll_height()?)?;
+
+                if self.view.borrow_mut().scroll(movement) {
+                    return self.view_edits().map(Operation::EditUi);
+                }
+
+                Ok(Operation::Noop)
+            }
+            'k' => {
+                let mut movement = IndexType::try_from(self.scroll_height()?)?;
+                movement = movement
+                    .checked_neg()
+                    .ok_or(Failure::Conversion(TryFromIntError::Overflow))?;
+
+                if self.view.borrow_mut().scroll(movement) {
+                    return self.view_edits().map(Operation::EditUi);
+                }
+
+                Ok(Operation::Noop)
+            }
+            _ => Ok(Operation::Noop),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CommandModeHandler {
+    command: String,
+    command_pattern: Pattern,
+}
+
+impl CommandModeHandler {
+    fn new() -> Self {
+        CommandModeHandler {
+            command: String::new(),
+            command_pattern: Pattern::define(
+                tkn!(lazy_some(Any) => "command")
+                    + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
+            ),
+        }
+    }
+
+    fn command_edits(&self) -> Vec<Edit> {
+        vec![Edit::new(Region::with_row(0).unwrap(), Change::Row(self.command.clone()))]
+    }
+}
+
+impl ModeHandler for CommandModeHandler {
+    fn init(&mut self, _mode: &Mode) -> Outcome<Vec<Edit>> {
+        self.command.clear();
+        Ok(self.command_edits())
+    }
+
+    fn process(&mut self, input: char) -> Outcome<Operation> {
+        return match input {
+            ENTER => {
+                let mut command = Command::Draw;
+                let command_tokens = self.command_pattern.tokenize(&self.command);
+
+                match command_tokens.get("command") {
+                    Some("see") => {
+                        if let Some(path) = command_tokens.get("args") {
+                            command = Command::SetView(PathBuf::from(path));
+                        }
+                    }
+                    Some("put") => {
+                        command = Command::Save;
+                    }
+                    Some("end") => {
+                        return Err(Failure::Quit);
+                    }
+                    Some(_) | None => {}
+                }
+
+                Ok(Operation::ChangeMode(Mode::Display(command)))
+            }
+            ESC => {
+                Ok(Operation::ChangeMode(Mode::Display(Command::Draw)))
+            }
+            _ => {
+                if input == BACKSPACE {
+                    if self.command.pop().is_none() {
+                        return Ok(Operation::EditUi(vec![Edit::new(Region::default(), Change::Flash)]));
+                    }
+                } else {
+                    self.command.push(input);
+                }
+
+                Ok(Operation::EditUi(self.command_edits()))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FilterModeHandler {
+    filter: String,
+    noises: Vec<Section>,
+    signals: Vec<Section>,
     first_feature_pattern: Pattern,
+    filters: PaperFilters,
+    view: View,
+    ui_height: usize,
+}
+
+impl FilterModeHandler {
+    fn new() -> Self {
+        Self {
+            filter: String::new(),
+            noises: Vec::new(),
+            signals: Vec::new(),
+            first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
+            filters: PaperFilters::default(),
+            view: View::default(),
+            ui_height: 0,
+        }
+    }
+
+    fn filter_edits(&self) -> Vec<Edit> {
+        let mut edits = vec![Edit::new(Region::with_row(0).unwrap(), Change::Row(self.filter.clone()))];
+
+        for row in 0..self.ui_height {
+            edits.push(self.format_region_edit(Region::with_row(row).unwrap(), Color::Default));
+        }
+
+        for noise in &self.noises {
+            if let Some(edit) = self.format_section_edit(noise, Color::Blue) {
+                edits.push(edit);
+            }
+        }
+
+        for signal in &self.signals {
+            if let Some(edit) = self.format_section_edit(signal, Color::Red) {
+                edits.push(edit);
+            }
+        }
+
+        edits
+    }
+
+    fn format_section_edit(&self, section: &Section, color: Color) -> Option<Edit> {
+        // It is okay for region_at() to return None; this just means section is not displayed.
+        self.view.region_at(section).map(|region| self.format_region_edit(region, color))
+    }
+
+    fn format_region_edit(&self, region: Region, color: Color) -> Edit {
+        Edit::new(region, Change::Format(color))
+    }
+}
+
+impl ModeHandler for FilterModeHandler {
+    fn init(&mut self, mode: &Mode) -> Outcome<Vec<Edit>> {
+        self.filter.clear();
+        
+        if let Mode::Filter(c, view, height) = mode {
+            self.filter.push(*c);
+            self.view = view.clone();
+            self.ui_height = *height;
+        }
+
+        
+        Ok(vec![Edit::new(
+            Region::with_row(0)?,
+            Change::Row(self.filter.clone()),
+        )])
+    }
+
+    fn process(&mut self, input: char) -> Outcome<Operation> {
+        return match input {
+            ENTER => {
+                Ok(Operation::ChangeMode(Mode::Action))
+            }
+            ESC => {
+                Ok(Operation::ChangeMode(Mode::Display(Command::Draw)))
+            }
+            _ => {
+                if input == BACKSPACE {
+                    if self.filter.pop().is_none() {
+                        return Ok(Operation::EditUi(vec![Edit::new(Region::default(), Change::Flash)]));
+                    }
+                } else if input == '\t' {
+                    self.filter.push_str("&&");
+                    self.noises = self.signals.clone();
+                } else {
+                    self.filter.push(input);
+                }
+
+                if let Some(last_feature) = self
+                    .first_feature_pattern
+                    .tokenize_iter(&self.filter)
+                    .last()
+                    .and_then(|tokens| tokens.get("feature"))
+                {
+                    self.signals = self.noises.clone();
+
+                    if let Some(id) = last_feature.chars().nth(0) {
+                        for filter in self.filters.iter() {
+                            if id == filter.id() {
+                                filter.extract(last_feature, &mut self.signals, &self.view)?;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                Ok(Operation::EditUi(self.filter_edits()))
+            }
+        };
+    }
+}
+
+#[derive(Debug)]
+struct ActionModeHandler {
+}
+
+impl ModeHandler for ActionModeHandler {
+    fn init(&mut self, mode: &Mode) -> Outcome<Vec<Edit>> {
+        Ok(vec![])
+    }
+
+    fn process(&mut self, input: char) -> Outcome<Operation> {
+        return match input {
+            ESC => Ok(Operation::ChangeMode(Mode::Display(Command::Draw))),
+            'i' => {
+                //self.set_marks(Edge::Start);
+                Ok(Operation::ChangeMode(Mode::Edit))
+            }
+            'I' => {
+                //self.set_marks(Edge::End);
+                Ok(Operation::ChangeMode(Mode::Edit))
+            }
+            _ => Ok(Operation::Noop),
+        };
+    }
 }
 
 impl Paper {
     /// Creates a new paper application.
     #[inline]
-    pub fn new(ui: Rc<dyn UserInterface>) -> Self {
-        Self {
-            ui,
-            ..Self::default()
-        }
-    }
+    pub fn new(ui: Rc<dyn UserInterface>, explorer: Rc<RefCell<dyn Explorer>>) -> Self {
+        explorer.borrow_mut().start().unwrap();
+        let display_mode_handler: Rc<RefCell<dyn ModeHandler>> = Rc::new(RefCell::new(DisplayModeHandler::new(&ui, explorer)));
+        let command_mode_handler: Rc<RefCell<dyn ModeHandler>> = Rc::new(RefCell::new(CommandModeHandler::new()));
 
-    /// Creates a new paper application with the given [`File`].
-    pub fn with_file(ui: Rc<dyn UserInterface>, file: File) -> Self {
         Self {
             ui,
-            view: View::with_file(file).unwrap_or_default(),
-            ..Self::default()
+            mode: Mode::default(),
+            mode_handlers: [
+                (mem::discriminant(&Mode::Display(Command::Draw)), display_mode_handler),
+                (mem::discriminant(&Mode::Command), command_mode_handler),
+            ].iter().cloned().collect(),
+            marks: Vec::default(),
         }
     }
 
@@ -162,286 +469,74 @@ impl Paper {
 
     /// Processes 1 input from the user.
     pub fn step(&mut self) -> Outcome<()> {
-        match (self.mode, self.ui.receive_input()) {
-            (Mode::Display, Some(Input::Character(c))) => match c {
-                '.' => {
-                    self.draw_sketch()?;
-                    self.change_mode(Mode::Command);
-                }
-                '#' | '/' => {
-                    self.sketch.push(c);
-                    self.draw_sketch()?;
-                    self.change_mode(Mode::Filter);
-                }
-                'j' => {
-                    let movement = IndexType::try_from(self.scroll_height()?)?;
+        let mut input = '\0';
+        
+        if let Some(Input::Character(c)) = self.ui.receive_input() {
+            input = c;
+        }
 
-                    if self.scroll(movement) {
-                        self.display_view()?;
-                    }
-                }
-                'k' => {
-                    let mut movement = IndexType::try_from(self.scroll_height()?)?;
-                    movement = movement
-                        .checked_neg()
-                        .ok_or(Failure::Conversion(TryFromIntError::Overflow))?;
+        let operation = self.mode_handlers.get_mut(&mem::discriminant(&self.mode)).unwrap().borrow_mut().process(input)?;
 
-                    if self.scroll(movement) {
-                        self.display_view()?;
-                    }
+        match operation {
+            Operation::ChangeMode(new_mode) => {
+                for edit in self.mode_handlers.get_mut(&mem::discriminant(&new_mode)).unwrap().borrow_mut().init(&new_mode)? {
+                    self.ui.apply(edit)?;
                 }
-                _ => {}
-            },
-            (Mode::Command, Some(Input::Character(c))) => match c {
-                ENTER => {
-                    let command = self.sketch.clone();
-                    let command_tokens = self.command_pattern.tokenize(&command);
 
-                    match command_tokens.get("command") {
-                        Some("see") => {
-                            if let Some(path) = command_tokens.get("args") {
-                                self.change_view(Path::new(path))?;
-                            }
-                        }
-                        Some("put") => {
-                            self.save_view()?;
-                        }
-                        Some("end") => {
-                            return Err(Failure::Quit);
-                        }
-                        Some(_) | None => {}
-                    }
-
-                    self.sketch.clear();
-                    self.display_view()?;
-                    self.change_mode(Mode::Display);
-                }
-                ESC => {
-                    self.sketch.clear();
-                    self.display_view()?;
-                    self.change_mode(Mode::Display);
-                }
-                _ => {
-                    if c == BACKSPACE {
-                        if self.sketch.pop().is_none() {
-                            self.ui.flash()?;
-                        }
-                    } else {
-                        self.sketch.push(c);
-                    }
-
-                    self.draw_sketch()?;
-                }
-            },
-            (Mode::Filter, Some(Input::Character(c))) => match c {
-                ENTER => {
-                    self.change_mode(Mode::Action);
-                }
-                '\t' => {
-                    self.reduce_noise();
-                    self.sketch.push_str("&&");
-                    self.draw_sketch()?;
-                    let filter = self.sketch.clone();
-
-                    if let Some(last_feature) = self
-                        .first_feature_pattern
-                        .tokenize_iter(&filter)
-                        .last()
-                        .and_then(|tokens| tokens.get("feature"))
-                    {
-                        self.filter_signals(last_feature)?;
-                    }
-
-                    self.clear_background()?;
-                    self.draw_filter_backgrounds()?;
-                }
-                ESC => {
-                    self.sketch.clear();
-                    self.display_view()?;
-                    self.change_mode(Mode::Display);
-                }
-                _ => {
-                    if let BACKSPACE = c {
-                        if self.sketch.pop().is_none() {
-                            self.ui.flash()?;
-                        }
-                    } else {
-                        self.sketch.push(c);
-                    }
-                    self.draw_sketch()?;
-                    let filter = self.sketch.clone();
-
-                    if let Some(last_feature) = self
-                        .first_feature_pattern
-                        .tokenize_iter(&filter)
-                        .last()
-                        .and_then(|tokens| tokens.get("feature"))
-                    {
-                        self.filter_signals(last_feature)?;
-                    }
-
-                    self.clear_background()?;
-                    self.draw_filter_backgrounds()?;
-                }
-            },
-            (Mode::Action, Some(Input::Character(c))) => match c {
-                ESC => {
-                    self.sketch.clear();
-                    self.display_view()?;
-                    self.change_mode(Mode::Display);
-                }
-                'i' => {
-                    self.set_marks(Edge::Start);
-                    self.display_view()?;
-                    self.change_mode(Mode::Edit);
-                }
-                'I' => {
-                    self.set_marks(Edge::End);
-                    self.display_view()?;
-                    self.change_mode(Mode::Edit);
-                }
-                _ => {}
-            },
-            (Mode::Edit, Some(Input::Character(c))) => {
-                if c == ESC {
-                    self.sketch.clear();
-                    self.display_view()?;
-                    self.change_mode(Mode::Display);
-                } else {
-                    self.update_view(c)?;
+                self.mode = new_mode;
+            }
+            Operation::EditUi(edits) => {
+                for edit in edits {
+                    self.ui.apply(edit)?;
                 }
             }
-            (_, _) => {}
+            _ => (),
         }
+
+        //match (self.mode, self.ui.receive_input()) {
+        //    (Mode::Edit, Some(Input::Character(c))) => {
+        //        if c == ESC {
+        //            self.display_view()?;
+        //            self.change_mode(Mode::Display);
+        //        } else {
+        //            self.update_view(c)?;
+        //        }
+        //    }
+        //    (_, _) => {}
+        //}
 
         Ok(())
     }
 
     /// Displays the view on the user interface.
     fn display_view(&self) -> Outcome<()> {
-        for edit in self.view.redraw_edits().take(self.ui.grid_height()?) {
-            self.ui.apply(edit)?;
-        }
-
-        Ok(())
-    }
-
-    /// Sets the view.
-    fn change_view(&mut self, path: &Path) -> Outcome<()> {
-        let absolute_path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            let mut new_path = std::env::current_dir()?;
-            new_path.push(path);
-            new_path
-        };
-
-        self.view = View::with_file(File::new(
-            Rc::new(RefCell::new(storage::Local::new())),
-            absolute_path,
-        ))?;
-        self.noises.clear();
-
-        for line in 1..=self.view.line_count {
-            if let Some(noise) = LineNumber::new(line).map(Section::line) {
-                self.noises.push(noise);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Saves the data of the view.
-    fn save_view(&self) -> Outcome<()> {
-        self.view.put()
-    }
-
-    /// Sets the noise to match the current signals.
-    fn reduce_noise(&mut self) {
-        self.noises = self.signals.clone();
-    }
-
-    /// Filters signals matching a feature from the current noise.
-    fn filter_signals(&mut self, feature: &str) -> Result<(), TryFromIntError> {
-        self.signals = self.noises.clone();
-
-        if let Some(id) = feature.chars().nth(0) {
-            for filter in self.filters.iter() {
-                if id == filter.id() {
-                    return filter.extract(feature, &mut self.signals, &self.view);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Draws the sketch on the ui.
-    fn draw_sketch(&self) -> Outcome<()> {
-        self.ui.apply(Edit::new(
-            Region::with_row(0)?,
-            Change::Row(self.sketch.clone()),
-        ))?;
-        Ok(())
-    }
-
-    /// Clears the background of the entire display.
-    fn clear_background(&self) -> Outcome<()> {
-        for row in 0..self.ui.grid_height()? {
-            self.format_region(Region::with_row(row)?, Color::Default)?;
-        }
+        //for edit in self.view.borrow_mut().redraw_edits().take(self.ui.grid_height()?) {
+        //    self.ui.apply(edit)?;
+        //}
 
         Ok(())
     }
 
     /// Sets the [`Mark`]s of the application to be at the given [`Edge`] of all signals.
     fn set_marks(&mut self, edge: Edge) {
-        self.marks.clear();
+        //self.marks.clear();
 
-        for signal in &self.signals {
-            let mut place = signal.start;
+        //for signal in &self.signals {
+        //    let mut place = signal.start;
 
-            if edge == Edge::End {
-                place.column += Index::try_from(signal.length)
-                    .unwrap_or_else(|_| self.view.line_length(signal.start).unwrap_or_default())
-            }
+        //    if edge == Edge::End {
+        //        place.column += Index::try_from(signal.length)
+        //            .unwrap_or_else(|_| self.view.borrow_mut().line_length(signal.start).unwrap_or_default())
+        //    }
 
-            let pointer = Pointer(
-                self.view
-                    .line_indices()
-                    .nth(place.line.row())
-                    .and_then(|index_value| Index::try_from(index_value).ok()),
-            ) + place.column;
-            self.marks.push(Mark { place, pointer });
-        }
-    }
-
-    /// Scrolls the view.
-    fn scroll(&mut self, movement: IndexType) -> IsChanging {
-        self.view.scroll(movement)
-    }
-
-    /// Updates the formatting to show filter matches.
-    fn draw_filter_backgrounds(&self) -> ui::Outcome {
-        for noise in &self.noises {
-            self.format_section(noise, Color::Blue)?;
-        }
-
-        for signal in &self.signals {
-            self.format_section(signal, Color::Red)?;
-        }
-
-        Ok(())
-    }
-
-    /// Sets the [`Color`] of a [`Section`].
-    fn format_section(&self, section: &Section, color: Color) -> ui::Outcome {
-        // It is okay for region_at() to return None; this just means section is not displayed.
-        if let Some(region) = self.view.region_at(section) {
-            self.format_region(region, color)?;
-        }
-
-        Ok(())
+        //    let pointer = Pointer(
+        //        self.view.borrow_mut()
+        //            .line_indices()
+        //            .nth(place.line.row())
+        //            .and_then(|index_value| Index::try_from(index_value).ok()),
+        //    ) + place.column;
+        //    self.marks.push(Mark { place, pointer });
+        //}
     }
 
     /// Formats a region to a given [`Color`].
@@ -451,28 +546,28 @@ impl Paper {
 
     /// Adds a char to all [`Mark`]s and updates the view.
     fn update_view(&mut self, c: char) -> Outcome<()> {
-        let mut adjustment = Adjustment::default();
+        //let mut adjustment = Adjustment::default();
 
-        for mark in &mut self.marks {
-            if let Some(new_adjustment) = Adjustment::create(c, mark.place, &self.view) {
-                adjustment += new_adjustment;
+        //for mark in &mut self.marks {
+        //    if let Some(new_adjustment) = Adjustment::create(c, mark.place, &self.view.borrow_mut()) {
+        //        adjustment += new_adjustment;
 
-                if adjustment.change != Change::Clear {
-                    if let Some(region) = self.view.region_at(&mark.place) {
-                        self.ui
-                            .apply(Edit::new(region, adjustment.change.clone()))?;
-                    }
-                }
+        //        if adjustment.change != Change::Clear {
+        //            if let Some(region) = self.view.borrow_mut().region_at(&mark.place) {
+        //                self.ui
+        //                    .apply(Edit::new(region, adjustment.change.clone()))?;
+        //            }
+        //        }
 
-                mark.adjust(&adjustment);
-                self.view.add(mark, c)?;
-            }
-        }
+        //        mark.adjust(&adjustment);
+        //        self.view.borrow_mut().add(mark, c)?;
+        //    }
+        //}
 
-        if adjustment.change == Change::Clear {
-            self.view.clean();
-            self.display_view()?;
-        }
+        //if adjustment.change == Change::Clear {
+        //    self.view.borrow_mut().clean();
+        //    self.display_view()?;
+        //}
 
         Ok(())
     }
@@ -480,32 +575,6 @@ impl Paper {
     /// Changes the mode of the application.
     fn change_mode(&mut self, mode: Mode) {
         self.mode = mode;
-    }
-
-    /// Returns the height used for scrolling.
-    #[allow(clippy::integer_arithmetic)] // okay to divide usize by 4
-    fn scroll_height(&self) -> Result<usize, TryFromIntError> {
-        self.ui.grid_height().map(|height| height / 4)
-    }
-}
-
-impl Default for Paper {
-    fn default() -> Self {
-        Self {
-            ui: Rc::new(ui::NullUserInterface),
-            view: View::default(),
-            sketch: String::default(),
-            signals: Vec::default(),
-            noises: Vec::default(),
-            marks: Vec::default(),
-            filters: PaperFilters::default(),
-            mode: Mode::default(),
-            command_pattern: Pattern::define(
-                tkn!(lazy_some(Any) => "command")
-                    + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
-            ),
-            first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
-        }
     }
 }
 
@@ -550,32 +619,26 @@ impl<'a> Iterator for PaperFiltersIter<'a> {
     }
 }
 
-/// Signfifies the data being viewed/edited.
+/// Signfifies the view of the current file.
 #[derive(Clone, Debug, Default)]
 struct View {
+    path: PathBuf,
     /// The data.
     data: String,
     /// The first line that is displayed in the ui.
     first_line: LineNumber,
     /// The number of columns needed to display the margin.
     margin_width: usize,
-    /// The number of lines stored in the view.
+    /// The number of lines in the data.
     line_count: usize,
-    /// The file where the view's data is stored.
-    file: File,
 }
 
 impl View {
-    /// Creates a new `View` with data from the given [`File`].
-    fn with_file(file: File) -> Outcome<Self> {
-        let mut view = Self {
-            data: file.read()?,
-            file,
-            ..Self::default()
-        };
-
-        view.clean();
-        Ok(view)
+    fn change(&mut self, explorer: Rc<RefCell<dyn Explorer>>, path: PathBuf) -> Outcome<()> {
+        self.data = explorer.borrow_mut().read(&path)?;
+        self.path = path;
+        self.clean();
+        Ok(())
     }
 
     /// Adds a character at a [`Mark`].
@@ -699,12 +762,24 @@ impl View {
         self.line(place.line)
             .and_then(|x| Index::try_from(x.len()).ok())
     }
+}
 
-    /// Writes the view's data to its file.
-    fn put(&self) -> Outcome<()> {
-        self.file.write(&self.data)
+impl Hash for View {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.data.hash(state);
+        self.first_line.hash(state);
+        self.margin_width.hash(state);
+        self.line_count.hash(state);
     }
 }
+
+impl PartialEq for View {
+    fn eq(&self, other: &View) -> bool {
+        self.data == other.data && self.first_line == other.first_line && self.margin_width == other.margin_width && self.line_count == other.line_count
+    }
+}
+
+impl Eq for View {}
 
 /// Represents if the user interface display needs to change.
 type IsChanging = bool;
