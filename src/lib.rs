@@ -58,7 +58,7 @@
     unused_results,
     clippy::nursery,
     clippy::pedantic,
-    clippy::restriction,
+    clippy::restriction
 )]
 #![allow(clippy::suspicious_op_assign_impl, clippy::suspicious_arithmetic_impl)] // These lints are not always correct; issues should be detected by tests.
 #![allow(clippy::implicit_return)]
