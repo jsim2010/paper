@@ -76,7 +76,7 @@ mod engine;
 pub use engine::Outcome;
 pub use storage::Explorer;
 
-use engine::{Command, Failure, Mode};
+use engine::{Order, Failure, Mode};
 use pancurses::Input;
 use rec::ChCls::{Any, Digit, End, Not, Sign, Whitespace};
 use rec::{lazy_some, opt, some, tkn, var, Element, Pattern};
@@ -110,11 +110,11 @@ pub struct Paper {
     marks: Vec<Mark>,
     /// The current [`Mode`] of the application.
     mode: Mode,
-    mode_handlers: HashMap<Discriminant<Mode>, Rc<RefCell<dyn ModeHandler>>>,
+    mode_handlers: HashMap<Mode, Rc<RefCell<dyn ModeHandler>>>,
 }
 
 trait ModeHandler: Debug {
-    fn init(&mut self, mode: &Mode) -> Outcome<Vec<Edit>>;
+    fn enter(&mut self, order: Option<Order>) -> Outcome<Vec<Edit>>;
     fn process(&mut self, input: char) -> Outcome<Operation>;
 }
 
@@ -126,7 +126,7 @@ struct DisplayModeHandler {
 }
 
 enum Operation {
-    ChangeMode(Mode),
+    ChangeMode(Mode, Option<Order>),
     EditUi(Vec<Edit>),
     Noop,
 }
@@ -152,36 +152,34 @@ impl DisplayModeHandler {
 }
 
 impl ModeHandler for DisplayModeHandler {
-    fn init(&mut self, mode: &Mode) -> Outcome<Vec<Edit>> {
-        if let Mode::Display(command) = mode {
-            match command {
-                Command::SetView(path) => {
-                    let absolute_path = if path.is_absolute() {
-                        path.to_path_buf()
-                    } else {
-                        let mut new_path = std::env::current_dir()?;
-                        new_path.push(path);
-                        new_path
-                    };
+    fn enter(&mut self, order: Option<Order>) -> Outcome<Vec<Edit>> {
+        match order {
+            Some(Order::SetView(path)) => {
+                let absolute_path = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    let mut new_path = std::env::current_dir()?;
+                    new_path.push(path);
+                    new_path
+                };
 
-                    self.view.borrow_mut().change(
-                        Rc::clone(&self.explorer),
-                        absolute_path,
-                    )?;
-                    //self.noises.clear();
+                self.view.borrow_mut().change(
+                    Rc::clone(&self.explorer),
+                    absolute_path,
+                )?;
+                //self.noises.clear();
 
-                    //for line in 1..=self.view.borrow_mut().line_count {
-                    //    if let Some(noise) = LineNumber::new(line).map(Section::line) {
-                    //        self.noises.push(noise);
-                    //    }
-                    //}
-                }
-                Command::Save => {
-                    let view = self.view.borrow_mut();
-                    self.explorer.borrow_mut().write(&view.path, &view.data)?;
-                }
-                Command::Draw => (),
+                //for line in 1..=self.view.borrow_mut().line_count {
+                //    if let Some(noise) = LineNumber::new(line).map(Section::line) {
+                //        self.noises.push(noise);
+                //    }
+                //}
             }
+            Some(Order::Save) => {
+                let view = self.view.borrow_mut();
+                self.explorer.borrow_mut().write(&view.path, &view.data)?;
+            }
+            _ => (),
         }
 
         self.view_edits()
@@ -190,11 +188,11 @@ impl ModeHandler for DisplayModeHandler {
     fn process(&mut self, input: char) -> Outcome<Operation> {
         return match input {
             '.' => {
-                Ok(Operation::ChangeMode(Mode::Command))
+                Ok(Operation::ChangeMode(Mode::Command, None))
             }
             '#' | '/' => {
                 let view = Rc::make_mut(&mut self.view).clone();
-                Ok(Operation::ChangeMode(Mode::Filter(input, view.into_inner(), self.ui.grid_height()?)))
+                Ok(Operation::ChangeMode(Mode::Filter, Some(Order::StartFilter(input, view.into_inner(), self.ui.grid_height()?))))
             }
             'j' => {
                 let movement = IndexType::try_from(self.scroll_height()?)?;
@@ -245,7 +243,7 @@ impl CommandModeHandler {
 }
 
 impl ModeHandler for CommandModeHandler {
-    fn init(&mut self, _mode: &Mode) -> Outcome<Vec<Edit>> {
+    fn enter(&mut self, _order: Option<Order>) -> Outcome<Vec<Edit>> {
         self.command.clear();
         Ok(self.command_edits())
     }
@@ -253,17 +251,17 @@ impl ModeHandler for CommandModeHandler {
     fn process(&mut self, input: char) -> Outcome<Operation> {
         return match input {
             ENTER => {
-                let mut command = Command::Draw;
+                let mut command = Order::Draw;
                 let command_tokens = self.command_pattern.tokenize(&self.command);
 
                 match command_tokens.get("command") {
                     Some("see") => {
                         if let Some(path) = command_tokens.get("args") {
-                            command = Command::SetView(PathBuf::from(path));
+                            command = Order::SetView(PathBuf::from(path));
                         }
                     }
                     Some("put") => {
-                        command = Command::Save;
+                        command = Order::Save;
                     }
                     Some("end") => {
                         return Err(Failure::Quit);
@@ -271,10 +269,10 @@ impl ModeHandler for CommandModeHandler {
                     Some(_) | None => {}
                 }
 
-                Ok(Operation::ChangeMode(Mode::Display(command)))
+                Ok(Operation::ChangeMode(Mode::Display, Some(command)))
             }
             ESC => {
-                Ok(Operation::ChangeMode(Mode::Display(Command::Draw)))
+                Ok(Operation::ChangeMode(Mode::Display, None))
             }
             _ => {
                 if input == BACKSPACE {
@@ -348,13 +346,13 @@ impl FilterModeHandler {
 }
 
 impl ModeHandler for FilterModeHandler {
-    fn init(&mut self, mode: &Mode) -> Outcome<Vec<Edit>> {
+    fn enter(&mut self, order: Option<Order>) -> Outcome<Vec<Edit>> {
         self.filter.clear();
         
-        if let Mode::Filter(c, view, height) = mode {
-            self.filter.push(*c);
-            self.view = view.clone();
-            self.ui_height = *height;
+        if let Some(Order::StartFilter(c, view, height)) = order {
+            self.filter.push(c);
+            self.view = view;
+            self.ui_height = height;
         }
 
         
@@ -367,10 +365,10 @@ impl ModeHandler for FilterModeHandler {
     fn process(&mut self, input: char) -> Outcome<Operation> {
         return match input {
             ENTER => {
-                Ok(Operation::ChangeMode(Mode::Action))
+                Ok(Operation::ChangeMode(Mode::Action, None))
             }
             ESC => {
-                Ok(Operation::ChangeMode(Mode::Display(Command::Draw)))
+                Ok(Operation::ChangeMode(Mode::Display, None))
             }
             _ => {
                 if input == BACKSPACE {
@@ -413,20 +411,20 @@ struct ActionModeHandler {
 }
 
 impl ModeHandler for ActionModeHandler {
-    fn init(&mut self, mode: &Mode) -> Outcome<Vec<Edit>> {
+    fn enter(&mut self, order: Option<Order>) -> Outcome<Vec<Edit>> {
         Ok(vec![])
     }
 
     fn process(&mut self, input: char) -> Outcome<Operation> {
         return match input {
-            ESC => Ok(Operation::ChangeMode(Mode::Display(Command::Draw))),
+            ESC => Ok(Operation::ChangeMode(Mode::Display, None)),
             'i' => {
                 //self.set_marks(Edge::Start);
-                Ok(Operation::ChangeMode(Mode::Edit))
+                Ok(Operation::ChangeMode(Mode::Edit, None))
             }
             'I' => {
                 //self.set_marks(Edge::End);
-                Ok(Operation::ChangeMode(Mode::Edit))
+                Ok(Operation::ChangeMode(Mode::Edit, None))
             }
             _ => Ok(Operation::Noop),
         };
@@ -445,8 +443,8 @@ impl Paper {
             ui,
             mode: Mode::default(),
             mode_handlers: [
-                (mem::discriminant(&Mode::Display(Command::Draw)), display_mode_handler),
-                (mem::discriminant(&Mode::Command), command_mode_handler),
+                (Mode::Display, display_mode_handler),
+                (Mode::Command, command_mode_handler),
             ].iter().cloned().collect(),
             marks: Vec::default(),
         }
@@ -475,11 +473,11 @@ impl Paper {
             input = c;
         }
 
-        let operation = self.mode_handlers.get_mut(&mem::discriminant(&self.mode)).unwrap().borrow_mut().process(input)?;
+        let operation = self.mode_handlers.get_mut(&self.mode).unwrap().borrow_mut().process(input)?;
 
         match operation {
-            Operation::ChangeMode(new_mode) => {
-                for edit in self.mode_handlers.get_mut(&mem::discriminant(&new_mode)).unwrap().borrow_mut().init(&new_mode)? {
+            Operation::ChangeMode(new_mode, order) => {
+                for edit in self.mode_handlers.get_mut(&new_mode).unwrap().borrow_mut().enter(order)? {
                     self.ui.apply(edit)?;
                 }
 

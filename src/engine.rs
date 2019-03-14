@@ -9,21 +9,22 @@ use std::cell::RefCell;
 pub type Outcome<T> = Result<T, Failure>;
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub(crate) enum Command {
+pub(crate) enum Order {
     SetView(PathBuf),
     Save,
     Draw,
+    StartFilter(char, crate::View, usize),
 }
 
 /// Signifies a state of the application.
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) enum Mode {
     /// Displays the current view.
-    Display(Command),
+    Display,
     /// Displays the current command.
     Command,
     /// Displays the current filter expression and highlights the characters that match the filter.
-    Filter(char, crate::View, usize),
+    Filter,
     /// Displays the highlighting that has been selected.
     Action,
     /// Displays the current view along with the current edits.
@@ -33,9 +34,9 @@ pub(crate) enum Mode {
 impl Display for Mode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Mode::Display(_) => write!(f, "Display"),
+            Mode::Display => write!(f, "Display"),
             Mode::Command => write!(f, "Command"),
-            Mode::Filter(filter_type, _, _) => write!(f, "Filter {}", filter_type),
+            Mode::Filter => write!(f, "Filter"),
             Mode::Action => write!(f, "Action"),
             Mode::Edit => write!(f, "Edit"),
         }
@@ -44,7 +45,7 @@ impl Display for Mode {
 
 impl Default for Mode {
     fn default() -> Self {
-        Mode::Display(Command::Draw)
+        Mode::Display
     }
 }
 
