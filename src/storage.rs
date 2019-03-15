@@ -1,5 +1,5 @@
 //! Implements the functionality to interact with data located in different storages.
-use crate::{fmt, Debug, Display, Failure, Formatter, Outcome};
+use crate::{fmt, Debug, Display, Formatter};
 use jsonrpc_core;
 use lsp_types::notification::Notification;
 use lsp_types::request::Request;
@@ -16,15 +16,16 @@ use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, RecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
+use crate::mode::{Flag, Output};
 
 /// Interacts and processes file data.
 pub trait Explorer: Debug {
     /// Initializes all functionality needed by the Explorer.
-    fn start(&mut self) -> Outcome<()>;
+    fn start(&mut self) -> Output<()>;
     /// Returns the data from the file at a given path.
-    fn read(&mut self, path: &Path) -> Outcome<String>;
+    fn read(&mut self, path: &Path) -> Output<String>;
     /// Writes data to a file at the given path.
-    fn write(&self, path: &Path, data: &str) -> Outcome<()>;
+    fn write(&self, path: &Path, data: &str) -> Output<()>;
 }
 
 /// The interface with the language server.
@@ -312,16 +313,16 @@ impl error::Error for LspError {}
 struct NullExplorer;
 
 impl Explorer for NullExplorer {
-    fn start(&mut self) -> Outcome<()> {
-        Err(Failure::Quit)
+    fn start(&mut self) -> Output<()> {
+        Err(Flag::Quit)
     }
 
-    fn read(&mut self, _path: &Path) -> Outcome<String> {
-        Err(Failure::Quit)
+    fn read(&mut self, _path: &Path) -> Output<String> {
+        Err(Flag::Quit)
     }
 
-    fn write(&self, _path: &Path, _data: &str) -> Outcome<()> {
-        Err(Failure::Quit)
+    fn write(&self, _path: &Path, _data: &str) -> Output<()> {
+        Err(Flag::Quit)
     }
 }
 
@@ -349,18 +350,18 @@ impl Local {
 }
 
 impl Explorer for Local {
-    fn start(&mut self) -> Outcome<()> {
+    fn start(&mut self) -> Output<()> {
         self.language_client_mut().initialize()?;
         Ok(())
     }
 
-    fn read(&mut self, path: &Path) -> Outcome<String> {
+    fn read(&mut self, path: &Path) -> Output<String> {
         let content = fs::read_to_string(path).map(|data| data.replace('\r', ""))?;
         self.language_client_mut()
             .send_notification::<lsp_notification!("textDocument/didOpen")>(
                 lsp_types::DidOpenTextDocumentParams {
                     text_document: lsp_types::TextDocumentItem::new(
-                        lsp_types::Url::from_file_path(path).map_err(|_| Failure::Quit)?,
+                        lsp_types::Url::from_file_path(path).map_err(|_| Flag::Quit)?,
                         "rust".into(),
                         0,
                         content.clone(),
@@ -370,7 +371,7 @@ impl Explorer for Local {
         Ok(content)
     }
 
-    fn write(&self, path: &Path, data: &str) -> Outcome<()> {
+    fn write(&self, path: &Path, data: &str) -> Output<()> {
         fs::write(path, data)?;
         Ok(())
     }
