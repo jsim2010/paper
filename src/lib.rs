@@ -87,31 +87,40 @@ use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 use ui::UserInterface;
 
+/// A Mutable Reference Counter.
+///
+/// This is just a ([`Rc`]) of a [`RefCell`].
 type Mrc<T> = Rc<RefCell<T>>;
+
+macro_rules! mrc {
+    ($item:expr) => {
+        Rc::new(RefCell::new($item))
+    }
+}
 
 /// The paper application.
 #[derive(Debug)]
 pub struct Paper {
     /// User interface of the application.
     ui: Rc<dyn UserInterface>,
-    pane: Rc<RefCell<Pane>>,
-    explorer: Rc<RefCell<dyn Explorer>>,
+    pane: Mrc<Pane>,
+    explorer: Mrc<dyn Explorer>,
     /// The current [`mode::Name`] of the application.
     mode: mode::Name,
-    mode_handlers: HashMap<mode::Name, Rc<RefCell<dyn Processor>>>,
+    mode_handlers: HashMap<mode::Name, Mrc<dyn Processor>>,
 }
 
 impl Paper {
     /// Creates a new paper application.
     #[inline]
-    pub fn new(ui: Rc<dyn UserInterface>, explorer: Rc<RefCell<dyn Explorer>>) -> Self {
+    pub fn new(ui: Rc<dyn UserInterface>, explorer: Mrc<dyn Explorer>) -> Self {
         explorer.borrow_mut().start().unwrap();
-        let pane = Rc::new(RefCell::new(Pane::new(ui.grid_height().unwrap())));
-        let display_mode_handler: Rc<RefCell<dyn Processor>> = Rc::new(RefCell::new(mode::DisplayProcessor::new(&pane, &explorer)));
-        let command_mode_handler: Rc<RefCell<dyn Processor>> = Rc::new(RefCell::new(mode::CommandProcessor::new()));
-        let filter_mode_handler: Rc<RefCell<dyn Processor>> = Rc::new(RefCell::new(mode::FilterProcessor::new(&pane)));
-        let action_mode_handler: Rc<RefCell<dyn Processor>> = Rc::new(RefCell::new(mode::ActionProcessor::new(&pane)));
-        let edit_mode_handler: Rc<RefCell<dyn Processor>> = Rc::new(RefCell::new(mode::EditProcessor::new(&pane)));
+        let pane = mrc!(Pane::new(ui.grid_height().unwrap()));
+        let display_mode_handler: Mrc<dyn Processor> = mrc!(mode::DisplayProcessor::new(&pane, &explorer));
+        let command_mode_handler: Mrc<dyn Processor> = mrc!(mode::CommandProcessor::new());
+        let filter_mode_handler: Mrc<dyn Processor> = mrc!(mode::FilterProcessor::new(&pane));
+        let action_mode_handler: Mrc<dyn Processor> = mrc!(mode::ActionProcessor::new(&pane));
+        let edit_mode_handler: Mrc<dyn Processor> = mrc!(mode::EditProcessor::new(&pane));
 
         Self {
             ui,
@@ -165,7 +174,7 @@ impl Paper {
         Ok(())
     }
 
-    fn current_processor_mut(&mut self) -> &mut Rc<RefCell<dyn Processor>> {
+    fn current_processor_mut(&mut self) -> &mut Mrc<dyn Processor> {
         self.mode_handlers.get_mut(&self.mode).unwrap()
     }
 }
