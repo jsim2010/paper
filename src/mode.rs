@@ -1,30 +1,29 @@
 //! Implements the modality of the application.
-mod display;
-mod command;
-mod filter;
 mod action;
+mod command;
+mod display;
 mod edit;
+mod filter;
 
-pub(crate) use display::Processor as DisplayProcessor;
-pub(crate) use command::Processor as CommandProcessor;
-pub(crate) use filter::Processor as FilterProcessor;
 pub(crate) use action::Processor as ActionProcessor;
+pub(crate) use command::Processor as CommandProcessor;
+pub(crate) use display::Processor as DisplayProcessor;
 pub(crate) use edit::Processor as EditProcessor;
+pub(crate) use filter::Processor as FilterProcessor;
 
-use std::fmt::{self, Debug, Display, Formatter};
-use crate::ui::{self, Edit, Length, Index, IndexType, Change, Address, Region, BACKSPACE, ENTER};
-use std::cmp::{self, Ordering};
+use crate::storage::{self, Explorer, LspError};
+use crate::ui::{self, Address, Change, Edit, Index, IndexType, Length, Region, BACKSPACE, ENTER};
+use crate::Mrc;
 use std::borrow::Borrow;
+use std::cmp::{self, Ordering};
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::cell::RefCell;
-use std::ops::{Deref, Shr, ShrAssign, Add, Sub, AddAssign};
-use try_from::{TryFromIntError, TryFrom};
-use std::path::PathBuf;
-use crate::storage::{self, LspError, Explorer};
-use std::iter;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::io;
+use std::iter;
+use std::ops::{Add, AddAssign, Deref, Shr, ShrAssign, Sub};
+use std::path::PathBuf;
+use try_from::{TryFrom, TryFromIntError};
 
 pub(crate) type Output<T> = Result<T, Flag>;
 
@@ -64,38 +63,63 @@ impl Default for Name {
     }
 }
 
+/// Defines the functionality of a processor of a mode.
 pub(crate) trait Processor: Debug {
+    /// Enters the application into its mode.
     fn enter(&mut self, initiation: Option<Initiation>) -> Output<Vec<Edit>>;
+    /// Generates an [`Operation`] from the given input.
     fn decode(&mut self, input: char) -> Output<Operation>;
 }
 
+/// Signifies a function to be performed when the application enters a mode.
+///
+/// In general, only certain modes can implement certain Initiations; for example: only Filter
+/// implements [`StartFilter`].
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) enum Initiation {
+    /// Sets the view.
     SetView(PathBuf),
+    /// Saves the current data of the view.
     Save,
+    /// Starts a filter.
     StartFilter(char),
+    /// Sets a list of Sections.
     SetSignals(Vec<Section>),
+    /// Sets a list of marks.
     Mark(Vec<Mark>),
 }
 
+/// An String that is editable within a View.
+///
+/// Generally this is used to enter commands or filters.
 #[derive(Clone, Debug)]
 struct EditableString {
+    /// The [`String`] to be edited.
     string: String,
 }
 
 impl EditableString {
+    /// Creates a new `EditableString`.
     fn new() -> Self {
-        Self {string: String::new()}
+        Self {
+            string: String::new(),
+        }
     }
 
+    /// Returns the edits needed to write the string.
     fn edits(&self) -> Vec<Edit> {
-        vec![Edit::new(Region::with_row(0).unwrap(), Change::Row(self.string.clone()))]
+        vec![Edit::new(
+            Region::with_row(0).expect("Accessing region for editable string"),
+            Change::Row(self.string.clone()),
+        )]
     }
 
+    /// Clears the string.
     fn clear(&mut self) {
         self.string.clear();
     }
 
+    /// Adds a character and returns the success of doing so.
     fn add(&mut self, input: char) -> bool {
         if input == BACKSPACE {
             if self.string.pop().is_none() {
@@ -108,10 +132,12 @@ impl EditableString {
         true
     }
 
+    /// Adds a character that is not [`BACKSPACE`].
     fn add_non_bs(&mut self, input: char) {
         self.string.push(input);
     }
 
+    /// Adds the input and returns the appropriate user interface edits.
     fn edits_after_add(&mut self, input: char) -> Vec<Edit> {
         if self.add(input) {
             self.edits()
@@ -120,6 +146,7 @@ impl EditableString {
         }
     }
 
+    /// Returns the edits needed to flash the user interface.
     fn flash_edits(&self) -> Vec<Edit> {
         vec![Edit::new(Region::default(), Change::Flash)]
     }
@@ -133,12 +160,20 @@ impl Deref for EditableString {
     }
 }
 
+/// Signifies an alert to stop the application.
 #[derive(Clone, Copy, Debug)]
 pub enum Flag {
+    /// An error with the user interface.
     Ui(ui::Error),
+    /// An error with an attempt to convert values.
     Conversion(TryFromIntError),
+    /// An error with the file interaction.
     File(storage::Error),
+    /// An error with the Language Server Protocol.
     Lsp(LspError),
+    /// Quits the application.
+    ///
+    /// This is not actually an error, just a way to kill the application.
     Quit,
 }
 
@@ -181,6 +216,7 @@ impl From<io::Error> for Flag {
 /// Signfifies the pane of the current file.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Pane {
+    /// The path that makes up the pane.
     path: PathBuf,
     /// The data.
     data: String,
@@ -188,20 +224,23 @@ pub(crate) struct Pane {
     first_line: LineNumber,
     /// The number of columns needed to display the margin.
     margin_width: usize,
+    /// The number of rows visible in the pane.
     height: usize,
     /// The number of lines in the data.
     line_count: usize,
 }
 
 impl Pane {
+    /// Creates a new Pane with a given height.
     pub(crate) fn new(height: usize) -> Self {
         Self {
             height,
-            ..Default::default()
+            ..Self::default()
         }
     }
 
-    pub(crate) fn change(&mut self, explorer: Rc<RefCell<dyn Explorer>>, path: PathBuf) -> Output<()> {
+    /// Changes the pane to a new path.
+    fn change(&mut self, explorer: &Mrc<dyn Explorer>, path: PathBuf) -> Output<()> {
         self.data = explorer.borrow_mut().read(&path)?;
         self.path = path;
         self.clean();
@@ -345,16 +384,23 @@ impl Hash for Pane {
 }
 
 impl PartialEq for Pane {
-    fn eq(&self, other: &Pane) -> bool {
-        self.data == other.data && self.first_line == other.first_line && self.margin_width == other.margin_width && self.line_count == other.line_count
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+            && self.first_line == other.first_line
+            && self.margin_width == other.margin_width
+            && self.line_count == other.line_count
     }
 }
 
 impl Eq for Pane {}
 
+/// Signifies an action to be performed by the application.
 pub(crate) enum Operation {
+    /// Enters a new mode.
     EnterMode(Name, Option<Initiation>),
+    /// Edits the user interface.
     EditUi(Vec<Edit>),
+    /// Does nothing.
     Noop,
 }
 
@@ -610,7 +656,8 @@ impl Display for Mark {
 pub(crate) struct Pointer(Option<Index>);
 
 impl Pointer {
-    pub(crate) fn new(index: Option<Index>) -> Self {
+    /// Returns a new `Pointer`.
+    fn new(index: Option<Index>) -> Self {
         Self(index)
     }
 }

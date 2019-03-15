@@ -1,4 +1,5 @@
 //! Implements the functionality to interact with data located in different storages.
+use crate::mode::{Flag, Output};
 use crate::{fmt, Debug, Display, Formatter};
 use jsonrpc_core;
 use lsp_types::notification::Notification;
@@ -16,7 +17,6 @@ use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, RecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-use crate::mode::{Flag, Output};
 
 /// Interacts and processes file data.
 pub trait Explorer: Debug {

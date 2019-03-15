@@ -1,8 +1,8 @@
-use super::{Mark, Section, Pane, Index, Pointer, Initiation, Operation, Name, Output};
+use super::{Index, Initiation, Mark, Name, Operation, Output, Pane, Pointer, Section};
+use crate::ui::{Edit, ESC};
+use crate::Mrc;
 use std::fmt::{self, Display, Formatter};
 use try_from::TryFrom;
-use crate::ui::{ESC, Edit};
-use crate::Mrc;
 
 #[derive(Debug)]
 pub(crate) struct Processor {
@@ -31,8 +31,11 @@ impl Processor {
             }
 
             let pointer = Pointer::new(
-                pane.line_indices().nth(place.line.row()).and_then(|index_value| Index::try_from(index_value).ok())) + place.column;
-            marks.push(Mark {place, pointer} );
+                pane.line_indices()
+                    .nth(place.line.row())
+                    .and_then(|index_value| Index::try_from(index_value).ok()),
+            ) + place.column;
+            marks.push(Mark { place, pointer });
         }
 
         marks
@@ -49,10 +52,16 @@ impl super::Processor for Processor {
     }
 
     fn decode(&mut self, input: char) -> Output<Operation> {
-        return match input {
+        match input {
             ESC => Ok(Operation::EnterMode(Name::Display, None)),
-            'i' => Ok(Operation::EnterMode(Name::Edit, Some(Initiation::Mark(self.get_marks(Edge::Start))))),
-            'I' => Ok(Operation::EnterMode(Name::Edit, Some(Initiation::Mark(self.get_marks(Edge::End))))),
+            'i' => Ok(Operation::EnterMode(
+                Name::Edit,
+                Some(Initiation::Mark(self.get_marks(Edge::Start))),
+            )),
+            'I' => Ok(Operation::EnterMode(
+                Name::Edit,
+                Some(Initiation::Mark(self.get_marks(Edge::End))),
+            )),
             _ => Ok(Operation::Noop),
         }
     }

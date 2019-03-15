@@ -1,8 +1,8 @@
-use rec::ChCls::{Any, End, Whitespace};
-use rec::{Pattern, lazy_some, some, var, tkn, Element};
-use std::path::PathBuf;
+use super::{EditableString, Flag, Initiation, Name, Operation, Output};
 use crate::ui::{Edit, ENTER, ESC};
-use super::{EditableString, Initiation, Flag, Operation, Name, Output};
+use rec::ChCls::{Any, End, Whitespace};
+use rec::{lazy_some, some, tkn, var, Element, Pattern};
+use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Processor {
@@ -29,7 +29,7 @@ impl super::Processor for Processor {
     }
 
     fn decode(&mut self, input: char) -> Output<Operation> {
-        return match input {
+        match input {
             ENTER => {
                 let mut initiation = None;
                 let command_tokens = self.command_pattern.tokenize(&self.command);
@@ -46,17 +46,13 @@ impl super::Processor for Processor {
                     Some("end") => {
                         return Err(Flag::Quit);
                     }
-                    _ => ()
+                    _ => (),
                 }
 
                 Ok(Operation::EnterMode(Name::Display, initiation))
             }
-            ESC => {
-                Ok(Operation::EnterMode(Name::Display, None))
-            }
-            _ => {
-                Ok(Operation::EditUi(self.command.edits_after_add(input)))
-            }
+            ESC => Ok(Operation::EnterMode(Name::Display, None)),
+            _ => Ok(Operation::EditUi(self.command.edits_after_add(input))),
         }
     }
 }

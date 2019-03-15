@@ -434,9 +434,7 @@ impl UserInterface for Terminal {
                 self.add_str(s)?;
                 self.clear_to_row_end()
             }
-            Change::Flash => {
-                self.flash()
-            }
+            Change::Flash => self.flash(),
         }
     }
 

@@ -1,8 +1,8 @@
+use super::{Flag, IndexType, Initiation, Name, Operation, Output, Pane};
 use crate::storage::Explorer;
 use crate::ui::Edit;
-use try_from::{TryFrom, TryFromIntError};
-use super::{Flag, Output, IndexType, Initiation, Pane, Operation, Name};
 use crate::Mrc;
+use try_from::{TryFrom, TryFromIntError};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Processor {
@@ -33,10 +33,7 @@ impl super::Processor for Processor {
                     new_path
                 };
 
-                pane.change(
-                    self.explorer.clone(),
-                    absolute_path,
-                )?;
+                pane.change(&self.explorer, absolute_path)?;
             }
             Some(Initiation::Save) => {
                 let explorer: std::cell::Ref<'_, (dyn Explorer)> = self.explorer.borrow();
@@ -52,13 +49,12 @@ impl super::Processor for Processor {
         let mut pane = self.pane.borrow_mut();
         let scroll_length = IndexType::try_from(pane.height / 4)?;
 
-        return match input {
-            '.' => {
-                Ok(Operation::EnterMode(Name::Command, None))
-            }
-            '#' | '/' => {
-                Ok(Operation::EnterMode(Name::Filter, Some(Initiation::StartFilter(input))))
-            }
+        match input {
+            '.' => Ok(Operation::EnterMode(Name::Command, None)),
+            '#' | '/' => Ok(Operation::EnterMode(
+                Name::Filter,
+                Some(Initiation::StartFilter(input)),
+            )),
             'j' => {
                 let mut operation = Operation::Noop;
 
@@ -71,7 +67,11 @@ impl super::Processor for Processor {
             'k' => {
                 let mut operation = Operation::Noop;
 
-                if pane.scroll(scroll_length.checked_neg().ok_or(Flag::Conversion(TryFromIntError::Overflow))?) {
+                if pane.scroll(
+                    scroll_length
+                        .checked_neg()
+                        .ok_or(Flag::Conversion(TryFromIntError::Overflow))?,
+                ) {
                     operation = Operation::EditUi(pane.redraw_edits().collect());
                 }
 

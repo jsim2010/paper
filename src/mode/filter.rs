@@ -1,10 +1,13 @@
+use super::{
+    EditableString, IndexType, Initiation, Length, LineNumber, Name, Operation, Output, Pane,
+    Section,
+};
+use crate::ui::{Change, Color, Edit, Region, ENTER, ESC};
 use crate::Mrc;
-use super::{Section, IndexType, Length, EditableString, Pane, LineNumber, Operation, Name, Initiation, Output};
-use crate::ui::{Change, Edit, Region, Color, ESC, ENTER};
-use rec::{tkn, opt, Element, Pattern, some, var};
-use rec::ChCls::{Digit, End, Sign, Any, Not};
-use std::fmt::Debug;
+use rec::ChCls::{Any, Digit, End, Not, Sign};
+use rec::{opt, some, tkn, var, Element, Pattern};
 use std::cmp;
+use std::fmt::Debug;
 use try_from::{TryFrom, TryFromIntError};
 
 #[derive(Debug)]
@@ -53,22 +56,30 @@ impl super::Processor for Processor {
     fn decode(&mut self, input: char) -> Output<Operation> {
         let pane: &Pane = &self.pane.borrow();
 
-        return match input {
-            ENTER => {
-                Ok(Operation::EnterMode(Name::Action, Some(Initiation::SetSignals(self.signals.clone()))))
-            }
-            ESC => {
-                Ok(Operation::EnterMode(Name::Display, None))
-            }
+        match input {
+            ENTER => Ok(Operation::EnterMode(
+                Name::Action,
+                Some(Initiation::SetSignals(self.signals.clone())),
+            )),
+            ESC => Ok(Operation::EnterMode(Name::Display, None)),
             _ => {
                 if input == '\t' {
                     self.filter.add_non_bs('&');
                     self.filter.add_non_bs('&');
-                } else if !self.filter.add(input) {
-                    return Ok(Operation::EditUi(self.filter.flash_edits()));
+                } else {
+                    let success = self.filter.add(input);
+
+                    if !success {
+                        return Ok(Operation::EditUi(self.filter.flash_edits()));
+                    }
                 }
 
-                if let Some(last_feature) = self.first_feature_pattern.tokenize_iter(&self.filter).last().and_then(|tokens| tokens.get("feature")) {
+                if let Some(last_feature) = self
+                    .first_feature_pattern
+                    .tokenize_iter(&self.filter)
+                    .last()
+                    .and_then(|tokens| tokens.get("feature"))
+                {
                     self.signals = self.noises.clone();
 
                     if let Some(id) = last_feature.chars().nth(0) {
@@ -84,7 +95,10 @@ impl super::Processor for Processor {
                 let mut edits = self.filter.edits();
 
                 for row in 0..pane.height {
-                    edits.push(Edit::new(Region::with_row(row).unwrap(), Change::Format(Color::Default)));
+                    edits.push(Edit::new(
+                        Region::with_row(row).unwrap(),
+                        Change::Format(Color::Default),
+                    ));
                 }
 
                 for noise in &self.noises {

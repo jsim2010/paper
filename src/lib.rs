@@ -68,14 +68,14 @@
 // single_use_lifetimes: issue rust-lang/rust#55057
 
 pub mod num;
-pub mod ui;
 pub mod storage;
+pub mod ui;
 
 mod mode;
 
 pub use storage::Explorer;
 
-use mode::{Pane, Flag, Operation, Output, Processor};
+use mode::{Flag, Operation, Output, Pane, Processor};
 use pancurses::Input;
 use std::borrow::Borrow;
 use std::cell::RefCell;
@@ -95,7 +95,7 @@ type Mrc<T> = Rc<RefCell<T>>;
 macro_rules! mrc {
     ($item:expr) => {
         Rc::new(RefCell::new($item))
-    }
+    };
 }
 
 /// The paper application.
@@ -103,20 +103,27 @@ macro_rules! mrc {
 pub struct Paper {
     /// User interface of the application.
     ui: Rc<dyn UserInterface>,
+    /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
+    /// The [`Explorer`] of the application.
     explorer: Mrc<dyn Explorer>,
     /// The current [`mode::Name`] of the application.
     mode: mode::Name,
-    mode_handlers: HashMap<mode::Name, Mrc<dyn Processor>>,
+    /// Maps modes to their respective [`Processor`].
+    processors: HashMap<mode::Name, Mrc<dyn Processor>>,
 }
 
 impl Paper {
     /// Creates a new paper application.
     #[inline]
     pub fn new(ui: Rc<dyn UserInterface>, explorer: Mrc<dyn Explorer>) -> Self {
-        explorer.borrow_mut().start().unwrap();
-        let pane = mrc!(Pane::new(ui.grid_height().unwrap()));
-        let display_mode_handler: Mrc<dyn Processor> = mrc!(mode::DisplayProcessor::new(&pane, &explorer));
+        explorer.borrow_mut().start().expect("Starting explorer");
+        let pane = mrc!(Pane::new(
+            ui.grid_height()
+                .expect("Accessing height of user interface")
+        ));
+        let display_mode_handler: Mrc<dyn Processor> =
+            mrc!(mode::DisplayProcessor::new(&pane, &explorer));
         let command_mode_handler: Mrc<dyn Processor> = mrc!(mode::CommandProcessor::new());
         let filter_mode_handler: Mrc<dyn Processor> = mrc!(mode::FilterProcessor::new(&pane));
         let action_mode_handler: Mrc<dyn Processor> = mrc!(mode::ActionProcessor::new(&pane));
@@ -127,13 +134,16 @@ impl Paper {
             pane,
             explorer,
             mode: mode::Name::default(),
-            mode_handlers: [
+            processors: [
                 (mode::Name::Display, display_mode_handler),
                 (mode::Name::Command, command_mode_handler),
                 (mode::Name::Filter, filter_mode_handler),
                 (mode::Name::Action, action_mode_handler),
                 (mode::Name::Edit, edit_mode_handler),
-            ].iter().cloned().collect(),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
         }
     }
 
@@ -160,7 +170,9 @@ impl Paper {
             let edits = match operation {
                 Operation::EnterMode(new_mode, initiation) => {
                     self.mode = new_mode;
-                    self.current_processor_mut().borrow_mut().enter(initiation)?
+                    self.current_processor_mut()
+                        .borrow_mut()
+                        .enter(initiation)?
                 }
                 Operation::EditUi(ui_edits) => ui_edits,
                 _ => vec![],
@@ -174,7 +186,8 @@ impl Paper {
         Ok(())
     }
 
+    /// Return a mutable reference to the processor of the current mode.
     fn current_processor_mut(&mut self) -> &mut Mrc<dyn Processor> {
-        self.mode_handlers.get_mut(&self.mode).unwrap()
+        self.processors.get_mut(&self.mode).unwrap()
     }
 }

@@ -1,4 +1,4 @@
-use super::{Pane, Mark, Operation, Name, Adjustment, Change, Initiation, Output};
+use super::{Adjustment, Change, Initiation, Mark, Name, Operation, Output, Pane};
 use crate::ui::{Edit, ESC};
 use crate::Mrc;
 
@@ -29,7 +29,7 @@ impl super::Processor for Processor {
     fn decode(&mut self, input: char) -> Output<Operation> {
         let mut pane = self.pane.borrow_mut();
 
-        return if input == ESC {
+        if input == ESC {
             Ok(Operation::EnterMode(Name::Display, None))
         } else {
             let mut adjustment = Adjustment::default();
