@@ -1,23 +1,29 @@
+//! Implements functionality for the application while in action mode.
 use super::{Index, Initiation, Mark, Name, Operation, Output, Pane, Pointer, Section};
 use crate::ui::{Edit, ESC};
 use crate::Mrc;
 use std::fmt::{self, Display, Formatter};
 use try_from::TryFrom;
 
+/// The [`Processor`] of the action mode.
 #[derive(Debug)]
 pub(crate) struct Processor {
+    /// The [`Section`]s of the signals.
     signals: Vec<Section>,
+    /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
 }
 
 impl Processor {
+    /// Creates a new `Processor`.
     pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
         Self {
             signals: Vec::new(),
-            pane: pane.clone(),
+            pane: Mrc::clone(pane),
         }
     }
 
+    /// Returns the [`Marks`] at the given [`Edge`] of the current signals.
     fn get_marks(&mut self, edge: Edge) -> Vec<Mark> {
         let mut marks = Vec::new();
         let pane: &Pane = &self.pane.borrow();

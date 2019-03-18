@@ -1,3 +1,4 @@
+//! Implements functionality for the application while in filter mode.
 use super::{
     EditableString, IndexType, Initiation, Length, LineNumber, Name, Operation, Output, Pane,
     Section,
@@ -10,17 +11,25 @@ use std::cmp;
 use std::fmt::Debug;
 use try_from::{TryFrom, TryFromIntError};
 
+/// The [`Processor`] of the filter mode.
 #[derive(Debug)]
 pub(crate) struct Processor {
+    /// The filter.
     filter: EditableString,
+    /// All [`Section`]s that are being filtered.
     noises: Vec<Section>,
+    /// All [`Section`]s that match the current filter.
     signals: Vec<Section>,
+    /// Matches the first feature of a filter.
     first_feature_pattern: Pattern,
+    /// Filters supported by the application
     filters: PaperFilters,
+    /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
 }
 
 impl Processor {
+    /// Creates a new `Processor` for the filter mode.
     pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
         Self {
             filter: EditableString::new(),
@@ -28,7 +37,7 @@ impl Processor {
             signals: Vec::new(),
             first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
             filters: PaperFilters::default(),
-            pane: pane.clone(),
+            pane: Mrc::clone(pane),
         }
     }
 }
@@ -96,7 +105,7 @@ impl super::Processor for Processor {
 
                 for row in 0..pane.height {
                     edits.push(Edit::new(
-                        Region::with_row(row).unwrap(),
+                        Region::with_row(row)?,
                         Change::Format(Color::Default),
                     ));
                 }

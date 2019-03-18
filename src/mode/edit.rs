@@ -1,17 +1,22 @@
+//! Implements functionality for the application while in edit mode.
 use super::{Adjustment, Change, Initiation, Mark, Name, Operation, Output, Pane};
 use crate::ui::{Edit, ESC};
 use crate::Mrc;
 
+/// The [`Processor`] of the edit mode.
 #[derive(Debug)]
 pub(crate) struct Processor {
+    /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
+    /// All [`Mark`]s where edits should be executed.
     marks: Vec<Mark>,
 }
 
 impl Processor {
+    /// Creates a new `Processor`.
     pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
         Self {
-            pane: pane.clone(),
+            pane: Mrc::clone(pane),
             marks: Vec::new(),
         }
     }

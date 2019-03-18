@@ -25,14 +25,15 @@ use std::ops::{Add, AddAssign, Deref, Shr, ShrAssign, Sub};
 use std::path::PathBuf;
 use try_from::{TryFrom, TryFromIntError};
 
-pub(crate) type Output<T> = Result<T, Flag>;
+/// Defines a [`Result`] with [`Flag`] as its Error.
+pub type Output<T> = Result<T, Flag>;
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: IndexType = -1;
 
 /// Signifies the name of an application mode.
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub(crate) enum Name {
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum Name {
     /// Displays the current view.
     Display,
     /// Displays the current command.
@@ -76,7 +77,7 @@ pub(crate) trait Processor: Debug {
 /// In general, only certain modes can implement certain Initiations; for example: only Filter
 /// implements [`StartFilter`].
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub(crate) enum Initiation {
+pub enum Initiation {
     /// Sets the view.
     SetView(PathBuf),
     /// Saves the current data of the view.
@@ -349,6 +350,15 @@ impl Pane {
         self.margin_width = (((self.line_count.saturating_add(1)) as f64).log10().ceil()) as usize;
     }
 
+    /// Return the length of scrolling movements.
+    fn scroll_length(&self) -> Output<IndexType> {
+        Ok(IndexType::try_from(
+            self.height
+                .checked_div(4)
+                .ok_or(Flag::Conversion(TryFromIntError::Overflow))?,
+        )?)
+    }
+
     /// Scrolls the pane's data.
     pub(crate) fn scroll(&mut self, movement: IndexType) -> IsChanging {
         let new_first_line = cmp::min(
@@ -395,7 +405,8 @@ impl PartialEq for Pane {
 impl Eq for Pane {}
 
 /// Signifies an action to be performed by the application.
-pub(crate) enum Operation {
+#[derive(Debug)]
+pub enum Operation {
     /// Enters a new mode.
     EnterMode(Name, Option<Initiation>),
     /// Edits the user interface.
@@ -458,7 +469,7 @@ impl Display for Place {
 
 /// Signifies adjacent [`Place`]s.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
-pub(crate) struct Section {
+pub struct Section {
     /// The [`Place`] at which `Section` starts.
     start: Place,
     /// The [`Length`] of `Section`.
@@ -624,7 +635,7 @@ impl From<std::num::ParseIntError> for ParseLineNumberError {
 
 /// An address and its respective pointer in a pane.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub(crate) struct Mark {
+pub struct Mark {
     /// Pointer in pane that corresponds with mark.
     pointer: Pointer,
     /// Place of mark.

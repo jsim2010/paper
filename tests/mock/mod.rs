@@ -1,15 +1,19 @@
 use pancurses::Input;
+use paper::mode::{Initiation, Name, Operation, Output};
 use paper::num::Length;
 use paper::ui::{Address, Change, Edit, Index, Region, UserInterface};
-use paper::{ui, File, Paper};
-use paper::{Explorer, Outcome};
+use paper::Explorer;
+use paper::{ui, Paper};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use try_from::TryFromIntError;
 
 pub fn create(controller: &Rc<RefCell<Controller>>, setup: Vec<Input>) -> Paper {
-    let mut paper = Paper::new(MockUserInterface::new(&controller));
+    let mut paper = Paper::new(
+        MockUserInterface::new(&controller),
+        MockExplorer::new(controller),
+    );
 
     for input in setup {
         controller.borrow_mut().set_input(Some(input));
@@ -26,13 +30,16 @@ pub fn create_with_file(
     file: &str,
 ) -> Paper {
     controller.borrow_mut().set_file(String::from(file));
-    let mut paper = Paper::with_file(
-        MockUserInterface::new(&controller),
-        File::new(
-            Rc::new(RefCell::new(MockExplorer::new(Rc::clone(&controller)))),
-            PathBuf::from("mock"),
-        ),
+    let mut paper = Paper::new(
+        MockUserInterface::new(controller),
+        MockExplorer::new(controller),
     );
+
+    // Sets the data in the view based on the file stored by controller.
+    paper.operate(Operation::EnterMode(
+        Name::Display,
+        Some(Initiation::SetView(PathBuf::from("mock"))),
+    ));
 
     for input in setup {
         controller.borrow_mut().set_input(Some(input));
@@ -149,21 +156,23 @@ pub struct MockExplorer {
 }
 
 impl MockExplorer {
-    pub fn new(controller: Rc<RefCell<Controller>>) -> Self {
-        Self { controller }
+    pub fn new(controller: &Rc<RefCell<Controller>>) -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(Self {
+            controller: Rc::clone(controller),
+        }))
     }
 }
 
 impl Explorer for MockExplorer {
-    fn start(&mut self) -> Outcome<()> {
+    fn start(&mut self) -> Output<()> {
         Ok(())
     }
 
-    fn read(&mut self, _path: &Path) -> Outcome<String> {
+    fn read(&mut self, _path: &Path) -> Output<String> {
         Ok(self.controller.borrow().file().to_string())
     }
 
-    fn write(&self, _path: &Path, _data: &str) -> Outcome<()> {
+    fn write(&self, _path: &Path, _data: &str) -> Output<()> {
         Ok(())
     }
 }

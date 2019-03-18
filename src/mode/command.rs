@@ -1,16 +1,21 @@
+//! Implements functionality for the application while in command mode.
 use super::{EditableString, Flag, Initiation, Name, Operation, Output};
 use crate::ui::{Edit, ENTER, ESC};
 use rec::ChCls::{Any, End, Whitespace};
 use rec::{lazy_some, some, tkn, var, Element, Pattern};
 use std::path::PathBuf;
 
+/// The [`Processor`] of the command mode.
 #[derive(Clone, Debug)]
 pub(crate) struct Processor {
+    /// The command.
     command: EditableString,
+    /// Matches commands.
     command_pattern: Pattern,
 }
 
 impl Processor {
+    /// Creates a new `Processor`.
     pub(crate) fn new() -> Self {
         Self {
             command: EditableString::new(),

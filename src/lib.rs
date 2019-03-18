@@ -67,11 +67,10 @@
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 // single_use_lifetimes: issue rust-lang/rust#55057
 
+pub mod mode;
 pub mod num;
 pub mod storage;
 pub mod ui;
-
-mod mode;
 
 pub use storage::Explorer;
 
@@ -166,21 +165,27 @@ impl Paper {
     pub fn step(&mut self) -> Output<()> {
         if let Some(Input::Character(input)) = self.ui.receive_input() {
             let operation = self.current_processor_mut().borrow_mut().decode(input)?;
+            self.operate(operation)
+        } else {
+            Ok(())
+        }
+    }
 
-            let edits = match operation {
-                Operation::EnterMode(new_mode, initiation) => {
-                    self.mode = new_mode;
-                    self.current_processor_mut()
-                        .borrow_mut()
-                        .enter(initiation)?
-                }
-                Operation::EditUi(ui_edits) => ui_edits,
-                _ => vec![],
-            };
-
-            for edit in edits {
-                self.ui.apply(edit)?;
+    /// Executes an [`Operation`].
+    pub fn operate(&mut self, operation: Operation) -> Output<()> {
+        let edits = match operation {
+            Operation::EnterMode(new_mode, initiation) => {
+                self.mode = new_mode;
+                self.current_processor_mut()
+                    .borrow_mut()
+                    .enter(initiation)?
             }
+            Operation::EditUi(ui_edits) => ui_edits,
+            _ => vec![],
+        };
+
+        for edit in edits {
+            self.ui.apply(edit)?;
         }
 
         Ok(())

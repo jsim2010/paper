@@ -1,20 +1,25 @@
-use super::{Flag, IndexType, Initiation, Name, Operation, Output, Pane};
+//! Implements functionality for the application while in display mode.
+use super::{Flag, Initiation, Name, Operation, Output, Pane};
 use crate::storage::Explorer;
 use crate::ui::Edit;
 use crate::Mrc;
-use try_from::{TryFrom, TryFromIntError};
+use try_from::TryFromIntError;
 
+/// The [`Processor`] of the display mode.
 #[derive(Clone, Debug)]
 pub(crate) struct Processor {
+    /// The [`Explorer`] of the application.
     explorer: Mrc<dyn Explorer>,
+    /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
 }
 
 impl Processor {
+    /// Creates a new `Processor`.
     pub(crate) fn new(pane: &Mrc<Pane>, explorer: &Mrc<dyn Explorer>) -> Self {
         Self {
-            explorer: explorer.clone(),
-            pane: pane.clone(),
+            explorer: Mrc::clone(explorer),
+            pane: Mrc::clone(pane),
         }
     }
 }
@@ -26,7 +31,7 @@ impl super::Processor for Processor {
         match initiation {
             Some(Initiation::SetView(path)) => {
                 let absolute_path = if path.is_absolute() {
-                    path.to_path_buf()
+                    path
                 } else {
                     let mut new_path = std::env::current_dir()?;
                     new_path.push(path);
@@ -47,7 +52,6 @@ impl super::Processor for Processor {
 
     fn decode(&mut self, input: char) -> Output<Operation> {
         let mut pane = self.pane.borrow_mut();
-        let scroll_length = IndexType::try_from(pane.height / 4)?;
 
         match input {
             '.' => Ok(Operation::EnterMode(Name::Command, None)),
@@ -55,27 +59,20 @@ impl super::Processor for Processor {
                 Name::Filter,
                 Some(Initiation::StartFilter(input)),
             )),
-            'j' => {
-                let mut operation = Operation::Noop;
+            'j' | 'k' => {
+                let mut scroll_length = pane.scroll_length()?;
 
-                if pane.scroll(scroll_length) {
-                    operation = Operation::EditUi(pane.redraw_edits().collect())
-                }
-
-                Ok(operation)
-            }
-            'k' => {
-                let mut operation = Operation::Noop;
-
-                if pane.scroll(
-                    scroll_length
+                if input == 'k' {
+                    scroll_length = scroll_length
                         .checked_neg()
-                        .ok_or(Flag::Conversion(TryFromIntError::Overflow))?,
-                ) {
-                    operation = Operation::EditUi(pane.redraw_edits().collect());
+                        .ok_or(Flag::Conversion(TryFromIntError::Overflow))?;
                 }
 
-                Ok(operation)
+                Ok(if pane.scroll(scroll_length) {
+                    Operation::EditUi(pane.redraw_edits().collect())
+                } else {
+                    Operation::Noop
+                })
             }
             _ => Ok(Operation::Noop),
         }
