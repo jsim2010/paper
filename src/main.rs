@@ -1,4 +1,5 @@
 use clap::{crate_authors, crate_version, App};
+use paper::storage::Local;
 use paper::ui::Terminal;
 use paper::Paper;
 
@@ -7,8 +8,7 @@ fn main() {
         .version(crate_version!())
         .author(crate_authors!())
         .get_matches();
-    let ui = Terminal::new();
-    let mut paper = Paper::new(&ui);
+    let mut paper = Paper::new(Terminal::new(), Local::new());
 
     if let Err(s) = paper.run() {
         eprintln!("{}", s);

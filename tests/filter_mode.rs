@@ -1,33 +1,25 @@
 mod mock;
 
-use mock::{MockExplorer, MockUserInterface};
+use mock::Controller;
 use pancurses::Input;
 use paper::ui::ESC;
-use paper::{File, Paper};
 
 #[test]
 fn escape_returns_to_display() {
-    let mock_ui = MockUserInterface::new();
-    let mock_explorer = MockExplorer::new();
-    let file = File::new(&mock_explorer, String::from("mock"));
-    mock_explorer.read.return_value(Ok(String::from("a")));
-    mock_ui.grid_height.return_value(Ok(5));
-    let mut paper = Paper::with_file(&mock_ui, file);
-    let setup_inputs = vec![Some(Input::Character('#'))];
+    let controller = Controller::new();
+    controller.borrow_mut().set_grid_height(Ok(5));
+    let mut paper = mock::create_with_file(&controller, vec![Input::Character('#')], "a");
+    controller
+        .borrow_mut()
+        .set_input(Some(Input::Character(ESC)));
 
-    for input in setup_inputs {
-        mock_ui.receive_input.return_value(input);
-        paper.step().unwrap();
-    }
-
-    mock_ui.apply.reset_calls();
-    mock_ui
-        .receive_input
-        .return_value(Some(Input::Character(ESC)));
     paper.step().unwrap();
 
-    assert!(mock_ui.apply.has_calls_exactly_in_order(vec![
-        mock::display_clear_edit(),
-        mock::display_row_edit(0, 2, String::from("1 a")),
-    ]));
+    assert_eq!(
+        controller.borrow().apply_calls(),
+        &vec![
+            mock::display_clear_edit(),
+            mock::display_row_edit(0, 2, String::from("1 a")),
+        ]
+    );
 }

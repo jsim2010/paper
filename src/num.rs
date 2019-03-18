@@ -35,7 +35,7 @@ where
     type Output = Self;
 
     fn add(self, other: T) -> Self::Output {
-        NonNegativeI32(self.0 + other.borrow())
+        Self(self.0 + other.borrow())
     }
 }
 
@@ -85,7 +85,7 @@ impl TryFrom<i32> for NonNegativeI32 {
         if value.is_negative() {
             Err(TryFromIntError::Underflow)
         } else {
-            Ok(NonNegativeI32(value))
+            Ok(Self(value))
         }
     }
 }
@@ -94,7 +94,7 @@ impl TryFrom<i64> for NonNegativeI32 {
     type Err = TryFromIntError;
 
     fn try_from(value: i64) -> Result<Self, Self::Err> {
-        i32::try_from(value).map(NonNegativeI32)
+        i32::try_from(value).map(Self)
     }
 }
 
@@ -114,7 +114,7 @@ impl TryFrom<usize> for NonNegativeI32 {
     type Err = TryFromIntError;
 
     fn try_from(value: usize) -> Result<Self, Self::Err> {
-        i32::try_from(value).map(NonNegativeI32)
+        i32::try_from(value).map(Self)
     }
 }
 

@@ -5,6 +5,7 @@ pub(crate) use crate::num::{Length, NonNegativeI32};
 use crate::{fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
 use pancurses::Input;
 use std::error;
+use std::rc::Rc;
 
 /// The [`Result`] returned by functions of this module.
 pub type Outcome = Result<(), Error>;
@@ -153,6 +154,8 @@ pub enum Change {
     Nothing,
     /// Writes the characters of a string in sequence and clears all subsequent cells.
     Row(String),
+    /// Flashes the display.
+    Flash,
 }
 
 impl Default for Change {
@@ -170,6 +173,7 @@ impl Display for Change {
             Change::Insert(input) => write!(f, "Insert '{}'", input),
             Change::Nothing => write!(f, "Nothing"),
             Change::Row(row_str) => write!(f, "Write row '{}'", row_str),
+            Change::Flash => write!(f, "Flash"),
         }
     }
 }
@@ -297,36 +301,6 @@ pub trait UserInterface: Debug {
     fn receive_input(&self) -> Option<Input>;
 }
 
-/// An empty instance of a [`UserInterface`].
-#[derive(Debug)]
-pub(crate) struct NullUserInterface;
-
-impl UserInterface for NullUserInterface {
-    fn init(&self) -> Outcome {
-        Err(Error::NoUi)
-    }
-
-    fn close(&self) -> Outcome {
-        Err(Error::NoUi)
-    }
-
-    fn grid_height(&self) -> Result<usize, TryFromIntError> {
-        Ok(0)
-    }
-
-    fn apply(&self, _: Edit) -> Outcome {
-        Err(Error::NoUi)
-    }
-
-    fn flash(&self) -> Outcome {
-        Err(Error::NoUi)
-    }
-
-    fn receive_input(&self) -> Option<Input> {
-        None
-    }
-}
-
 /// The user interface provided by a terminal.
 #[derive(Debug)]
 pub struct Terminal {
@@ -336,9 +310,13 @@ pub struct Terminal {
 
 impl Terminal {
     /// Creates a new `Terminal`.
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self {
+            // Must call initscr() first.
+            window: pancurses::initscr(),
+        })
     }
+
     /// Converts given result of ui function to a [`Outcome`].
     fn process(result: i32, error: Error) -> Outcome {
         if result == pancurses::OK {
@@ -420,15 +398,6 @@ impl Terminal {
     }
 }
 
-impl Default for Terminal {
-    fn default() -> Self {
-        Self {
-            // Must call initscr() first.
-            window: pancurses::initscr(),
-        }
-    }
-}
-
 impl UserInterface for Terminal {
     fn init(&self) -> Outcome {
         self.start_color()?;
@@ -465,6 +434,7 @@ impl UserInterface for Terminal {
                 self.add_str(s)?;
                 self.clear_to_row_end()
             }
+            Change::Flash => self.flash(),
         }
     }
 
