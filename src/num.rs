@@ -174,6 +174,14 @@ impl From<u16> for Length {
     }
 }
 
+impl TryFrom<u64> for Length {
+    type Err = TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Err> {
+        NonNegativeI32::try_from(value as usize).map(Length::Value)
+    }
+}
+
 impl TryFrom<usize> for Length {
     type Err = TryFromIntError;
 

@@ -11,10 +11,10 @@ pub(crate) use display::Processor as DisplayProcessor;
 pub(crate) use edit::Processor as EditProcessor;
 pub(crate) use filter::Processor as FilterProcessor;
 
-use lsp_types::Position;
 use crate::storage::{self, Explorer, LspError};
 use crate::ui::{self, Address, Change, Edit, Index, IndexType, Length, Region, BACKSPACE, ENTER};
 use crate::Mrc;
+use lsp_types::{Position, Range};
 use std::borrow::Borrow;
 use std::cmp::{self, Ordering};
 use std::collections::HashMap;
@@ -31,6 +31,13 @@ pub type Output<T> = Result<T, Flag>;
 
 /// An [`IndexType`] with a value of `-1`.
 const NEGATIVE_ONE: i128 = -1;
+
+fn line_range(line: u64) -> Range {
+    Range::new(
+        Position::new(line, 0),
+        Position::new(line, u64::max_value()),
+    )
+}
 
 /// Signifies the name of an application mode.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -85,8 +92,8 @@ pub enum Initiation {
     Save,
     /// Starts a filter.
     StartFilter(char),
-    /// Sets a list of Sections.
-    SetSignals(Vec<Section>),
+    /// Sets a list of [`Range`]s.
+    SetSignals(Vec<Range>),
     /// Sets a list of marks.
     Mark(Vec<Mark>),
 }
@@ -251,7 +258,10 @@ impl Pane {
 
     /// Adds a character at a [`Mark`].
     pub(crate) fn add(&mut self, mark: &Mark, c: char) -> Result<(), TryFromIntError> {
-        let pointer = self.line_indices().nth(mark.position.line as usize).and_then(|index_value| Index::try_from(index_value).ok());
+        let pointer = self
+            .line_indices()
+            .nth(mark.position.line as usize)
+            .and_then(|index_value| Index::try_from(index_value).ok());
 
         if let Some(index) = pointer {
             let mut index = usize::try_from(index)? as u64;
@@ -290,11 +300,14 @@ impl Pane {
 
     /// Returns the [`Address`] associated with the given [`Position`].
     fn address_at(&self, position: Position) -> Option<Address> {
-        match Index::try_from(i32::try_from(position.line - self.first_line.row() as u64).unwrap()) {
-            Ok(row) => u64::try_from(self
-                .first_data_column())
-                .ok()
-                .map(|origin| Address::new(row, Index::try_from(i32::try_from(position.character + origin).unwrap()).unwrap())),
+        match Index::try_from(i32::try_from(position.line - self.first_line.row() as u64).unwrap())
+        {
+            Ok(row) => u64::try_from(self.first_data_column()).ok().map(|origin| {
+                Address::new(
+                    row,
+                    Index::try_from(i32::try_from(position.character + origin).unwrap()).unwrap(),
+                )
+            }),
             _ => None,
         }
     }
@@ -313,7 +326,7 @@ impl Pane {
                 .into_iter()
                 .zip(self.lines().skip(self.first_line.row()))
                 .flat_map(move |(line_number, line)| {
-                    self.region_at(&Section::line(line_number))
+                    self.region_at(&line_range(line_number.row() as u64))
                         .map(|region| {
                             Edit::new(
                                 region,
@@ -438,50 +451,13 @@ impl Area for Position {
     }
 }
 
-//impl Display for Position {
-//    #[inline]
-//    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-//        write!(f, "ln {}, idx {}", self.line, self.character)
-//    }
-//}
-
-/// Signifies adjacent [`Position`]s.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
-pub struct Section {
-    /// The [`Position`] at which `Section` starts.
-    start: Position,
-    /// The [`Length`] of `Section`.
-    length: Length,
-}
-
-impl Section {
-    /// Creates a new `Section` that signifies an entire line.
-    #[inline]
-    pub(crate) fn line(line: LineNumber) -> Self {
-        Self {
-            start: Position {
-                line: line.row() as u64,
-                character: 0,
-            },
-            length: Length::End,
-        }
-    }
-}
-
-impl Area for Section {
+impl Area for Range {
     fn start(&self) -> Position {
         self.start
     }
 
     fn length(&self) -> Length {
-        self.length
-    }
-}
-
-impl Display for Section {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "({},{})->{}", self.start.line, self.start.character, self.length)
+        Length::try_from(self.end.character - self.start.character).unwrap()
     }
 }
 
@@ -731,10 +707,7 @@ impl Adjustment {
         Self {
             shift,
             line_change,
-            indexes_changed: [(new_line, index_change)]
-                .iter()
-                .cloned()
-                .collect(),
+            indexes_changed: [(new_line, index_change)].iter().cloned().collect(),
             change,
         }
     }

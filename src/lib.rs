@@ -125,7 +125,7 @@ impl Paper {
             mrc!(mode::DisplayProcessor::new(&pane, &explorer));
         let command_mode_handler: Mrc<dyn Processor> = mrc!(mode::CommandProcessor::new());
         let filter_mode_handler: Mrc<dyn Processor> = mrc!(mode::FilterProcessor::new(&pane));
-        let action_mode_handler: Mrc<dyn Processor> = mrc!(mode::ActionProcessor::new(&pane));
+        let action_mode_handler: Mrc<dyn Processor> = mrc!(mode::ActionProcessor::new());
         let edit_mode_handler: Mrc<dyn Processor> = mrc!(mode::EditProcessor::new(&pane));
 
         Self {

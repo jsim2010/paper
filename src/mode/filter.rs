@@ -1,10 +1,8 @@
 //! Implements functionality for the application while in filter mode.
-use super::{
-    EditableString, Initiation, Length, LineNumber, Name, Operation, Output, Pane,
-    Section,
-};
+use super::{line_range, EditableString, Initiation, LineNumber, Name, Operation, Output, Pane};
 use crate::ui::{Change, Color, Edit, Region, ENTER, ESC};
 use crate::Mrc;
+use lsp_types::{Position, Range};
 use rec::ChCls::{Any, Digit, End, Not, Sign};
 use rec::{opt, some, tkn, var, Element, Pattern};
 use std::cmp;
@@ -16,10 +14,10 @@ use try_from::{TryFrom, TryFromIntError};
 pub(crate) struct Processor {
     /// The filter.
     filter: EditableString,
-    /// All [`Section`]s that are being filtered.
-    noises: Vec<Section>,
-    /// All [`Section`]s that match the current filter.
-    signals: Vec<Section>,
+    /// All [`Range`]s that are being filtered.
+    noises: Vec<Range>,
+    /// All [`Range`]s that match the current filter.
+    signals: Vec<Range>,
     /// Matches the first feature of a filter.
     first_feature_pattern: Pattern,
     /// Filters supported by the application
@@ -53,10 +51,8 @@ impl super::Processor for Processor {
 
         self.noises.clear();
 
-        for line in 1..=self.pane.borrow().line_count {
-            if let Some(noise) = LineNumber::new(line).map(Section::line) {
-                self.noises.push(noise);
-            }
+        for line in 0..self.pane.borrow().line_count {
+            self.noises.push(line_range(line as u64));
         }
 
         Ok(self.filter.edits())
@@ -169,7 +165,7 @@ impl<'a> Iterator for PaperFiltersIter<'a> {
     }
 }
 
-/// Used for modifying [`Section`]s to match a feature.
+/// Used for modifying [`Range`]s to match a feature.
 trait Filter: Debug {
     /// Returns the identifying character of the `Filter`.
     fn id(&self) -> char;
@@ -177,7 +173,7 @@ trait Filter: Debug {
     fn extract(
         &self,
         feature: &str,
-        sections: &mut Vec<Section>,
+        sections: &mut Vec<Range>,
         pane: &Pane,
     ) -> Result<(), TryFromIntError>;
 }
@@ -209,7 +205,7 @@ impl Filter for LineFilter {
     fn extract(
         &self,
         feature: &str,
-        sections: &mut Vec<Section>,
+        sections: &mut Vec<Range>,
         _view: &Pane,
     ) -> Result<(), TryFromIntError> {
         let tokens = self.pattern.tokenize(feature);
@@ -268,7 +264,7 @@ impl Filter for PatternFilter {
     fn extract(
         &self,
         feature: &str,
-        sections: &mut Vec<Section>,
+        sections: &mut Vec<Range>,
         pane: &Pane,
     ) -> Result<(), TryFromIntError> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
@@ -286,9 +282,12 @@ impl Filter for PatternFilter {
                         for location in search_pattern.locate_iter(&target) {
                             let mut new_start = target_section.start;
                             new_start.character += location.start() as u64;
-                            sections.push(Section {
+                            sections.push(Range {
                                 start: new_start,
-                                length: Length::try_from(location.length())?,
+                                end: Position::new(
+                                    target_section.start.line,
+                                    location.length() as u64,
+                                ),
                             });
                         }
                     }

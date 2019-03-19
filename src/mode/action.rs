@@ -1,40 +1,35 @@
 //! Implements functionality for the application while in action mode.
-use super::{Initiation, Mark, Name, Operation, Output, Pane, Section};
+use super::{Initiation, Mark, Name, Operation, Output};
 use crate::ui::{Edit, ESC};
-use crate::Mrc;
+use lsp_types::Range;
 use std::fmt::{self, Display, Formatter};
-use try_from::TryFrom;
 
 /// The [`Processor`] of the action mode.
 #[derive(Debug)]
 pub(crate) struct Processor {
-    /// The [`Section`]s of the signals.
-    signals: Vec<Section>,
-    /// The [`Pane`] of the application.
-    pane: Mrc<Pane>,
+    /// The [`Range`]s of the signals.
+    signals: Vec<Range>,
 }
 
 impl Processor {
     /// Creates a new `Processor`.
-    pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             signals: Vec::new(),
-            pane: Mrc::clone(pane),
         }
     }
 
     /// Returns the [`Marks`] at the given [`Edge`] of the current signals.
     fn get_marks(&mut self, edge: Edge) -> Vec<Mark> {
         let mut marks = Vec::new();
-        let pane: &Pane = &self.pane.borrow();
 
         for signal in &self.signals {
-            let mut position = signal.start;
+            let position = if edge == Edge::Start {
+                signal.start
+            } else {
+                signal.end
+            };
 
-            if edge == Edge::End {
-                position.character += u64::try_from(signal.length)
-                    .unwrap_or_else(|_| pane.line_length(signal.start).unwrap_or_default());
-            }
             marks.push(Mark { position });
         }
 
@@ -67,12 +62,12 @@ impl super::Processor for Processor {
     }
 }
 
-/// Indicates a specific Place of a given Section.
+/// Indicates a specific Place of a given Range.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 enum Edge {
-    /// Indicates the first Place of the Section.
+    /// Indicates the first Place of the Range.
     Start,
-    /// Indicates the last Place of the Section.
+    /// Indicates the last Place of the Range.
     End,
 }
 
