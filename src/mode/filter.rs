@@ -1,6 +1,6 @@
 //! Implements functionality for the application while in filter mode.
 use super::{
-    EditableString, IndexType, Initiation, Length, LineNumber, Name, Operation, Output, Pane,
+    EditableString, Initiation, Length, LineNumber, Name, Operation, Output, Pane,
     Section,
 };
 use crate::ui::{Change, Color, Edit, Region, ENTER, ESC};
@@ -215,7 +215,7 @@ impl Filter for LineFilter {
         let tokens = self.pattern.tokenize(feature);
 
         if let Ok(line) = tokens.parse::<LineNumber>("line") {
-            sections.retain(|&x| x.start.line == line);
+            sections.retain(|&x| x.start.line == line.row() as u64);
         } else if let (Ok(start), Ok(end)) = (
             tokens.parse::<LineNumber>("start"),
             tokens.parse::<LineNumber>("end"),
@@ -225,11 +225,11 @@ impl Filter for LineFilter {
 
             sections.retain(|&x| {
                 let row = x.start.line;
-                row >= top && row <= bottom
+                row >= top.row() as u64 && row <= bottom.row() as u64
             })
         } else if let (Ok(origin), Ok(movement)) = (
             tokens.parse::<LineNumber>("origin"),
-            tokens.parse::<IndexType>("movement"),
+            tokens.parse::<i128>("movement"),
         ) {
             let end = origin + movement;
             let top = cmp::min(origin, end);
@@ -237,7 +237,7 @@ impl Filter for LineFilter {
 
             sections.retain(|&x| {
                 let row = x.start.line;
-                row >= top && row <= bottom
+                row >= top.row() as u64 && row <= bottom.row() as u64
             })
         }
 
@@ -277,16 +277,17 @@ impl Filter for PatternFilter {
                 sections.clear();
 
                 for target_section in target_sections {
-                    let start = usize::try_from(target_section.start.column)?;
+                    let start = usize::try_from(target_section.start.character)?;
 
                     if let Some(target) = pane
                         .line(target_section.start.line)
                         .map(|x| x.chars().skip(start).collect::<String>())
                     {
                         for location in search_pattern.locate_iter(&target) {
+                            let mut new_start = target_section.start;
+                            new_start.character += location.start() as u64;
                             sections.push(Section {
-                                start: target_section.start
-                                    >> IndexType::try_from(location.start())?,
+                                start: new_start,
                                 length: Length::try_from(location.length())?,
                             });
                         }

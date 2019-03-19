@@ -20,14 +20,6 @@ const END: i32 = -1;
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NonNegativeI32(i32);
 
-impl NonNegativeI32 {
-    /// Returns the negative of `self`.
-    #[allow(clippy::integer_arithmetic)] // self.0 >= 0
-    pub(crate) fn negate(self) -> i32 {
-        -self.0
-    }
-}
-
 impl<T> Add<T> for NonNegativeI32
 where
     T: Borrow<i32>,
@@ -139,6 +131,17 @@ pub enum Length {
     Value(NonNegativeI32),
     /// The value needed to cover all elements from the current one to the end.
     End,
+}
+
+impl TryFrom<Length> for u64 {
+    type Err = TryFromIntError;
+
+    fn try_from(value: Length) -> Result<Self, Self::Err> {
+        match value {
+            Length::Value(x) => u64::try_from(x.0),
+            Length::End => Err(TryFromIntError::Underflow),
+        }
+    }
 }
 
 impl From<Length> for i32 {

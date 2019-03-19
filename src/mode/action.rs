@@ -1,5 +1,5 @@
 //! Implements functionality for the application while in action mode.
-use super::{Index, Initiation, Mark, Name, Operation, Output, Pane, Pointer, Section};
+use super::{Initiation, Mark, Name, Operation, Output, Pane, Section};
 use crate::ui::{Edit, ESC};
 use crate::Mrc;
 use std::fmt::{self, Display, Formatter};
@@ -29,19 +29,13 @@ impl Processor {
         let pane: &Pane = &self.pane.borrow();
 
         for signal in &self.signals {
-            let mut place = signal.start;
+            let mut position = signal.start;
 
             if edge == Edge::End {
-                place.column += Index::try_from(signal.length)
+                position.character += u64::try_from(signal.length)
                     .unwrap_or_else(|_| pane.line_length(signal.start).unwrap_or_default());
             }
-
-            let pointer = Pointer::new(
-                pane.line_indices()
-                    .nth(place.line.row())
-                    .and_then(|index_value| Index::try_from(index_value).ok()),
-            ) + place.column;
-            marks.push(Mark { place, pointer });
+            marks.push(Mark { position });
         }
 
         marks

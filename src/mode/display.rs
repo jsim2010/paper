@@ -68,7 +68,7 @@ impl super::Processor for Processor {
                         .ok_or(Flag::Conversion(TryFromIntError::Overflow))?;
                 }
 
-                Ok(if pane.scroll(scroll_length) {
+                Ok(if pane.scroll(scroll_length as i128) {
                     Operation::EditUi(pane.redraw_edits().collect())
                 } else {
                     Operation::Noop

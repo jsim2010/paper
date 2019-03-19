@@ -41,11 +41,11 @@ impl super::Processor for Processor {
             let mut edits = Vec::new();
 
             for mark in &mut self.marks {
-                if let Some(new_adjustment) = Adjustment::create(input, mark.place, &pane) {
+                if let Some(new_adjustment) = Adjustment::create(input, mark.position, &pane) {
                     adjustment += new_adjustment;
 
                     if adjustment.change != Change::Clear {
-                        if let Some(region) = pane.region_at(&mark.place) {
+                        if let Some(region) = pane.region_at(&mark.position) {
                             edits.push(Edit::new(region, adjustment.change.clone()));
                         }
                     }

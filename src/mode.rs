@@ -11,6 +11,7 @@ pub(crate) use display::Processor as DisplayProcessor;
 pub(crate) use edit::Processor as EditProcessor;
 pub(crate) use filter::Processor as FilterProcessor;
 
+use lsp_types::Position;
 use crate::storage::{self, Explorer, LspError};
 use crate::ui::{self, Address, Change, Edit, Index, IndexType, Length, Region, BACKSPACE, ENTER};
 use crate::Mrc;
@@ -21,7 +22,7 @@ use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::iter;
-use std::ops::{Add, AddAssign, Deref, Shr, ShrAssign, Sub};
+use std::ops::{Add, AddAssign, Deref, Sub};
 use std::path::PathBuf;
 use try_from::{TryFrom, TryFromIntError};
 
@@ -29,7 +30,7 @@ use try_from::{TryFrom, TryFromIntError};
 pub type Output<T> = Result<T, Flag>;
 
 /// An [`IndexType`] with a value of `-1`.
-const NEGATIVE_ONE: IndexType = -1;
+const NEGATIVE_ONE: i128 = -1;
 
 /// Signifies the name of an application mode.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -76,7 +77,7 @@ pub(crate) trait Processor: Debug {
 ///
 /// In general, only certain modes can implement certain Initiations; for example: only Filter
 /// implements [`StartFilter`].
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Initiation {
     /// Sets the view.
     SetView(PathBuf),
@@ -224,7 +225,7 @@ pub(crate) struct Pane {
     /// The first line that is displayed in the ui.
     first_line: LineNumber,
     /// The number of columns needed to display the margin.
-    margin_width: usize,
+    margin_width: u8,
     /// The number of rows visible in the pane.
     height: usize,
     /// The number of lines in the data.
@@ -250,7 +251,11 @@ impl Pane {
 
     /// Adds a character at a [`Mark`].
     pub(crate) fn add(&mut self, mark: &Mark, c: char) -> Result<(), TryFromIntError> {
-        if let Some(index) = mark.pointer.0 {
+        let pointer = self.line_indices().nth(mark.position.line as usize).and_then(|index_value| Index::try_from(index_value).ok());
+
+        if let Some(index) = pointer {
+            let mut index = usize::try_from(index)? as u64;
+            index += mark.position.character;
             let data_index = usize::try_from(index)?;
 
             if c == BACKSPACE {
@@ -279,17 +284,17 @@ impl Pane {
 
     /// Returns the first column at which pane data can be written.
     #[allow(clippy::integer_arithmetic)] // self.margin_width < usize.max_value()
-    fn first_data_column(&self) -> Result<Index, TryFromIntError> {
-        Index::try_from(self.margin_width + 1)
+    fn first_data_column(&self) -> u64 {
+        (self.margin_width + 1) as u64
     }
 
-    /// Returns the [`Address`] associated with the given [`Place`].
-    fn address_at(&self, place: Place) -> Option<Address> {
-        match Index::try_from(place.line - self.first_line) {
-            Ok(row) => self
-                .first_data_column()
+    /// Returns the [`Address`] associated with the given [`Position`].
+    fn address_at(&self, position: Position) -> Option<Address> {
+        match Index::try_from(i32::try_from(position.line - self.first_line.row() as u64).unwrap()) {
+            Ok(row) => u64::try_from(self
+                .first_data_column())
                 .ok()
-                .map(|origin| Address::new(row, place.column + origin)),
+                .map(|origin| Address::new(row, Index::try_from(i32::try_from(position.character + origin).unwrap()).unwrap())),
             _ => None,
         }
     }
@@ -316,7 +321,7 @@ impl Pane {
                                     "{:>width$} {}",
                                     line_number,
                                     line,
-                                    width = self.margin_width
+                                    width = usize::from(self.margin_width)
                                 )),
                             )
                         })
@@ -331,9 +336,9 @@ impl Pane {
         self.data.lines()
     }
 
-    /// The data stored at the given [`LineNumber`].
-    pub(crate) fn line(&self, line_number: LineNumber) -> Option<&str> {
-        self.lines().nth(line_number.row())
+    /// The data stored at the given line.
+    pub(crate) fn line(&self, line: u64) -> Option<&str> {
+        self.lines().nth(line as usize)
     }
 
     /// Updates the pane's metadata.
@@ -347,7 +352,7 @@ impl Pane {
     #[allow(clippy::cast_precision_loss)] // self.line_count is small enough to be precisely represented by f64
     #[allow(clippy::cast_sign_loss)] // self.line_count >= 0, thus log10().ceil() >= 0.0
     fn update_margin_width(&mut self) {
-        self.margin_width = (((self.line_count.saturating_add(1)) as f64).log10().ceil()) as usize;
+        self.margin_width = (((self.line_count.saturating_add(1)) as f64).log10().ceil()) as u8;
     }
 
     /// Return the length of scrolling movements.
@@ -360,7 +365,7 @@ impl Pane {
     }
 
     /// Scrolls the pane's data.
-    pub(crate) fn scroll(&mut self, movement: IndexType) -> IsChanging {
+    pub(crate) fn scroll(&mut self, movement: i128) -> IsChanging {
         let new_first_line = cmp::min(
             self.first_line + movement,
             LineNumber::new(self.line_count).unwrap_or_default(),
@@ -374,10 +379,10 @@ impl Pane {
         }
     }
 
-    /// The length of the line that has a given [`Place`].
-    pub(crate) fn line_length(&self, place: Place) -> Option<Index> {
-        self.line(place.line)
-            .and_then(|x| Index::try_from(x.len()).ok())
+    /// The length of the line that has a given [`Position`].
+    fn line_length(&self, position: Position) -> Option<u64> {
+        self.line(position.line)
+            .and_then(|x| u64::try_from(x.len()).ok())
     }
 }
 
@@ -417,23 +422,14 @@ pub enum Operation {
 
 /// Signifies a type that can be converted to a [`Region`].
 pub(crate) trait Area {
-    /// Returns the starting `Place`.
-    fn start(&self) -> Place;
+    /// Returns the starting `Position`.
+    fn start(&self) -> Position;
     /// Returns the [`Length`].
     fn length(&self) -> Length;
 }
 
-/// Signifies the location of a character within a pane.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub(crate) struct Place {
-    /// The [`LineNumber`] of `Place`.
-    line: LineNumber,
-    /// The [`Index`] of the column of `Place`.
-    column: Index,
-}
-
-impl Area for Place {
-    fn start(&self) -> Place {
+impl Area for Position {
+    fn start(&self) -> Position {
         *self
     }
 
@@ -442,36 +438,18 @@ impl Area for Place {
     }
 }
 
-impl Shr<IndexType> for Place {
-    type Output = Self;
+//impl Display for Position {
+//    #[inline]
+//    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+//        write!(f, "ln {}, idx {}", self.line, self.character)
+//    }
+//}
 
-    #[inline]
-    fn shr(self, rhs: IndexType) -> Self {
-        let mut new_place = self;
-        new_place >>= rhs;
-        new_place
-    }
-}
-
-impl ShrAssign<IndexType> for Place {
-    #[inline]
-    fn shr_assign(&mut self, rhs: IndexType) {
-        self.column += rhs;
-    }
-}
-
-impl Display for Place {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "ln {}, idx {}", self.line, self.column)
-    }
-}
-
-/// Signifies adjacent [`Place`]s.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+/// Signifies adjacent [`Position`]s.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub struct Section {
-    /// The [`Place`] at which `Section` starts.
-    start: Place,
+    /// The [`Position`] at which `Section` starts.
+    start: Position,
     /// The [`Length`] of `Section`.
     length: Length,
 }
@@ -481,9 +459,9 @@ impl Section {
     #[inline]
     pub(crate) fn line(line: LineNumber) -> Self {
         Self {
-            start: Place {
-                line,
-                column: Index::from(0),
+            start: Position {
+                line: line.row() as u64,
+                character: 0,
             },
             length: Length::End,
         }
@@ -491,7 +469,7 @@ impl Section {
 }
 
 impl Area for Section {
-    fn start(&self) -> Place {
+    fn start(&self) -> Position {
         self.start
     }
 
@@ -503,7 +481,7 @@ impl Area for Section {
 impl Display for Section {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}->{}", self.start, self.length)
+        write!(f, "({},{})->{}", self.start.line, self.start.character, self.length)
     }
 }
 
@@ -531,12 +509,12 @@ impl LineNumber {
     }
 }
 
-impl Add<IndexType> for LineNumber {
+impl Add<i128> for LineNumber {
     type Output = Self;
 
-    fn add(self, other: IndexType) -> Self::Output {
+    fn add(self, other: i128) -> Self::Output {
         #[allow(clippy::integer_arithmetic)] // i64::min_value() <= u32 + i32 <= i64::max_value()
-        match usize::try_from(i64::from(self.0) + i64::from(other)) {
+        match usize::try_from(i128::from(self.0) + other) {
             Ok(sum) => Self::new(sum).unwrap_or_default(),
             Err(TryFromIntError::Underflow) => Self::default(),
             Err(TryFromIntError::Overflow) => Self(LineNumberType::max_value()),
@@ -634,44 +612,39 @@ impl From<std::num::ParseIntError> for ParseLineNumberError {
 }
 
 /// An address and its respective pointer in a pane.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Default)]
 pub struct Mark {
-    /// Pointer in pane that corresponds with mark.
-    pointer: Pointer,
-    /// Place of mark.
-    place: Place,
+    ///// Pointer in pane that corresponds with mark.
+    //pointer: Pointer,
+    /// Position of mark.
+    position: Position,
 }
 
 impl Mark {
     /// Moves `Mark` as specified by the given [`Adjustment`].
     pub(crate) fn adjust(&mut self, adjustment: &Adjustment) {
-        self.pointer += adjustment.shift;
-        self.place.line = self.place.line + adjustment.line_change;
+        //self.pointer += adjustment.shift;
+        if adjustment.line_change.is_negative() {
+            self.position.line -= u64::try_from(-adjustment.line_change).unwrap();
+        } else {
+            self.position.line += u64::try_from(adjustment.line_change).unwrap();
+        }
 
         for (&line, &change) in &adjustment.indexes_changed {
-            if line == self.place.line {
-                self.place >>= change;
+            if line == self.position.line {
+                if change.is_negative() {
+                    self.position.character -= u64::try_from(-change).unwrap();
+                } else {
+                    self.position.character += u64::try_from(change).unwrap();
+                }
             }
         }
-    }
-}
-
-impl Display for Mark {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{}", self.place, self.pointer)
     }
 }
 
 /// Signifies an index of a character within [`Pane`].
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) struct Pointer(Option<Index>);
-
-impl Pointer {
-    /// Returns a new `Pointer`.
-    fn new(index: Option<Index>) -> Self {
-        Self(index)
-    }
-}
 
 impl PartialEq<IndexType> for Pointer {
     fn eq(&self, other: &IndexType) -> bool {
@@ -736,24 +709,29 @@ impl PartialOrd<Pointer> for IndexType {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Adjustment {
     /// The change made to the current line.
-    shift: IndexType,
+    shift: i128,
     /// The changes made to the number of lines.
-    line_change: IndexType,
+    line_change: i128,
     /// A map of the indexes where a change was made.
-    indexes_changed: HashMap<LineNumber, IndexType>,
+    indexes_changed: HashMap<u64, i128>,
     /// The [`Change`] that best represents the `Adjustment`.
     change: Change,
 }
 
 impl Adjustment {
     /// Creates a new `Adjustment`.
-    fn new(line: LineNumber, shift: IndexType, index_change: IndexType, change: Change) -> Self {
+    fn new(line: u64, shift: i128, index_change: i128, change: Change) -> Self {
         let line_change = if change == Change::Clear { shift } else { 0 };
+        let new_line = if line_change.is_negative() {
+            line - u64::try_from(-line_change).unwrap()
+        } else {
+            line + u64::try_from(line_change).unwrap()
+        };
 
         Self {
             shift,
             line_change,
-            indexes_changed: [(line + line_change, index_change)]
+            indexes_changed: [(new_line, index_change)]
                 .iter()
                 .cloned()
                 .collect(),
@@ -762,16 +740,16 @@ impl Adjustment {
     }
 
     /// Creates an `Adjustment` based on the given context.
-    pub(crate) fn create(c: char, place: Place, pane: &Pane) -> Option<Self> {
+    pub(crate) fn create(c: char, position: Position, pane: &Pane) -> Option<Self> {
         match c {
             BACKSPACE => {
-                if place.column == 0 {
-                    pane.line_length(place).map(|x| {
-                        Self::new(place.line, NEGATIVE_ONE, IndexType::from(x), Change::Clear)
+                if position.character == 0 {
+                    pane.line_length(position).map(|x| {
+                        Self::new(position.line, NEGATIVE_ONE, i128::from(x), Change::Clear)
                     })
                 } else {
                     Some(Self::new(
-                        place.line,
+                        position.line,
                         NEGATIVE_ONE,
                         NEGATIVE_ONE,
                         Change::Backspace,
@@ -779,12 +757,12 @@ impl Adjustment {
                 }
             }
             ENTER => Some(Self::new(
-                place.line,
+                position.line,
                 1,
-                place.column.negate(),
+                -i128::from(position.character),
                 Change::Clear,
             )),
-            _ => Some(Self::new(place.line, 1, 1, Change::Insert(c))),
+            _ => Some(Self::new(position.line, 1, 1, Change::Insert(c))),
         }
     }
 }
