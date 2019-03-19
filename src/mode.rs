@@ -12,25 +12,20 @@ pub(crate) use edit::Processor as EditProcessor;
 pub(crate) use filter::Processor as FilterProcessor;
 
 use crate::storage::{self, Explorer, LspError};
-use crate::ui::{self, Address, Change, Edit, Index, IndexType, Length, Region, BACKSPACE, ENTER};
+use crate::ui::{self, Address, Change, Edit, Index, IndexType, BACKSPACE, ENTER};
 use crate::Mrc;
 use lsp_types::{Position, Range};
-use std::borrow::Borrow;
-use std::cmp::{self, Ordering};
-use std::collections::HashMap;
+use std::cmp;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::iter;
-use std::ops::{Add, AddAssign, Deref, Sub};
+use std::ops::{Add, Deref, Sub};
 use std::path::PathBuf;
 use try_from::{TryFrom, TryFromIntError};
 
 /// Defines a [`Result`] with [`Flag`] as its Error.
 pub type Output<T> = Result<T, Flag>;
-
-/// An [`IndexType`] with a value of `-1`.
-const NEGATIVE_ONE: i128 = -1;
 
 fn line_range(line: u64) -> Range {
     Range::new(
@@ -94,8 +89,8 @@ pub enum Initiation {
     StartFilter(char),
     /// Sets a list of [`Range`]s.
     SetSignals(Vec<Range>),
-    /// Sets a list of marks.
-    Mark(Vec<Mark>),
+    /// Marks a list of [`Position`]s.
+    Mark(Vec<Position>),
 }
 
 /// An String that is editable within a View.
@@ -118,7 +113,7 @@ impl EditableString {
     /// Returns the edits needed to write the string.
     fn edits(&self) -> Vec<Edit> {
         vec![Edit::new(
-            Region::with_row(0).expect("Accessing region for editable string"),
+            Some(Address::new(Index::from(0), Index::from(0))),
             Change::Row(self.string.clone()),
         )]
     }
@@ -157,7 +152,7 @@ impl EditableString {
 
     /// Returns the edits needed to flash the user interface.
     fn flash_edits(&self) -> Vec<Edit> {
-        vec![Edit::new(Region::default(), Change::Flash)]
+        vec![Edit::new(None, Change::Flash)]
     }
 }
 
@@ -256,16 +251,16 @@ impl Pane {
         Ok(())
     }
 
-    /// Adds a character at a [`Mark`].
-    pub(crate) fn add(&mut self, mark: &Mark, c: char) -> Result<(), TryFromIntError> {
+    /// Adds a character at a [`Position`].
+    pub(crate) fn add(&mut self, position: &Position, c: char) -> Result<(), TryFromIntError> {
         let pointer = self
             .line_indices()
-            .nth(mark.position.line as usize)
+            .nth(position.line as usize)
             .and_then(|index_value| Index::try_from(index_value).ok());
 
         if let Some(index) = pointer {
             let mut index = usize::try_from(index)? as u64;
-            index += mark.position.character;
+            index += position.character;
             let data_index = usize::try_from(index)?;
 
             if c == BACKSPACE {
@@ -312,33 +307,28 @@ impl Pane {
         }
     }
 
-    /// Returns the [`Region`] associated with the given [`Area`].
-    pub(crate) fn region_at<T: Area>(&self, area: &T) -> Option<Region> {
-        self.address_at(area.start())
-            .map(|address| Region::new(address, area.length()))
-    }
-
     /// Updates the ui with the pane's current data.
     pub(crate) fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
+                        dbg!(Change::Row(format!(
+                            "{:10} {}",
+                            1,
+                            "test"
+                        )));
         // Clear the screen, then add each row.
-        iter::once(Edit::new(Region::default(), Change::Clear)).chain(
+        iter::once(Edit::new(None, Change::Clear)).chain(
             self.first_line
                 .into_iter()
                 .zip(self.lines().skip(self.first_line.row()))
-                .flat_map(move |(line_number, line)| {
-                    self.region_at(&line_range(line_number.row() as u64))
-                        .map(|region| {
-                            Edit::new(
-                                region,
-                                Change::Row(format!(
-                                    "{:>width$} {}",
-                                    line_number,
-                                    line,
-                                    width = usize::from(self.margin_width)
-                                )),
-                            )
-                        })
-                        .into_iter()
+                .map(move |(line_number, line)| {
+                    Edit::new(
+                        Some(Address::new(Index::try_from(line_number.row()).unwrap(), Index::from(0))),
+                        Change::Row(format!(
+                            "{:>width$} {}",
+                            line_number.num(),
+                            line,
+                            width = usize::from(self.margin_width)
+                        )),
+                    )
                 })
                 .take(self.height),
         )
@@ -391,12 +381,6 @@ impl Pane {
             true
         }
     }
-
-    /// The length of the line that has a given [`Position`].
-    fn line_length(&self, position: Position) -> Option<u64> {
-        self.line(position.line)
-            .and_then(|x| u64::try_from(x.len()).ok())
-    }
 }
 
 /// Represents if the user interface display needs to change.
@@ -433,34 +417,6 @@ pub enum Operation {
     Noop,
 }
 
-/// Signifies a type that can be converted to a [`Region`].
-pub(crate) trait Area {
-    /// Returns the starting `Position`.
-    fn start(&self) -> Position;
-    /// Returns the [`Length`].
-    fn length(&self) -> Length;
-}
-
-impl Area for Position {
-    fn start(&self) -> Position {
-        *self
-    }
-
-    fn length(&self) -> Length {
-        Length::from(1)
-    }
-}
-
-impl Area for Range {
-    fn start(&self) -> Position {
-        self.start
-    }
-
-    fn length(&self) -> Length {
-        Length::try_from(self.end.character - self.start.character).unwrap()
-    }
-}
-
 /// The type of the value stored in [`LineNumber`].
 type LineNumberType = u32;
 
@@ -482,6 +438,10 @@ impl LineNumber {
     #[allow(clippy::integer_arithmetic)] // self.0 > 0
     pub(crate) fn row(self) -> usize {
         (self.0 - 1) as usize
+    }
+
+    fn num(&self) -> u32 {
+        self.0
     }
 }
 
@@ -584,173 +544,5 @@ impl Display for ParseLineNumberError {
 impl From<std::num::ParseIntError> for ParseLineNumberError {
     fn from(error: std::num::ParseIntError) -> Self {
         ParseLineNumberError::ParseInt(error)
-    }
-}
-
-/// An address and its respective pointer in a pane.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Default)]
-pub struct Mark {
-    ///// Pointer in pane that corresponds with mark.
-    //pointer: Pointer,
-    /// Position of mark.
-    position: Position,
-}
-
-impl Mark {
-    /// Moves `Mark` as specified by the given [`Adjustment`].
-    pub(crate) fn adjust(&mut self, adjustment: &Adjustment) {
-        //self.pointer += adjustment.shift;
-        if adjustment.line_change.is_negative() {
-            self.position.line -= u64::try_from(-adjustment.line_change).unwrap();
-        } else {
-            self.position.line += u64::try_from(adjustment.line_change).unwrap();
-        }
-
-        for (&line, &change) in &adjustment.indexes_changed {
-            if line == self.position.line {
-                if change.is_negative() {
-                    self.position.character -= u64::try_from(-change).unwrap();
-                } else {
-                    self.position.character += u64::try_from(change).unwrap();
-                }
-            }
-        }
-    }
-}
-
-/// Signifies an index of a character within [`Pane`].
-#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Debug)]
-pub(crate) struct Pointer(Option<Index>);
-
-impl PartialEq<IndexType> for Pointer {
-    fn eq(&self, other: &IndexType) -> bool {
-        self.0.map_or(false, |x| x == *other)
-    }
-}
-
-impl PartialOrd<IndexType> for Pointer {
-    fn partial_cmp(&self, other: &IndexType) -> Option<Ordering> {
-        self.0.and_then(|x| x.partial_cmp(other))
-    }
-}
-
-impl<T: Borrow<IndexType>> Add<T> for Pointer {
-    type Output = Self;
-
-    fn add(self, other: T) -> Self::Output {
-        Self(self.0.map(|x| x + *other.borrow()))
-    }
-}
-
-impl<T: Borrow<IndexType>> AddAssign<T> for Pointer {
-    fn add_assign(&mut self, other: T) {
-        self.0 = self.0.map(|x| x + *other.borrow());
-    }
-}
-
-impl Default for Pointer {
-    fn default() -> Self {
-        Self(Some(Index::from(0)))
-    }
-}
-
-impl Display for Pointer {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}]",
-            match self.0 {
-                None => String::from("None"),
-                Some(i) => format!("{}", i),
-            }
-        )
-    }
-}
-
-impl PartialEq<Pointer> for IndexType {
-    #[inline]
-    fn eq(&self, other: &Pointer) -> bool {
-        other == self
-    }
-}
-
-impl PartialOrd<Pointer> for IndexType {
-    #[inline]
-    fn partial_cmp(&self, other: &Pointer) -> Option<Ordering> {
-        other.partial_cmp(self).map(|x| x.reverse())
-    }
-}
-
-/// Signifies a modification of the pane.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Adjustment {
-    /// The change made to the current line.
-    shift: i128,
-    /// The changes made to the number of lines.
-    line_change: i128,
-    /// A map of the indexes where a change was made.
-    indexes_changed: HashMap<u64, i128>,
-    /// The [`Change`] that best represents the `Adjustment`.
-    change: Change,
-}
-
-impl Adjustment {
-    /// Creates a new `Adjustment`.
-    fn new(line: u64, shift: i128, index_change: i128, change: Change) -> Self {
-        let line_change = if change == Change::Clear { shift } else { 0 };
-        let new_line = if line_change.is_negative() {
-            line - u64::try_from(-line_change).unwrap()
-        } else {
-            line + u64::try_from(line_change).unwrap()
-        };
-
-        Self {
-            shift,
-            line_change,
-            indexes_changed: [(new_line, index_change)].iter().cloned().collect(),
-            change,
-        }
-    }
-
-    /// Creates an `Adjustment` based on the given context.
-    pub(crate) fn create(c: char, position: Position, pane: &Pane) -> Option<Self> {
-        match c {
-            BACKSPACE => {
-                if position.character == 0 {
-                    pane.line_length(position).map(|x| {
-                        Self::new(position.line, NEGATIVE_ONE, i128::from(x), Change::Clear)
-                    })
-                } else {
-                    Some(Self::new(
-                        position.line,
-                        NEGATIVE_ONE,
-                        NEGATIVE_ONE,
-                        Change::Backspace,
-                    ))
-                }
-            }
-            ENTER => Some(Self::new(
-                position.line,
-                1,
-                -i128::from(position.character),
-                Change::Clear,
-            )),
-            _ => Some(Self::new(position.line, 1, 1, Change::Insert(c))),
-        }
-    }
-}
-
-impl AddAssign for Adjustment {
-    fn add_assign(&mut self, other: Self) {
-        self.shift += other.shift;
-        self.line_change += other.line_change;
-
-        for (line, change) in other.indexes_changed {
-            *self.indexes_changed.entry(line).or_default() += change;
-        }
-
-        if self.change != Change::Clear {
-            self.change = other.change
-        }
     }
 }

@@ -1,6 +1,6 @@
 //! Implements functionality for the application while in filter mode.
 use super::{line_range, EditableString, Initiation, LineNumber, Name, Operation, Output, Pane};
-use crate::ui::{Change, Color, Edit, Region, ENTER, ESC};
+use crate::ui::{Address, Change, Color, Edit, Index, ENTER, ESC};
 use crate::Mrc;
 use lsp_types::{Position, Range};
 use rec::ChCls::{Any, Digit, End, Not, Sign};
@@ -45,7 +45,7 @@ impl super::Processor for Processor {
         self.filter.clear();
 
         if let Some(Initiation::StartFilter(c)) = initiation {
-            // TODO: Currently we assume that c is not BACKSPACE.
+            // TODO: For now, it is assumed that c is not BACKSPACE.
             self.filter.add_non_bs(c);
         }
 
@@ -101,21 +101,23 @@ impl super::Processor for Processor {
 
                 for row in 0..pane.height {
                     edits.push(Edit::new(
-                        Region::with_row(row)?,
-                        Change::Format(Color::Default),
+                        Some(Address::new(Index::try_from(row).unwrap(), Index::from(0))),
+                        Change::Format(i32::max_value(), Color::Default),
                     ));
                 }
 
                 for noise in &self.noises {
-                    if let Some(region) = pane.region_at(noise) {
-                        edits.push(Edit::new(region, Change::Format(Color::Blue)));
-                    }
+                    edits.push(Edit::new(
+                        pane.address_at(noise.start),
+                        Change::Format(i32::try_from(noise.end.character - noise.start.character).unwrap_or(-1), Color::Blue),
+                    ));
                 }
 
                 for signal in &self.signals {
-                    if let Some(region) = pane.region_at(signal) {
-                        edits.push(Edit::new(region, Change::Format(Color::Red)));
-                    }
+                    edits.push(Edit::new(
+                        pane.address_at(signal.start),
+                        Change::Format(i32::try_from(signal.end.character - signal.start.character).unwrap_or(-1), Color::Red),
+                    ));
                 }
 
                 Ok(Operation::EditUi(edits))

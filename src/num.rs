@@ -138,7 +138,7 @@ impl TryFrom<Length> for u64 {
 
     fn try_from(value: Length) -> Result<Self, Self::Err> {
         match value {
-            Length::Value(x) => u64::try_from(x.0),
+            Length::Value(x) => Self::try_from(x.0),
             Length::End => Err(TryFromIntError::Underflow),
         }
     }
@@ -171,14 +171,6 @@ impl Display for Length {
 impl From<u16> for Length {
     fn from(value: u16) -> Self {
         Length::Value(NonNegativeI32::from(value))
-    }
-}
-
-impl TryFrom<u64> for Length {
-    type Err = TryFromIntError;
-
-    fn try_from(value: u64) -> Result<Self, Self::Err> {
-        NonNegativeI32::try_from(value as usize).map(Length::Value)
     }
 }
 
