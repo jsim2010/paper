@@ -1,6 +1,6 @@
 //! Implements functionality for the application while in action mode.
-use super::{Initiation, Name, Operation, Output};
-use crate::ui::{Edit, ESC};
+use super::{Initiation, Operation, Output};
+use crate::ui::ESC;
 use lsp_types::Range;
 
 /// The [`Processor`] of the action mode.
@@ -20,26 +20,24 @@ impl Processor {
 }
 
 impl super::Processor for Processor {
-    fn enter(&mut self, initiation: Option<Initiation>) -> Output<Vec<Edit>> {
+    fn enter(&mut self, initiation: &Option<Initiation>) -> Output<()> {
         if let Some(Initiation::SetSignals(signals)) = initiation {
-            self.signals = signals;
+            self.signals = signals.clone();
         }
 
-        Ok(vec![])
+        Ok(())
     }
 
     fn decode(&mut self, input: char) -> Output<Operation> {
         match input {
-            ESC => Ok(Operation::EnterMode(Name::Display, None)),
-            'i' => Ok(Operation::EnterMode(
-                Name::Edit,
-                Some(Initiation::Mark(self.signals.iter().map(|signal| signal.start).collect())),
+            ESC => Ok(Operation::enter_display()),
+            'i' => Ok(Operation::enter_edit(
+                self.signals.iter().map(|signal| signal.start).collect(),
             )),
-            'I' => Ok(Operation::EnterMode(
-                Name::Edit,
-                Some(Initiation::Mark(self.signals.iter().map(|signal| signal.end).collect())),
+            'I' => Ok(Operation::enter_edit(
+                self.signals.iter().map(|signal| signal.end).collect(),
             )),
-            _ => Ok(Operation::Noop),
+            _ => Ok(Operation::maintain()),
         }
     }
 }

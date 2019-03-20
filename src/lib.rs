@@ -123,7 +123,7 @@ impl Paper {
         ));
         let display_mode_handler: Mrc<dyn Processor> =
             mrc!(mode::DisplayProcessor::new(&pane, &explorer));
-        let command_mode_handler: Mrc<dyn Processor> = mrc!(mode::CommandProcessor::new());
+        let command_mode_handler: Mrc<dyn Processor> = mrc!(mode::CommandProcessor::new(&pane));
         let filter_mode_handler: Mrc<dyn Processor> = mrc!(mode::FilterProcessor::new(&pane));
         let action_mode_handler: Mrc<dyn Processor> = mrc!(mode::ActionProcessor::new());
         let edit_mode_handler: Mrc<dyn Processor> = mrc!(mode::EditProcessor::new(&pane));
@@ -165,24 +165,22 @@ impl Paper {
     pub fn step(&mut self) -> Output<()> {
         if let Some(Input::Character(input)) = self.ui.receive_input() {
             let operation = self.current_processor_mut().borrow_mut().decode(input)?;
-            self.operate(operation)
+            self.operate(&operation)
         } else {
             Ok(())
         }
     }
 
     /// Executes an [`Operation`].
-    pub fn operate(&mut self, operation: Operation) -> Output<()> {
-        let edits = match operation {
-            Operation::EnterMode(new_mode, initiation) => {
-                self.mode = new_mode;
-                self.current_processor_mut()
-                    .borrow_mut()
-                    .enter(initiation)?
-            }
-            Operation::EditUi(ui_edits) => ui_edits,
-            _ => vec![],
-        };
+    pub fn operate(&mut self, operation: &Operation) -> Output<()> {
+        if let Some(new_mode) = operation.mode() {
+            self.mode = *new_mode;
+            self.current_processor_mut()
+                .borrow_mut()
+                .enter(operation.initiation())?;
+        }
+
+        let edits = self.pane.borrow_mut().edits();
 
         for edit in edits {
             self.ui.apply(edit)?;

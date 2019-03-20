@@ -1,6 +1,6 @@
 //! Implements functionality for the application while in filter mode.
-use super::{line_range, EditableString, Initiation, LineNumber, Name, Operation, Output, Pane};
-use crate::ui::{Address, Change, Color, Edit, Index, ENTER, ESC};
+use super::{line_range, Initiation, LineNumber, Operation, Output, Pane};
+use crate::ui::{ENTER, ESC};
 use crate::Mrc;
 use lsp_types::{Position, Range};
 use rec::ChCls::{Any, Digit, End, Not, Sign};
@@ -12,8 +12,6 @@ use try_from::{TryFrom, TryFromIntError};
 /// The [`Processor`] of the filter mode.
 #[derive(Debug)]
 pub(crate) struct Processor {
-    /// The filter.
-    filter: EditableString,
     /// All [`Range`]s that are being filtered.
     noises: Vec<Range>,
     /// All [`Range`]s that match the current filter.
@@ -30,7 +28,6 @@ impl Processor {
     /// Creates a new `Processor` for the filter mode.
     pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
         Self {
-            filter: EditableString::new(),
             noises: Vec::new(),
             signals: Vec::new(),
             first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
@@ -41,47 +38,42 @@ impl Processor {
 }
 
 impl super::Processor for Processor {
-    fn enter(&mut self, initiation: Option<Initiation>) -> Output<Vec<Edit>> {
-        self.filter.clear();
+    fn enter(&mut self, initiation: &Option<Initiation>) -> Output<()> {
+        let mut pane = self.pane.borrow_mut();
 
-        if let Some(Initiation::StartFilter(c)) = initiation {
-            // TODO: For now, it is assumed that c is not BACKSPACE.
-            self.filter.add_non_bs(c);
-        }
+        let id = if let Some(Initiation::StartFilter(c)) = *initiation {
+            Some(c)
+        } else {
+            None
+        };
+        pane.reset_control_panel(id);
 
         self.noises.clear();
 
-        for line in 0..self.pane.borrow().line_count {
+        for line in 0..pane.line_count {
             self.noises.push(line_range(line as u64));
         }
 
-        Ok(self.filter.edits())
+        Ok(())
     }
 
     fn decode(&mut self, input: char) -> Output<Operation> {
-        let pane: &Pane = &self.pane.borrow();
+        let mut pane = self.pane.borrow_mut();
 
         match input {
-            ENTER => Ok(Operation::EnterMode(
-                Name::Action,
-                Some(Initiation::SetSignals(self.signals.clone())),
-            )),
-            ESC => Ok(Operation::EnterMode(Name::Display, None)),
+            ENTER => Ok(Operation::enter_action(self.signals.clone())),
+            ESC => Ok(Operation::enter_display()),
             _ => {
                 if input == '\t' {
-                    self.filter.add_non_bs('&');
-                    self.filter.add_non_bs('&');
+                    pane.control_panel.add_non_bs('&');
+                    pane.control_panel.add_non_bs('&');
                 } else {
-                    let success = self.filter.add(input);
-
-                    if !success {
-                        return Ok(Operation::EditUi(self.filter.flash_edits()));
-                    }
+                    pane.input_to_control_panel(input);
                 }
 
                 if let Some(last_feature) = self
                     .first_feature_pattern
-                    .tokenize_iter(&self.filter)
+                    .tokenize_iter(&pane.control_panel)
                     .last()
                     .and_then(|tokens| tokens.get("feature"))
                 {
@@ -90,37 +82,15 @@ impl super::Processor for Processor {
                     if let Some(id) = last_feature.chars().nth(0) {
                         for filter in self.filters.iter() {
                             if id == filter.id() {
-                                filter.extract(last_feature, &mut self.signals, pane)?;
+                                filter.extract(last_feature, &mut self.signals, &pane)?;
                                 break;
                             }
                         }
                     }
                 }
 
-                let mut edits = self.filter.edits();
-
-                for row in 0..pane.height {
-                    edits.push(Edit::new(
-                        Some(Address::new(Index::try_from(row).unwrap(), Index::from(0))),
-                        Change::Format(i32::max_value(), Color::Default),
-                    ));
-                }
-
-                for noise in &self.noises {
-                    edits.push(Edit::new(
-                        pane.address_at(noise.start),
-                        Change::Format(i32::try_from(noise.end.character - noise.start.character).unwrap_or(-1), Color::Blue),
-                    ));
-                }
-
-                for signal in &self.signals {
-                    edits.push(Edit::new(
-                        pane.address_at(signal.start),
-                        Change::Format(i32::try_from(signal.end.character - signal.start.character).unwrap_or(-1), Color::Red),
-                    ));
-                }
-
-                Ok(Operation::EditUi(edits))
+                pane.apply_filter(&self.noises, &self.signals);
+                Ok(Operation::maintain())
             }
         }
     }

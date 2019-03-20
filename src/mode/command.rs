@@ -1,24 +1,22 @@
 //! Implements functionality for the application while in command mode.
-use super::{EditableString, Flag, Initiation, Name, Operation, Output};
-use crate::ui::{Edit, ENTER, ESC};
+use super::{Flag, Initiation, Mrc, Operation, Output, Pane};
+use crate::ui::{ENTER, ESC};
 use rec::ChCls::{Any, End, Whitespace};
 use rec::{lazy_some, some, tkn, var, Element, Pattern};
-use std::path::PathBuf;
 
 /// The [`Processor`] of the command mode.
 #[derive(Clone, Debug)]
 pub(crate) struct Processor {
-    /// The command.
-    command: EditableString,
     /// Matches commands.
     command_pattern: Pattern,
+    pane: Mrc<Pane>,
 }
 
 impl Processor {
     /// Creates a new `Processor`.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
         Self {
-            command: EditableString::new(),
+            pane: Mrc::clone(pane),
             command_pattern: Pattern::define(
                 tkn!(lazy_some(Any) => "command")
                     + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
@@ -28,25 +26,27 @@ impl Processor {
 }
 
 impl super::Processor for Processor {
-    fn enter(&mut self, _initiation: Option<Initiation>) -> Output<Vec<Edit>> {
-        self.command.clear();
-        Ok(self.command.edits())
+    fn enter(&mut self, _initiation: &Option<Initiation>) -> Output<()> {
+        self.pane.borrow_mut().reset_control_panel(None);
+        Ok(())
     }
 
     fn decode(&mut self, input: char) -> Output<Operation> {
+        let mut pane = self.pane.borrow_mut();
+
         match input {
             ENTER => {
-                let mut initiation = None;
-                let command_tokens = self.command_pattern.tokenize(&self.command);
+                let mut operation = Operation::enter_display();
+                let command_tokens = self.command_pattern.tokenize(&pane.control_panel);
 
                 match command_tokens.get("command") {
                     Some("see") => {
                         if let Some(path) = command_tokens.get("args") {
-                            initiation = Some(Initiation::SetView(PathBuf::from(path)))
+                            operation = Operation::display_file(path);
                         }
                     }
                     Some("put") => {
-                        initiation = Some(Initiation::Save);
+                        operation = Operation::save_file();
                     }
                     Some("end") => {
                         return Err(Flag::Quit);
@@ -54,10 +54,13 @@ impl super::Processor for Processor {
                     _ => (),
                 }
 
-                Ok(Operation::EnterMode(Name::Display, initiation))
+                Ok(operation)
             }
-            ESC => Ok(Operation::EnterMode(Name::Display, None)),
-            _ => Ok(Operation::EditUi(self.command.edits_after_add(input))),
+            ESC => Ok(Operation::enter_display()),
+            _ => {
+                pane.input_to_control_panel(input);
+                Ok(Operation::maintain())
+            }
         }
     }
 }

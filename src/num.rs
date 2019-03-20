@@ -110,6 +110,14 @@ impl TryFrom<usize> for NonNegativeI32 {
     }
 }
 
+impl TryFrom<u64> for NonNegativeI32 {
+    type Err = TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Err> {
+        i32::try_from(value).map(Self)
+    }
+}
+
 impl From<NonNegativeI32> for i32 {
     fn from(value: NonNegativeI32) -> Self {
         value.0
