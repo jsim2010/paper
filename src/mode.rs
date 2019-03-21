@@ -37,6 +37,7 @@ type Line = u64;
 /// The value of a `LineIndex` is equal to its respective [`Line`].
 type LineIndex = usize;
 
+/// The [`Range`] covering the entire given line.
 fn line_range(line: u64) -> Range {
     Range::new(
         Position::new(line, 0),
@@ -103,6 +104,7 @@ pub enum Initiation {
     Mark(Vec<Position>),
 }
 
+/// The control panel of a [`Pane`].
 #[derive(Clone, Debug, Default, Hash)]
 struct ControlPanel {
     /// The [`String`] to be edited.
@@ -232,8 +234,11 @@ pub(crate) struct Pane {
     height: Index,
     /// The number of lines in the data.
     line_count: usize,
+    /// The control panel of the `Pane`.
     control_panel: ControlPanel,
+    /// The edits `Pane` needs to make to update the [`UserInterface`].
     edits: Vec<Edit>,
+    /// If `Pane` will clear and redraw on next update.
     will_wipe: bool,
 }
 
@@ -246,35 +251,38 @@ impl Pane {
         }
     }
 
+    /// Returns the edits needed to update `Pane`.
     pub(crate) fn edits(&mut self) -> Vec<Edit> {
         if self.will_wipe {
             self.edits.clear();
             self.edits.push(Edit::new(None, Change::Clear));
-            let start_line_index = LineIndex::try_from(self.first_line).unwrap();
 
-            for row in self.visible_rows() {
-                if let Ok(line_index_delta) = LineIndex::try_from(row) {
-                    let line_index = start_line_index + line_index_delta;
-
-                    if let Some(line_data) = self.line_data(line_index) {
-                        if let Ok(line_number) = LineNumber::try_from(line_index) {
-                            self.edits.push(Edit::new(
-                                Some(Address::new(row, Index::from(0_u8))),
-                                Change::Row(format!(
-                                    "{: >width$} {}",
-                                    line_number,
-                                    line_data,
-                                    width = usize::from(self.margin_width)
-                                )),
-                            ));
+            if let Ok(start_line_index) = LineIndex::try_from(self.first_line) {
+                for row in self.visible_rows() {
+                    if let Some(line_index) = LineIndex::try_from(row)
+                        .ok()
+                        .and_then(|row_index| start_line_index.checked_add(row_index))
+                    {
+                        if let Some(line_data) = self.line_data(line_index) {
+                            if let Ok(line_number) = LineNumber::try_from(line_index) {
+                                self.edits.push(Edit::new(
+                                    Some(Address::new(row, Index::from(0_u8))),
+                                    Change::Row(format!(
+                                        "{: >width$} {}",
+                                        line_number,
+                                        line_data,
+                                        width = usize::from(self.margin_width)
+                                    )),
+                                ));
+                            } else {
+                                break;
+                            }
                         } else {
                             break;
                         }
                     } else {
                         break;
                     }
-                } else {
-                    break;
                 }
             }
 

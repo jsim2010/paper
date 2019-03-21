@@ -41,7 +41,7 @@ impl super::Processor for Processor {
         } else {
             //let mut text_edits = Vec::new();
 
-            for &position in self.positions.iter() {
+            for &position in &self.positions {
                 pane.add(position, input)?;
                 //let mut new_text = String::new();
                 //let mut range = Range::new(position, position);

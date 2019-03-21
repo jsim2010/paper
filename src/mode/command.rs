@@ -9,6 +9,7 @@ use rec::{lazy_some, some, tkn, var, Element, Pattern};
 pub(crate) struct Processor {
     /// Matches commands.
     command_pattern: Pattern,
+    /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
 }
 
