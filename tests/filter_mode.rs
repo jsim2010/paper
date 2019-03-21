@@ -2,12 +2,14 @@ mod mock;
 
 use mock::Controller;
 use pancurses::Input;
-use paper::ui::ESC;
+use paper::ui::{Index, ESC};
 
 #[test]
 fn escape_returns_to_display() {
     let controller = Controller::new();
-    controller.borrow_mut().set_grid_height(Ok(5));
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(5_u8)));
     let mut paper = mock::create_with_file(&controller, vec![Input::Character('#')], "a");
     controller
         .borrow_mut()
@@ -19,7 +21,7 @@ fn escape_returns_to_display() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 2, String::from("1 a")),
+            mock::display_row_edit(0, 0, String::from("1 a")),
         ]
     );
 }

@@ -590,7 +590,7 @@ impl Operation {
     /// Creates a new `Operation` to display a new file.
     ///
     /// The application enters Display mode as a consequence of this `Operation`.
-    fn display_file(path: &str) -> Self {
+    pub fn display_file(path: &str) -> Self {
         Self {
             mode: Some(Name::Display),
             initiation: Some(Initiation::SetView(PathBuf::from(path))),
