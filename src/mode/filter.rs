@@ -236,28 +236,29 @@ impl Filter for PatternFilter {
     fn extract(
         &self,
         feature: &str,
-        sections: &mut Vec<Range>,
+        ranges: &mut Vec<Range>,
         pane: &Pane,
     ) -> Result<(), TryFromIntError> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
             if let Ok(search_pattern) = Pattern::load(user_pattern) {
-                let target_sections = sections.clone();
-                sections.clear();
+                let target_ranges = ranges.clone();
+                ranges.clear();
 
-                for target_section in target_sections {
-                    let start = usize::try_from(target_section.start.character)?;
+                for target_range in target_ranges {
+                    let start_character = usize::try_from(target_range.start.character)?;
+                    let line_index = usize::try_from(target_range.start.line)?;
 
                     if let Some(target) = pane
-                        .line(target_section.start.line)
-                        .map(|x| x.chars().skip(start).collect::<String>())
+                        .line_data(line_index)
+                        .map(|x| x.chars().skip(start_character).collect::<String>())
                     {
                         for location in search_pattern.locate_iter(&target) {
-                            let mut new_start = target_section.start;
+                            let mut new_start = target_range.start;
                             new_start.character += location.start() as u64;
-                            sections.push(Range {
+                            ranges.push(Range {
                                 start: new_start,
                                 end: Position::new(
-                                    target_section.start.line,
+                                    target_range.start.line,
                                     location.length() as u64,
                                 ),
                             });

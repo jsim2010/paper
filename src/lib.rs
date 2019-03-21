@@ -60,7 +60,11 @@
     clippy::pedantic,
     clippy::restriction
 )]
-#![allow(clippy::suspicious_op_assign_impl, clippy::suspicious_arithmetic_impl)] // These lints are not always correct; issues should be detected by tests.
+#![allow(
+    clippy::suspicious_op_assign_impl,
+    clippy::suspicious_arithmetic_impl,
+    clippy::fallible_impl_from
+)] // These lints are not always correct; issues should be detected by tests or other lints.
 #![allow(clippy::implicit_return)]
 // This goes against rust convention and would require return calls in places it is not helpful (i.e. closures).
 #![allow(clippy::missing_inline_in_public_items)]

@@ -1,6 +1,6 @@
 //! Implements how the user interfaces with the application.
 
-pub(crate) use crate::num::NonNegativeI32;
+pub(crate) use crate::num::{Length, NonNegativeI32};
 
 use crate::{fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
 use pancurses::Input;
@@ -145,7 +145,7 @@ pub enum Change {
     /// Clears all cells.
     Clear,
     /// Sets the color of a given number of cells.
-    Format(i32, Color),
+    Format(Length, Color),
     /// Inserts a cell containing a character, moving all subsequent cells to the right.
     Insert(char),
     /// Does nothing.
@@ -240,7 +240,7 @@ pub trait UserInterface: Debug {
     /// Closes the user interface.
     fn close(&self) -> Outcome;
     /// Returns the number of cells that make up the height of the grid.
-    fn grid_height(&self) -> Result<usize, TryFromIntError>;
+    fn grid_height(&self) -> Result<Index, TryFromIntError>;
     /// Applies the edit to the output.
     fn apply(&self, edit: Edit) -> Outcome;
     /// Flashes the output.
@@ -319,9 +319,10 @@ impl Terminal {
     }
 
     /// Sets the color of the next specified number of blocks from the cursor.
-    fn format(&self, n: i32, color: Color) -> Outcome {
+    fn format(&self, length: Length, color: Color) -> Outcome {
         Self::process(
-            self.window.chgat(n, pancurses::A_NORMAL, color.cp()),
+            self.window
+                .chgat(i32::from(length), pancurses::A_NORMAL, color.cp()),
             Error::Wchgat,
         )
     }
@@ -392,8 +393,8 @@ impl UserInterface for Terminal {
     }
 
     // TODO: Store this value and update when size is changed.
-    fn grid_height(&self) -> Result<usize, TryFromIntError> {
-        usize::try_from(self.window.get_max_y())
+    fn grid_height(&self) -> Result<Index, TryFromIntError> {
+        Index::try_from(self.window.get_max_y())
     }
 
     fn receive_input(&self) -> Option<Input> {

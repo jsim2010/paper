@@ -1,8 +1,7 @@
 //! Implements functionality for the application while in display mode.
-use super::{Flag, Initiation, Operation, Output, Pane};
+use super::{Initiation, Operation, Output, Pane};
 use crate::storage::Explorer;
 use crate::Mrc;
-use try_from::TryFromIntError;
 
 /// The [`Processor`] of the display mode.
 #[derive(Clone, Debug)]
@@ -57,16 +56,12 @@ impl super::Processor for Processor {
         match input {
             '.' => Ok(Operation::enter_command()),
             '#' | '/' => Ok(Operation::enter_filter(input)),
-            'j' | 'k' => {
-                let mut scroll_length = pane.scroll_length()?;
-
-                if input == 'k' {
-                    scroll_length = scroll_length
-                        .checked_neg()
-                        .ok_or(Flag::Conversion(TryFromIntError::Overflow))?;
-                }
-
-                pane.scroll(scroll_length as i128);
+            'j' => {
+                pane.scroll_down();
+                Ok(Operation::maintain())
+            }
+            'k' => {
+                pane.scroll_up();
                 Ok(Operation::maintain())
             }
             _ => Ok(Operation::maintain()),
