@@ -11,25 +11,39 @@ pub(crate) use display::Processor as DisplayProcessor;
 pub(crate) use edit::Processor as EditProcessor;
 pub(crate) use filter::Processor as FilterProcessor;
 
+use crate::num::Length;
 use crate::storage::{self, Explorer, LspError};
-use crate::ui::{self, Address, Change, Edit, Index, IndexType, Length, Region, BACKSPACE, ENTER};
+use crate::ui::{self, Address, Change, Color, Edit, Index, IndexType, BACKSPACE, ENTER};
 use crate::Mrc;
-use std::borrow::Borrow;
-use std::cmp::{self, Ordering};
-use std::collections::HashMap;
+use lsp_types::{Position, Range};
+use std::cmp;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::hash::{Hash, Hasher};
 use std::io;
 use std::iter;
-use std::ops::{Add, AddAssign, Deref, Shr, ShrAssign, Sub};
+use std::ops::{Add, Deref, Sub};
 use std::path::PathBuf;
 use try_from::{TryFrom, TryFromIntError};
 
 /// Defines a [`Result`] with [`Flag`] as its Error.
 pub type Output<T> = Result<T, Flag>;
 
-/// An [`IndexType`] with a value of `-1`.
-const NEGATIVE_ONE: IndexType = -1;
+/// Defines the type that identifies a line.
+///
+/// Defined by [`Position`].
+type Line = u64;
+
+/// Defines the type that indexes a collection of lines.
+///
+/// The value of a `LineIndex` is equal to its respective [`Line`].
+type LineIndex = usize;
+
+/// The [`Range`] covering the entire given line.
+fn line_range(line: u64) -> Range {
+    Range::new(
+        Position::new(line, 0),
+        Position::new(line, u64::max_value()),
+    )
+}
 
 /// Signifies the name of an application mode.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -67,7 +81,7 @@ impl Default for Name {
 /// Defines the functionality of a processor of a mode.
 pub(crate) trait Processor: Debug {
     /// Enters the application into its mode.
-    fn enter(&mut self, initiation: Option<Initiation>) -> Output<Vec<Edit>>;
+    fn enter(&mut self, initiation: &Option<Initiation>) -> Output<()>;
     /// Generates an [`Operation`] from the given input.
     fn decode(&mut self, input: char) -> Output<Operation>;
 }
@@ -76,7 +90,7 @@ pub(crate) trait Processor: Debug {
 ///
 /// In general, only certain modes can implement certain Initiations; for example: only Filter
 /// implements [`StartFilter`].
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Initiation {
     /// Sets the view.
     SetView(PathBuf),
@@ -84,33 +98,24 @@ pub enum Initiation {
     Save,
     /// Starts a filter.
     StartFilter(char),
-    /// Sets a list of Sections.
-    SetSignals(Vec<Section>),
-    /// Sets a list of marks.
-    Mark(Vec<Mark>),
+    /// Sets a list of [`Range`]s.
+    SetSignals(Vec<Range>),
+    /// Marks a list of [`Position`]s.
+    Mark(Vec<Position>),
 }
 
-/// An String that is editable within a View.
-///
-/// Generally this is used to enter commands or filters.
-#[derive(Clone, Debug)]
-struct EditableString {
+/// The control panel of a [`Pane`].
+#[derive(Clone, Debug, Default, Hash)]
+struct ControlPanel {
     /// The [`String`] to be edited.
     string: String,
 }
 
-impl EditableString {
-    /// Creates a new `EditableString`.
-    fn new() -> Self {
-        Self {
-            string: String::new(),
-        }
-    }
-
+impl ControlPanel {
     /// Returns the edits needed to write the string.
     fn edits(&self) -> Vec<Edit> {
         vec![Edit::new(
-            Region::with_row(0).expect("Accessing region for editable string"),
+            Some(Address::new(Index::from(0_u8), Index::from(0_u8))),
             Change::Row(self.string.clone()),
         )]
     }
@@ -149,11 +154,11 @@ impl EditableString {
 
     /// Returns the edits needed to flash the user interface.
     fn flash_edits(&self) -> Vec<Edit> {
-        vec![Edit::new(Region::default(), Change::Flash)]
+        vec![Edit::new(None, Change::Flash)]
     }
 }
 
-impl Deref for EditableString {
+impl Deref for ControlPanel {
     type Target = str;
 
     fn deref(&self) -> &str {
@@ -215,52 +220,190 @@ impl From<io::Error> for Flag {
 }
 
 /// Signfifies the pane of the current file.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Hash)]
 pub(crate) struct Pane {
     /// The path that makes up the pane.
     path: PathBuf,
     /// The data.
     data: String,
     /// The first line that is displayed in the ui.
-    first_line: LineNumber,
+    first_line: Line,
     /// The number of columns needed to display the margin.
-    margin_width: usize,
+    margin_width: u8,
     /// The number of rows visible in the pane.
-    height: usize,
+    height: Index,
     /// The number of lines in the data.
     line_count: usize,
+    /// The control panel of the `Pane`.
+    control_panel: ControlPanel,
+    /// The edits `Pane` needs to make to update the [`UserInterface`].
+    edits: Vec<Edit>,
+    /// If `Pane` will clear and redraw on next update.
+    will_wipe: bool,
 }
 
 impl Pane {
     /// Creates a new Pane with a given height.
-    pub(crate) fn new(height: usize) -> Self {
+    pub(crate) fn new(height: Index) -> Self {
         Self {
             height,
             ..Self::default()
         }
     }
 
+    /// Returns the edits needed to update `Pane`.
+    pub(crate) fn edits(&mut self) -> Vec<Edit> {
+        if self.will_wipe {
+            self.edits.clear();
+            self.edits.push(Edit::new(None, Change::Clear));
+
+            if let Ok(start_line_index) = LineIndex::try_from(self.first_line) {
+                for row in self.visible_rows() {
+                    if let Some(line_index) = LineIndex::try_from(row)
+                        .ok()
+                        .and_then(|row_index| start_line_index.checked_add(row_index))
+                    {
+                        if let Some(line_data) = self.line_data(line_index) {
+                            if let Ok(line_number) = LineNumber::try_from(line_index) {
+                                self.edits.push(Edit::new(
+                                    Some(Address::new(row, Index::from(0_u8))),
+                                    Change::Row(format!(
+                                        "{: >width$} {}",
+                                        line_number,
+                                        line_data,
+                                        width = usize::from(self.margin_width)
+                                    )),
+                                ));
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            self.will_wipe = false;
+        }
+
+        let edits = self.edits.clone();
+        self.edits.clear();
+        edits
+    }
+
+    /// Sets [`Pane`] to be wiped on the next call to [`edits`]().
+    fn wipe(&mut self) {
+        self.will_wipe = true;
+    }
+
+    /// Resets the [`ControlPanel`].
+    fn reset_control_panel(&mut self, id: Option<char>) {
+        self.control_panel.clear();
+
+        if let Some(filter_id) = id {
+            // TODO: It is assumed that filter_id is not BACKSPACE.
+            self.control_panel.add_non_bs(filter_id);
+        }
+
+        self.edits.append(&mut self.control_panel.edits());
+    }
+
+    /// Adds an input to the control panel.
+    fn input_to_control_panel(&mut self, input: char) {
+        self.edits
+            .append(&mut self.control_panel.edits_after_add(input));
+    }
+
+    /// Returns an [`IndexIterator`] of the all visible rows.
+    fn visible_rows(&self) -> IndexIterator {
+        IndexIterator::new(Index::from(0_u8), self.height)
+    }
+
+    /// Applies filter highlighting to the given [`Range`]s.
+    fn apply_filter(&mut self, noises: &[Range], signals: &[Range]) {
+        for row in self.visible_rows() {
+            self.edits.push(Edit::new(
+                Some(Address::new(row, Index::from(0_u8))),
+                Change::Format(Length::End, Color::Default),
+            ));
+        }
+
+        for noise in noises {
+            let address = self.address_at(noise.start);
+            let length = Length::from(noise.end.character.saturating_sub(noise.start.character));
+
+            if address.is_some() && !length.is_zero() {
+                self.edits
+                    .push(Edit::new(address, Change::Format(length, Color::Blue)));
+            }
+        }
+
+        for signal in signals {
+            let address = self.address_at(signal.start);
+            let length = Length::from(signal.end.character.saturating_sub(signal.start.character));
+
+            if address.is_some() && !length.is_zero() {
+                self.edits
+                    .push(Edit::new(address, Change::Format(length, Color::Red)));
+            }
+        }
+    }
+
     /// Changes the pane to a new path.
-    fn change(&mut self, explorer: &Mrc<dyn Explorer>, path: PathBuf) -> Output<()> {
-        self.data = explorer.borrow_mut().read(&path)?;
-        self.path = path;
-        self.clean();
+    fn change(&mut self, explorer: &Mrc<dyn Explorer>, path: &PathBuf) -> Output<()> {
+        self.data = explorer.borrow_mut().read(path)?;
+        self.path = path.clone();
+        self.refresh();
         Ok(())
     }
 
-    /// Adds a character at a [`Mark`].
-    pub(crate) fn add(&mut self, mark: &Mark, c: char) -> Result<(), TryFromIntError> {
-        if let Some(index) = mark.pointer.0 {
+    /// Adds a character at a [`Position`].
+    pub(crate) fn add(&mut self, position: Position, input: char) -> Result<(), TryFromIntError> {
+        if input == BACKSPACE {
+            if position.character == 0 {
+                if position.line != 0 {
+                    self.will_wipe = true;
+                    self.refresh();
+                }
+            } else {
+                let address = self.address_at(position);
+
+                if address.is_some() {
+                    self.edits.push(Edit::new(address, Change::Backspace));
+                }
+            }
+        } else if input == ENTER {
+            self.will_wipe = true;
+            self.refresh();
+        } else {
+            let address = self.address_at(position);
+
+            if address.is_some() {
+                self.edits.push(Edit::new(address, Change::Insert(input)));
+            }
+        }
+
+        let pointer = self
+            .line_indices()
+            .nth(LineIndex::try_from(position.line)?)
+            .and_then(|index_value| Index::try_from(index_value).ok());
+
+        if let Some(index) = pointer {
+            let mut index = usize::try_from(index)? as u64;
+            index += position.character;
             let data_index = usize::try_from(index)?;
 
-            if c == BACKSPACE {
-                // For now, do not care to check what is removed. But this may become important for
+            if input == BACKSPACE {
+                // TODO: For now, do not care to check what is removed. But this may become important for
                 // multi-byte characters.
                 match self.data.remove(data_index) {
                     _ => {}
                 }
             } else {
-                self.data.insert(data_index.saturating_sub(1), c);
+                self.data.insert(data_index.saturating_sub(1), input);
             }
         }
 
@@ -277,53 +420,38 @@ impl Pane {
         }))
     }
 
-    /// Returns the first column at which pane data can be written.
-    #[allow(clippy::integer_arithmetic)] // self.margin_width < usize.max_value()
-    fn first_data_column(&self) -> Result<Index, TryFromIntError> {
-        Index::try_from(self.margin_width + 1)
+    /// Returns the value signifying the first column at which pane data can be written.
+    #[allow(clippy::integer_arithmetic)] // self.margin_width: u8 + 1 < u64.max_value()
+    fn origin_character(&self) -> u64 {
+        u64::from(self.margin_width) + 1
     }
 
-    /// Returns the [`Address`] associated with the given [`Place`].
-    fn address_at(&self, place: Place) -> Option<Address> {
-        match Index::try_from(place.line - self.first_line) {
-            Ok(row) => self
-                .first_data_column()
-                .ok()
-                .map(|origin| Address::new(row, place.column + origin)),
-            _ => None,
-        }
+    /// Returns the row at which a [`Position`] is located.
+    ///
+    /// [`None`] indicates that the [`Position`] is not visible in the user interface.
+    fn row_at(&self, position: &Position) -> Option<Index> {
+        position
+            .line
+            .checked_sub(self.first_line)
+            .and_then(|line| Index::try_from(line).ok())
     }
 
-    /// Returns the [`Region`] associated with the given [`Area`].
-    pub(crate) fn region_at<T: Area>(&self, area: &T) -> Option<Region> {
-        self.address_at(area.start())
-            .map(|address| Region::new(address, area.length()))
+    /// Returns the column at which a [`Position`] is located.
+    ///
+    /// [`None`] indicates that the [`Position`] is not visible in the user interface.
+    fn column_at(&self, position: &Position) -> Option<Index> {
+        position
+            .character
+            .checked_add(self.origin_character())
+            .and_then(|character| Index::try_from(character).ok())
     }
 
-    /// Updates the ui with the pane's current data.
-    pub(crate) fn redraw_edits(&self) -> impl Iterator<Item = Edit> + '_ {
-        // Clear the screen, then add each row.
-        iter::once(Edit::new(Region::default(), Change::Clear)).chain(
-            self.first_line
-                .into_iter()
-                .zip(self.lines().skip(self.first_line.row()))
-                .flat_map(move |(line_number, line)| {
-                    self.region_at(&Section::line(line_number))
-                        .map(|region| {
-                            Edit::new(
-                                region,
-                                Change::Row(format!(
-                                    "{:>width$} {}",
-                                    line_number,
-                                    line,
-                                    width = self.margin_width
-                                )),
-                            )
-                        })
-                        .into_iter()
-                })
-                .take(self.height),
-        )
+    /// Returns the [`Address`] associated with the given [`Position`].
+    fn address_at(&self, position: Position) -> Option<Address> {
+        self.row_at(&position).and_then(|row| {
+            self.column_at(&position)
+                .map(|column| Address::new(row, column))
+        })
     }
 
     /// An [`Iterator`] of all lines in the pane's data.
@@ -331,13 +459,13 @@ impl Pane {
         self.data.lines()
     }
 
-    /// The data stored at the given [`LineNumber`].
-    pub(crate) fn line(&self, line_number: LineNumber) -> Option<&str> {
-        self.lines().nth(line_number.row())
+    /// The data stored at the given line.
+    fn line_data(&self, line_index: LineIndex) -> Option<&str> {
+        self.lines().nth(line_index)
     }
 
     /// Updates the pane's metadata.
-    pub(crate) fn clean(&mut self) {
+    fn refresh(&mut self) {
         self.line_count = self.lines().count();
         self.update_margin_width()
     }
@@ -347,163 +475,160 @@ impl Pane {
     #[allow(clippy::cast_precision_loss)] // self.line_count is small enough to be precisely represented by f64
     #[allow(clippy::cast_sign_loss)] // self.line_count >= 0, thus log10().ceil() >= 0.0
     fn update_margin_width(&mut self) {
-        self.margin_width = (((self.line_count.saturating_add(1)) as f64).log10().ceil()) as usize;
+        self.margin_width = (((self.line_count.saturating_add(1)) as f64).log10().ceil()) as u8;
     }
 
     /// Return the length of scrolling movements.
-    fn scroll_length(&self) -> Output<IndexType> {
-        Ok(IndexType::try_from(
+    fn scroll_delta(&self) -> u64 {
+        u64::from(
             self.height
-                .checked_div(4)
-                .ok_or(Flag::Conversion(TryFromIntError::Overflow))?,
-        )?)
+                .checked_div(Index::from(4_u8))
+                .unwrap_or_else(|| Index::from(0_u8)),
+        )
     }
 
-    /// Scrolls the pane's data.
-    pub(crate) fn scroll(&mut self, movement: IndexType) -> IsChanging {
-        let new_first_line = cmp::min(
-            self.first_line + movement,
-            LineNumber::new(self.line_count).unwrap_or_default(),
-        );
+    /// Scrolls the data of `Pane` up.
+    fn scroll_up(&mut self) {
+        self.set_first_line(self.first_line.saturating_sub(self.scroll_delta()));
+    }
 
-        if new_first_line == self.first_line {
-            false
-        } else {
-            self.first_line = new_first_line;
-            true
+    /// Scrolls the data of `Pane` down.
+    fn scroll_down(&mut self) {
+        self.set_first_line(cmp::min(
+            self.first_line.saturating_add(self.scroll_delta()),
+            Line::try_from(self.line_count.saturating_sub(1)).unwrap_or(Line::max_value()),
+        ));
+    }
+
+    /// Sets first
+    fn set_first_line(&mut self, first_line: Line) {
+        if first_line != self.first_line {
+            self.first_line = first_line;
+            self.will_wipe = true;
         }
     }
-
-    /// The length of the line that has a given [`Place`].
-    pub(crate) fn line_length(&self, place: Place) -> Option<Index> {
-        self.line(place.line)
-            .and_then(|x| Index::try_from(x.len()).ok())
-    }
 }
 
-/// Represents if the user interface display needs to change.
-type IsChanging = bool;
-
-impl Hash for Pane {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.data.hash(state);
-        self.first_line.hash(state);
-        self.margin_width.hash(state);
-        self.line_count.hash(state);
-    }
+/// An [`Iterator`] of [`Index`]es.
+struct IndexIterator {
+    /// The current [`Index`].
+    current: Index,
+    /// The first [`Index`] that is not valid.
+    end: Index,
 }
 
-impl PartialEq for Pane {
-    fn eq(&self, other: &Self) -> bool {
-        self.data == other.data
-            && self.first_line == other.first_line
-            && self.margin_width == other.margin_width
-            && self.line_count == other.line_count
-    }
-}
-
-impl Eq for Pane {}
-
-/// Signifies an action to be performed by the application.
-#[derive(Debug)]
-pub enum Operation {
-    /// Enters a new mode.
-    EnterMode(Name, Option<Initiation>),
-    /// Edits the user interface.
-    EditUi(Vec<Edit>),
-    /// Does nothing.
-    Noop,
-}
-
-/// Signifies a type that can be converted to a [`Region`].
-pub(crate) trait Area {
-    /// Returns the starting `Place`.
-    fn start(&self) -> Place;
-    /// Returns the [`Length`].
-    fn length(&self) -> Length;
-}
-
-/// Signifies the location of a character within a pane.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub(crate) struct Place {
-    /// The [`LineNumber`] of `Place`.
-    line: LineNumber,
-    /// The [`Index`] of the column of `Place`.
-    column: Index,
-}
-
-impl Area for Place {
-    fn start(&self) -> Place {
-        *self
-    }
-
-    fn length(&self) -> Length {
-        Length::from(1)
-    }
-}
-
-impl Shr<IndexType> for Place {
-    type Output = Self;
-
-    #[inline]
-    fn shr(self, rhs: IndexType) -> Self {
-        let mut new_place = self;
-        new_place >>= rhs;
-        new_place
-    }
-}
-
-impl ShrAssign<IndexType> for Place {
-    #[inline]
-    fn shr_assign(&mut self, rhs: IndexType) {
-        self.column += rhs;
-    }
-}
-
-impl Display for Place {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "ln {}, idx {}", self.line, self.column)
-    }
-}
-
-/// Signifies adjacent [`Place`]s.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
-pub struct Section {
-    /// The [`Place`] at which `Section` starts.
-    start: Place,
-    /// The [`Length`] of `Section`.
-    length: Length,
-}
-
-impl Section {
-    /// Creates a new `Section` that signifies an entire line.
-    #[inline]
-    pub(crate) fn line(line: LineNumber) -> Self {
+impl IndexIterator {
+    /// Creates a new `IndexIterator`.
+    fn new(start: Index, end: Index) -> Self {
         Self {
-            start: Place {
-                line,
-                column: Index::from(0),
-            },
-            length: Length::End,
+            current: start,
+            end,
         }
     }
 }
 
-impl Area for Section {
-    fn start(&self) -> Place {
-        self.start
-    }
+impl Iterator for IndexIterator {
+    type Item = Index;
 
-    fn length(&self) -> Length {
-        self.length
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current == self.end {
+            return None;
+        }
+
+        let next_index = self.current;
+        self.current = self.current.add_one();
+        Some(next_index)
     }
 }
 
-impl Display for Section {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}->{}", self.start, self.length)
+/// Defines operation to be performed by [`Processor`].
+#[derive(Debug)]
+pub struct Operation {
+    /// The [`Name`] of the desired mode.
+    ///
+    /// [`None`] indicates the application should keep the current mode.
+    mode: Option<Name>,
+    /// The [`Initiation`] to be run if changing modes.
+    initiation: Option<Initiation>,
+}
+
+impl Operation {
+    /// Returns [`Name`] of `Operation`.
+    pub(crate) fn mode(&self) -> &Option<Name> {
+        &self.mode
+    }
+
+    /// Returns [`Initiation`] of `Operation`.
+    pub(crate) fn initiation(&self) -> &Option<Initiation> {
+        &self.initiation
+    }
+
+    /// Creates a new `Operation` to enter Command mode.
+    fn enter_command() -> Self {
+        Self {
+            mode: Some(Name::Command),
+            initiation: None,
+        }
+    }
+
+    /// Creates a new `Operation` to enter Action mode.
+    fn enter_filter(id: char) -> Self {
+        Self {
+            mode: Some(Name::Filter),
+            initiation: Some(Initiation::StartFilter(id)),
+        }
+    }
+
+    /// Creates a new `Operation` to continue execution with no special action.
+    fn maintain() -> Self {
+        Self {
+            mode: None,
+            initiation: None,
+        }
+    }
+
+    /// Creates a new `Operation` to display a new file.
+    ///
+    /// The application enters Display mode as a consequence of this `Operation`.
+    pub fn display_file(path: &str) -> Self {
+        Self {
+            mode: Some(Name::Display),
+            initiation: Some(Initiation::SetView(PathBuf::from(path))),
+        }
+    }
+
+    /// Creates a new `Operation` to save current file.
+    ///
+    /// The application enters Display mode as a consequence of this `Operation`.
+    fn save_file() -> Self {
+        Self {
+            mode: Some(Name::Display),
+            initiation: Some(Initiation::Save),
+        }
+    }
+
+    /// Creates a new `Operation` to enter Edit mode.
+    fn enter_display() -> Self {
+        Self {
+            mode: Some(Name::Display),
+            initiation: None,
+        }
+    }
+
+    /// Creates a new `Operation` to enter Action mode.
+    fn enter_action(signals: Vec<Range>) -> Self {
+        Self {
+            mode: Some(Name::Action),
+            initiation: Some(Initiation::SetSignals(signals)),
+        }
+    }
+
+    /// Creates a new `Operation` to enter Edit mode.
+    fn enter_edit(positions: Vec<Position>) -> Self {
+        Self {
+            mode: Some(Name::Edit),
+            initiation: Some(Initiation::Mark(positions)),
+        }
     }
 }
 
@@ -516,11 +641,11 @@ pub(crate) struct LineNumber(LineNumberType);
 
 impl LineNumber {
     /// Creates a new `LineNumber`.
-    pub(crate) fn new(value: usize) -> Option<Self> {
+    pub(crate) fn new(value: usize) -> Result<Self, TryFromIntError> {
         if value == 0 {
-            None
+            Err(TryFromIntError::Underflow)
         } else {
-            LineNumberType::try_from(value).ok().map(Self)
+            LineNumberType::try_from(value).map(Self)
         }
     }
 
@@ -531,16 +656,27 @@ impl LineNumber {
     }
 }
 
-impl Add<IndexType> for LineNumber {
+impl Add<i128> for LineNumber {
     type Output = Self;
 
-    fn add(self, other: IndexType) -> Self::Output {
+    fn add(self, other: i128) -> Self::Output {
         #[allow(clippy::integer_arithmetic)] // i64::min_value() <= u32 + i32 <= i64::max_value()
-        match usize::try_from(i64::from(self.0) + i64::from(other)) {
+        match usize::try_from(i128::from(self.0) + other) {
             Ok(sum) => Self::new(sum).unwrap_or_default(),
             Err(TryFromIntError::Underflow) => Self::default(),
             Err(TryFromIntError::Overflow) => Self(LineNumberType::max_value()),
         }
+    }
+}
+
+impl TryFrom<LineIndex> for LineNumber {
+    type Err = TryFromIntError;
+
+    fn try_from(value: LineIndex) -> Result<Self, Self::Err> {
+        value
+            .checked_add(1)
+            .ok_or(TryFromIntError::Overflow)
+            .and_then(Self::new)
     }
 }
 
@@ -556,7 +692,7 @@ impl Sub for LineNumber {
 impl Display for LineNumber {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        f.pad(&format!("{}", self.0))
     }
 }
 
@@ -571,7 +707,7 @@ impl std::str::FromStr for LineNumber {
     type Err = ParseLineNumberError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s.parse::<usize>()?).ok_or(ParseLineNumberError::InvalidValue)
+        Ok(Self::new(s.parse::<usize>()?)?)
     }
 }
 
@@ -633,173 +769,8 @@ impl From<std::num::ParseIntError> for ParseLineNumberError {
     }
 }
 
-/// An address and its respective pointer in a pane.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub struct Mark {
-    /// Pointer in pane that corresponds with mark.
-    pointer: Pointer,
-    /// Place of mark.
-    place: Place,
-}
-
-impl Mark {
-    /// Moves `Mark` as specified by the given [`Adjustment`].
-    pub(crate) fn adjust(&mut self, adjustment: &Adjustment) {
-        self.pointer += adjustment.shift;
-        self.place.line = self.place.line + adjustment.line_change;
-
-        for (&line, &change) in &adjustment.indexes_changed {
-            if line == self.place.line {
-                self.place >>= change;
-            }
-        }
-    }
-}
-
-impl Display for Mark {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{}", self.place, self.pointer)
-    }
-}
-
-/// Signifies an index of a character within [`Pane`].
-#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Debug)]
-pub(crate) struct Pointer(Option<Index>);
-
-impl Pointer {
-    /// Returns a new `Pointer`.
-    fn new(index: Option<Index>) -> Self {
-        Self(index)
-    }
-}
-
-impl PartialEq<IndexType> for Pointer {
-    fn eq(&self, other: &IndexType) -> bool {
-        self.0.map_or(false, |x| x == *other)
-    }
-}
-
-impl PartialOrd<IndexType> for Pointer {
-    fn partial_cmp(&self, other: &IndexType) -> Option<Ordering> {
-        self.0.and_then(|x| x.partial_cmp(other))
-    }
-}
-
-impl<T: Borrow<IndexType>> Add<T> for Pointer {
-    type Output = Self;
-
-    fn add(self, other: T) -> Self::Output {
-        Self(self.0.map(|x| x + *other.borrow()))
-    }
-}
-
-impl<T: Borrow<IndexType>> AddAssign<T> for Pointer {
-    fn add_assign(&mut self, other: T) {
-        self.0 = self.0.map(|x| x + *other.borrow());
-    }
-}
-
-impl Default for Pointer {
-    fn default() -> Self {
-        Self(Some(Index::from(0)))
-    }
-}
-
-impl Display for Pointer {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}]",
-            match self.0 {
-                None => String::from("None"),
-                Some(i) => format!("{}", i),
-            }
-        )
-    }
-}
-
-impl PartialEq<Pointer> for IndexType {
-    #[inline]
-    fn eq(&self, other: &Pointer) -> bool {
-        other == self
-    }
-}
-
-impl PartialOrd<Pointer> for IndexType {
-    #[inline]
-    fn partial_cmp(&self, other: &Pointer) -> Option<Ordering> {
-        other.partial_cmp(self).map(|x| x.reverse())
-    }
-}
-
-/// Signifies a modification of the pane.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Adjustment {
-    /// The change made to the current line.
-    shift: IndexType,
-    /// The changes made to the number of lines.
-    line_change: IndexType,
-    /// A map of the indexes where a change was made.
-    indexes_changed: HashMap<LineNumber, IndexType>,
-    /// The [`Change`] that best represents the `Adjustment`.
-    change: Change,
-}
-
-impl Adjustment {
-    /// Creates a new `Adjustment`.
-    fn new(line: LineNumber, shift: IndexType, index_change: IndexType, change: Change) -> Self {
-        let line_change = if change == Change::Clear { shift } else { 0 };
-
-        Self {
-            shift,
-            line_change,
-            indexes_changed: [(line + line_change, index_change)]
-                .iter()
-                .cloned()
-                .collect(),
-            change,
-        }
-    }
-
-    /// Creates an `Adjustment` based on the given context.
-    pub(crate) fn create(c: char, place: Place, pane: &Pane) -> Option<Self> {
-        match c {
-            BACKSPACE => {
-                if place.column == 0 {
-                    pane.line_length(place).map(|x| {
-                        Self::new(place.line, NEGATIVE_ONE, IndexType::from(x), Change::Clear)
-                    })
-                } else {
-                    Some(Self::new(
-                        place.line,
-                        NEGATIVE_ONE,
-                        NEGATIVE_ONE,
-                        Change::Backspace,
-                    ))
-                }
-            }
-            ENTER => Some(Self::new(
-                place.line,
-                1,
-                place.column.negate(),
-                Change::Clear,
-            )),
-            _ => Some(Self::new(place.line, 1, 1, Change::Insert(c))),
-        }
-    }
-}
-
-impl AddAssign for Adjustment {
-    fn add_assign(&mut self, other: Self) {
-        self.shift += other.shift;
-        self.line_change += other.line_change;
-
-        for (line, change) in other.indexes_changed {
-            *self.indexes_changed.entry(line).or_default() += change;
-        }
-
-        if self.change != Change::Clear {
-            self.change = other.change
-        }
+impl From<TryFromIntError> for ParseLineNumberError {
+    fn from(_error: TryFromIntError) -> Self {
+        ParseLineNumberError::InvalidValue
     }
 }

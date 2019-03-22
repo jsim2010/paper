@@ -144,10 +144,8 @@ pub enum Change {
     Backspace,
     /// Clears all cells.
     Clear,
-    /// Sets the color of all cells in a [`Region`].
-    ///
-    /// [`Region`]: struct.Region.html
-    Format(Color),
+    /// Sets the color of a given number of cells.
+    Format(Length, Color),
     /// Inserts a cell containing a character, moving all subsequent cells to the right.
     Insert(char),
     /// Does nothing.
@@ -169,7 +167,7 @@ impl Display for Change {
         match self {
             Change::Backspace => write!(f, "Backspace"),
             Change::Clear => write!(f, "Clear"),
-            Change::Format(color) => write!(f, "Format to {}", color),
+            Change::Format(n, color) => write!(f, "Format {} cells to {}", n, color),
             Change::Insert(input) => write!(f, "Insert '{}'", input),
             Change::Nothing => write!(f, "Nothing"),
             Change::Row(row_str) => write!(f, "Write row '{}'", row_str),
@@ -213,68 +211,22 @@ impl Display for Color {
     }
 }
 
-/// Signifies a [`Change`] to make to a [`Region`].
-///
-/// [`Change`]s that act on a single [`Address`] are executed on the starting [`Address`] of the
-/// [`Region`].
+/// Signifies a [`Change`] to make to an [`Address`].
 ///
 /// [`Change`]: enum.Change.html
-/// [`Region`]: struct.Region.html
 /// [`Address`]: struct.Address.html
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Edit {
     /// The [`Change`] to be made.
     change: Change,
-    /// The [`Region`] on which the [`Change`] is intended.
-    region: Region,
+    /// The [`Address`] on which the [`Change`] is intended.
+    address: Option<Address>,
 }
 
 impl Edit {
-    /// Creates a new `Edit` with a given [`Region`] and [`Change`].
-    ///
-    /// [`Region`]: struct.Region.html
-    /// [`Change`]: enum.Change.html
-    pub fn new(region: Region, change: Change) -> Self {
-        Self { region, change }
-    }
-}
-
-/// Signifies a group of adjacent [`Address`]es.
-///
-/// [`Address`]: struct.Address.html
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct Region {
-    /// The first [`Address`].
-    ///
-    /// [`Address`]: struct.Address.html
-    start: Address,
-    /// The [`Length`] of the `Region`.
-    ///
-    /// [`Length`]: struct.Length.html
-    length: Length,
-}
-
-impl Region {
-    /// Creates a new `Region` with a given starting [`Address`] and [`Length`].
-    ///
-    /// [`Address`]: struct.Address.html
-    /// [`Length`]: struct.Length.html
-    pub fn new(start: Address, length: Length) -> Self {
-        Self { start, length }
-    }
-
-    /// Creates a new `Region` that signifies an entire row.
-    pub(crate) fn with_row(row: usize) -> Result<Self, TryFromIntError> {
-        Index::try_from(row).map(|row_index| Self {
-            start: Address::new(row_index, Index::from(0)),
-            length: Length::End,
-        })
-    }
-}
-
-impl Display for Region {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}->{}", self.start, self.length)
+    /// Creates a new `Edit`.
+    pub fn new(address: Option<Address>, change: Change) -> Self {
+        Self { address, change }
     }
 }
 
@@ -288,7 +240,7 @@ pub trait UserInterface: Debug {
     /// Closes the user interface.
     fn close(&self) -> Outcome;
     /// Returns the number of cells that make up the height of the grid.
-    fn grid_height(&self) -> Result<usize, TryFromIntError>;
+    fn grid_height(&self) -> Result<Index, TryFromIntError>;
     /// Applies the edit to the output.
     fn apply(&self, edit: Edit) -> Outcome;
     /// Flashes the output.
@@ -370,7 +322,7 @@ impl Terminal {
     fn format(&self, length: Length, color: Color) -> Outcome {
         Self::process(
             self.window
-                .chgat(length.into(), pancurses::A_NORMAL, color.cp()),
+                .chgat(i32::from(length), pancurses::A_NORMAL, color.cp()),
             Error::Wchgat,
         )
     }
@@ -418,7 +370,9 @@ impl UserInterface for Terminal {
     }
 
     fn apply(&self, edit: Edit) -> Outcome {
-        self.move_to(edit.region.start)?;
+        if let Some(address) = edit.address {
+            self.move_to(address)?;
+        }
 
         match edit.change {
             Change::Backspace => {
@@ -427,7 +381,7 @@ impl UserInterface for Terminal {
                 self.delete_char()
             }
             Change::Clear => self.clear_all(),
-            Change::Format(color) => self.format(edit.region.length, color),
+            Change::Format(n, color) => self.format(n, color),
             Change::Insert(c) => self.insert_char(c),
             Change::Nothing => Ok(()),
             Change::Row(s) => {
@@ -439,8 +393,8 @@ impl UserInterface for Terminal {
     }
 
     // TODO: Store this value and update when size is changed.
-    fn grid_height(&self) -> Result<usize, TryFromIntError> {
-        usize::try_from(self.window.get_max_y())
+    fn grid_height(&self) -> Result<Index, TryFromIntError> {
+        Index::try_from(self.window.get_max_y())
     }
 
     fn receive_input(&self) -> Option<Input> {

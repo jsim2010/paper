@@ -21,10 +21,14 @@ const END: i32 = -1;
 pub struct NonNegativeI32(i32);
 
 impl NonNegativeI32 {
-    /// Returns the negative of `self`.
-    #[allow(clippy::integer_arithmetic)] // self.0 >= 0
-    pub(crate) fn negate(self) -> i32 {
-        -self.0
+    /// Divides `NonNegativeI32` by given value, returning None if self is 0.
+    pub fn checked_div(self, rhs: Self) -> Option<Self> {
+        self.0.checked_div(rhs.0).map(Self)
+    }
+
+    /// Adds 1 to the `NonNegativeI32`.
+    pub fn add_one(self) -> Self {
+        Self(self.0.wrapping_add(1))
     }
 }
 
@@ -60,9 +64,22 @@ impl Display for NonNegativeI32 {
     }
 }
 
+impl From<u8> for NonNegativeI32 {
+    fn from(value: u8) -> Self {
+        Self(i32::from(value))
+    }
+}
+
 impl From<u16> for NonNegativeI32 {
     fn from(value: u16) -> Self {
         Self(i32::from(value))
+    }
+}
+
+impl From<NonNegativeI32> for u64 {
+    #[allow(clippy::result_unwrap_used)] // converting NonNegativeI32 to u64 will never fail
+    fn from(value: NonNegativeI32) -> Self {
+        Self::try_from(value.0).unwrap()
     }
 }
 
@@ -118,6 +135,14 @@ impl TryFrom<usize> for NonNegativeI32 {
     }
 }
 
+impl TryFrom<u64> for NonNegativeI32 {
+    type Err = TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Err> {
+        i32::try_from(value).map(Self)
+    }
+}
+
 impl From<NonNegativeI32> for i32 {
     fn from(value: NonNegativeI32) -> Self {
         value.0
@@ -139,6 +164,27 @@ pub enum Length {
     Value(NonNegativeI32),
     /// The value needed to cover all elements from the current one to the end.
     End,
+}
+
+impl Length {
+    /// Returns if `Length` is equal to 0.
+    pub fn is_zero(self) -> bool {
+        match self {
+            Length::Value(NonNegativeI32(0)) => true,
+            _ => false,
+        }
+    }
+}
+
+impl TryFrom<Length> for u64 {
+    type Err = TryFromIntError;
+
+    fn try_from(value: Length) -> Result<Self, Self::Err> {
+        match value {
+            Length::Value(x) => Self::try_from(x.0),
+            Length::End => Err(TryFromIntError::Underflow),
+        }
+    }
 }
 
 impl From<Length> for i32 {
@@ -168,6 +214,15 @@ impl Display for Length {
 impl From<u16> for Length {
     fn from(value: u16) -> Self {
         Length::Value(NonNegativeI32::from(value))
+    }
+}
+
+impl From<u64> for Length {
+    fn from(value: u64) -> Self {
+        match NonNegativeI32::try_from(value) {
+            Ok(length) => Length::Value(length),
+            Err(_) => Length::End,
+        }
     }
 }
 

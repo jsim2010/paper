@@ -1,10 +1,8 @@
 //! Implements functionality for the application while in filter mode.
-use super::{
-    EditableString, IndexType, Initiation, Length, LineNumber, Name, Operation, Output, Pane,
-    Section,
-};
-use crate::ui::{Change, Color, Edit, Region, ENTER, ESC};
+use super::{line_range, Initiation, LineNumber, Operation, Output, Pane};
+use crate::ui::{ENTER, ESC};
 use crate::Mrc;
+use lsp_types::{Position, Range};
 use rec::ChCls::{Any, Digit, End, Not, Sign};
 use rec::{opt, some, tkn, var, Element, Pattern};
 use std::cmp;
@@ -14,12 +12,10 @@ use try_from::{TryFrom, TryFromIntError};
 /// The [`Processor`] of the filter mode.
 #[derive(Debug)]
 pub(crate) struct Processor {
-    /// The filter.
-    filter: EditableString,
-    /// All [`Section`]s that are being filtered.
-    noises: Vec<Section>,
-    /// All [`Section`]s that match the current filter.
-    signals: Vec<Section>,
+    /// All [`Range`]s that are being filtered.
+    noises: Vec<Range>,
+    /// All [`Range`]s that match the current filter.
+    signals: Vec<Range>,
     /// Matches the first feature of a filter.
     first_feature_pattern: Pattern,
     /// Filters supported by the application
@@ -32,7 +28,6 @@ impl Processor {
     /// Creates a new `Processor` for the filter mode.
     pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
         Self {
-            filter: EditableString::new(),
             noises: Vec::new(),
             signals: Vec::new(),
             first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
@@ -43,49 +38,42 @@ impl Processor {
 }
 
 impl super::Processor for Processor {
-    fn enter(&mut self, initiation: Option<Initiation>) -> Output<Vec<Edit>> {
-        self.filter.clear();
+    fn enter(&mut self, initiation: &Option<Initiation>) -> Output<()> {
+        let mut pane = self.pane.borrow_mut();
 
-        if let Some(Initiation::StartFilter(c)) = initiation {
-            // TODO: Currently we assume that c is not BACKSPACE.
-            self.filter.add_non_bs(c);
-        }
+        let id = if let Some(Initiation::StartFilter(c)) = *initiation {
+            Some(c)
+        } else {
+            None
+        };
+        pane.reset_control_panel(id);
 
         self.noises.clear();
 
-        for line in 1..=self.pane.borrow().line_count {
-            if let Some(noise) = LineNumber::new(line).map(Section::line) {
-                self.noises.push(noise);
-            }
+        for line in 0..pane.line_count {
+            self.noises.push(line_range(line as u64));
         }
 
-        Ok(self.filter.edits())
+        Ok(())
     }
 
     fn decode(&mut self, input: char) -> Output<Operation> {
-        let pane: &Pane = &self.pane.borrow();
+        let mut pane = self.pane.borrow_mut();
 
         match input {
-            ENTER => Ok(Operation::EnterMode(
-                Name::Action,
-                Some(Initiation::SetSignals(self.signals.clone())),
-            )),
-            ESC => Ok(Operation::EnterMode(Name::Display, None)),
+            ENTER => Ok(Operation::enter_action(self.signals.clone())),
+            ESC => Ok(Operation::enter_display()),
             _ => {
                 if input == '\t' {
-                    self.filter.add_non_bs('&');
-                    self.filter.add_non_bs('&');
+                    pane.control_panel.add_non_bs('&');
+                    pane.control_panel.add_non_bs('&');
                 } else {
-                    let success = self.filter.add(input);
-
-                    if !success {
-                        return Ok(Operation::EditUi(self.filter.flash_edits()));
-                    }
+                    pane.input_to_control_panel(input);
                 }
 
                 if let Some(last_feature) = self
                     .first_feature_pattern
-                    .tokenize_iter(&self.filter)
+                    .tokenize_iter(&pane.control_panel)
                     .last()
                     .and_then(|tokens| tokens.get("feature"))
                 {
@@ -94,35 +82,15 @@ impl super::Processor for Processor {
                     if let Some(id) = last_feature.chars().nth(0) {
                         for filter in self.filters.iter() {
                             if id == filter.id() {
-                                filter.extract(last_feature, &mut self.signals, pane)?;
+                                filter.extract(last_feature, &mut self.signals, &pane)?;
                                 break;
                             }
                         }
                     }
                 }
 
-                let mut edits = self.filter.edits();
-
-                for row in 0..pane.height {
-                    edits.push(Edit::new(
-                        Region::with_row(row)?,
-                        Change::Format(Color::Default),
-                    ));
-                }
-
-                for noise in &self.noises {
-                    if let Some(region) = pane.region_at(noise) {
-                        edits.push(Edit::new(region, Change::Format(Color::Blue)));
-                    }
-                }
-
-                for signal in &self.signals {
-                    if let Some(region) = pane.region_at(signal) {
-                        edits.push(Edit::new(region, Change::Format(Color::Red)));
-                    }
-                }
-
-                Ok(Operation::EditUi(edits))
+                pane.apply_filter(&self.noises, &self.signals);
+                Ok(Operation::maintain())
             }
         }
     }
@@ -169,7 +137,7 @@ impl<'a> Iterator for PaperFiltersIter<'a> {
     }
 }
 
-/// Used for modifying [`Section`]s to match a feature.
+/// Used for modifying [`Range`]s to match a feature.
 trait Filter: Debug {
     /// Returns the identifying character of the `Filter`.
     fn id(&self) -> char;
@@ -177,7 +145,7 @@ trait Filter: Debug {
     fn extract(
         &self,
         feature: &str,
-        sections: &mut Vec<Section>,
+        sections: &mut Vec<Range>,
         pane: &Pane,
     ) -> Result<(), TryFromIntError>;
 }
@@ -209,13 +177,13 @@ impl Filter for LineFilter {
     fn extract(
         &self,
         feature: &str,
-        sections: &mut Vec<Section>,
+        sections: &mut Vec<Range>,
         _view: &Pane,
     ) -> Result<(), TryFromIntError> {
         let tokens = self.pattern.tokenize(feature);
 
         if let Ok(line) = tokens.parse::<LineNumber>("line") {
-            sections.retain(|&x| x.start.line == line);
+            sections.retain(|&x| x.start.line == line.row() as u64);
         } else if let (Ok(start), Ok(end)) = (
             tokens.parse::<LineNumber>("start"),
             tokens.parse::<LineNumber>("end"),
@@ -225,11 +193,11 @@ impl Filter for LineFilter {
 
             sections.retain(|&x| {
                 let row = x.start.line;
-                row >= top && row <= bottom
+                row >= top.row() as u64 && row <= bottom.row() as u64
             })
         } else if let (Ok(origin), Ok(movement)) = (
             tokens.parse::<LineNumber>("origin"),
-            tokens.parse::<IndexType>("movement"),
+            tokens.parse::<i128>("movement"),
         ) {
             let end = origin + movement;
             let top = cmp::min(origin, end);
@@ -237,7 +205,7 @@ impl Filter for LineFilter {
 
             sections.retain(|&x| {
                 let row = x.start.line;
-                row >= top && row <= bottom
+                row >= top.row() as u64 && row <= bottom.row() as u64
             })
         }
 
@@ -268,26 +236,31 @@ impl Filter for PatternFilter {
     fn extract(
         &self,
         feature: &str,
-        sections: &mut Vec<Section>,
+        ranges: &mut Vec<Range>,
         pane: &Pane,
     ) -> Result<(), TryFromIntError> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
             if let Ok(search_pattern) = Pattern::load(user_pattern) {
-                let target_sections = sections.clone();
-                sections.clear();
+                let target_ranges = ranges.clone();
+                ranges.clear();
 
-                for target_section in target_sections {
-                    let start = usize::try_from(target_section.start.column)?;
+                for target_range in target_ranges {
+                    let start_character = usize::try_from(target_range.start.character)?;
+                    let line_index = usize::try_from(target_range.start.line)?;
 
                     if let Some(target) = pane
-                        .line(target_section.start.line)
-                        .map(|x| x.chars().skip(start).collect::<String>())
+                        .line_data(line_index)
+                        .map(|x| x.chars().skip(start_character).collect::<String>())
                     {
                         for location in search_pattern.locate_iter(&target) {
-                            sections.push(Section {
-                                start: target_section.start
-                                    >> IndexType::try_from(location.start())?,
-                                length: Length::try_from(location.length())?,
+                            let mut new_start = target_range.start;
+                            new_start.character += location.start() as u64;
+                            ranges.push(Range {
+                                start: new_start,
+                                end: Position::new(
+                                    target_range.start.line,
+                                    location.length() as u64,
+                                ),
                             });
                         }
                     }

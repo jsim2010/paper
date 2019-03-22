@@ -2,6 +2,7 @@ mod mock;
 
 use mock::Controller;
 use pancurses::Input;
+use paper::ui::Index;
 
 /// `.` in Display mode should enter Command mode.
 ///
@@ -74,7 +75,9 @@ fn backslash_enters_filter_mode() {
 #[test]
 fn j_scrolls_down() {
     let controller = Controller::new();
-    controller.borrow_mut().set_grid_height(Ok(8));
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create_with_file(&controller, vec![], "a\nb\nc");
     controller
         .borrow_mut()
@@ -86,7 +89,7 @@ fn j_scrolls_down() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 2, String::from("3 c")),
+            mock::display_row_edit(0, 0, String::from("3 c")),
         ]
     );
 }
@@ -99,7 +102,9 @@ fn j_scrolls_down() {
 #[test]
 fn j_does_not_scroll_past_last_line() {
     let controller = Controller::new();
-    controller.borrow_mut().set_grid_height(Ok(8));
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create_with_file(&controller, vec![], "a\nb");
     controller
         .borrow_mut()
@@ -111,7 +116,7 @@ fn j_does_not_scroll_past_last_line() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 2, String::from("2 b")),
+            mock::display_row_edit(0, 0, String::from("2 b")),
         ]
     );
 }
@@ -124,7 +129,9 @@ fn j_does_not_scroll_past_last_line() {
 #[test]
 fn j_at_end_does_nothing() {
     let controller = Controller::new();
-    controller.borrow_mut().set_grid_height(Ok(8));
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create_with_file(&controller, vec![], "a");
     controller
         .borrow_mut()
@@ -143,7 +150,9 @@ fn j_at_end_does_nothing() {
 #[test]
 fn k_scrolls_up() {
     let controller = Controller::new();
-    controller.borrow_mut().set_grid_height(Ok(8));
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create_with_file(
         &controller,
         vec![Input::Character('j'), Input::Character('j')],
@@ -159,9 +168,9 @@ fn k_scrolls_up() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 2, String::from("3 c")),
-            mock::display_row_edit(1, 2, String::from("4 d")),
-            mock::display_row_edit(2, 2, String::from("5 e")),
+            mock::display_row_edit(0, 0, String::from("3 c")),
+            mock::display_row_edit(1, 0, String::from("4 d")),
+            mock::display_row_edit(2, 0, String::from("5 e")),
         ]
     );
 }
@@ -175,7 +184,9 @@ fn k_scrolls_up() {
 #[test]
 fn k_does_not_scroll_past_first_line() {
     let controller = Controller::new();
-    controller.borrow_mut().set_grid_height(Ok(8));
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create_with_file(&controller, vec![Input::Character('j')], "a\nb");
     controller
         .borrow_mut()
@@ -187,8 +198,8 @@ fn k_does_not_scroll_past_first_line() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 2, String::from("1 a")),
-            mock::display_row_edit(1, 2, String::from("2 b")),
+            mock::display_row_edit(0, 0, String::from("1 a")),
+            mock::display_row_edit(1, 0, String::from("2 b")),
         ]
     );
 }
@@ -201,7 +212,9 @@ fn k_does_not_scroll_past_first_line() {
 #[test]
 fn k_at_first_line_does_nothing() {
     let controller = Controller::new();
-    controller.borrow_mut().set_grid_height(Ok(8));
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create_with_file(&controller, vec![], "a");
     controller
         .borrow_mut()

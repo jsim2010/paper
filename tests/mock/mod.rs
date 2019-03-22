@@ -1,11 +1,11 @@
 use pancurses::Input;
-use paper::mode::{Initiation, Name, Operation, Output};
+use paper::mode::{Operation, Output};
 use paper::num::Length;
-use paper::ui::{Address, Change, Edit, Index, Region, UserInterface};
+use paper::ui::{Address, Change, Edit, Index, UserInterface};
 use paper::Explorer;
 use paper::{ui, Paper};
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use try_from::TryFromIntError;
 
@@ -36,10 +36,7 @@ pub fn create_with_file(
     );
 
     // Sets the data in the view based on the file stored by controller.
-    paper.operate(Operation::EnterMode(
-        Name::Display,
-        Some(Initiation::SetView(PathBuf::from("mock"))),
-    ));
+    paper.operate(&Operation::display_file("mock"));
 
     for input in setup {
         controller.borrow_mut().set_input(Some(input));
@@ -82,7 +79,7 @@ impl UserInterface for MockUserInterface {
         Ok(())
     }
 
-    fn grid_height(&self) -> Result<usize, TryFromIntError> {
+    fn grid_height(&self) -> Result<Index, TryFromIntError> {
         *self.controller.borrow().grid_height()
     }
 
@@ -132,21 +129,21 @@ impl Controller {
         &self.apply_calls
     }
 
-    pub fn set_grid_height(&mut self, grid_height: Result<usize, TryFromIntError>) {
+    pub fn set_grid_height(&mut self, grid_height: Result<Index, TryFromIntError>) {
         self.grid_height.0 = grid_height;
     }
 
-    pub fn grid_height(&self) -> &Result<usize, TryFromIntError> {
+    pub fn grid_height(&self) -> &Result<Index, TryFromIntError> {
         &self.grid_height.0
     }
 }
 
 #[derive(Debug)]
-struct GridHeight(Result<usize, TryFromIntError>);
+struct GridHeight(Result<Index, TryFromIntError>);
 
 impl Default for GridHeight {
     fn default() -> Self {
-        Self(Ok(0))
+        Self(Ok(Index::from(0_u8)))
     }
 }
 
@@ -183,20 +180,11 @@ pub fn display_sketch_edit(sketch: String) -> Edit {
 
 pub fn display_row_edit(row: u16, column: u16, line: String) -> Edit {
     Edit::new(
-        Region::new(
-            Address::new(Index::from(row), Index::from(column)),
-            Length::End,
-        ),
+        Some(Address::new(Index::from(row), Index::from(column))),
         Change::Row(line),
     )
 }
 
 pub fn display_clear_edit() -> Edit {
-    Edit::new(
-        Region::new(
-            Address::new(Index::from(0), Index::from(0)),
-            Length::Value(Index::from(0)),
-        ),
-        Change::Clear,
-    )
+    Edit::new(None, Change::Clear)
 }
