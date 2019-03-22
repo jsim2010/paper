@@ -22,6 +22,7 @@ use std::io;
 use std::iter;
 use std::ops::{Add, Deref, Sub};
 use std::path::PathBuf;
+use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 
 /// Defines a [`Result`] with [`Flag`] as its Error.
@@ -104,18 +105,40 @@ pub enum Initiation {
     Mark(Vec<Position>),
 }
 
+enum WindowProgress {}
+
+impl lsp_types::notification::Notification for WindowProgress {
+    type Params = ProgressParams;
+    const METHOD: &'static str = "window/progress";
+}
+
+struct ProgressParams {
+    id: String,
+    title: String,
+    message: Option<String>,
+    done: Option<bool>,
+}
+
 /// The control panel of a [`Pane`].
 #[derive(Clone, Debug, Default, Hash)]
 struct ControlPanel {
     /// The [`String`] to be edited.
     string: String,
+    height: Rc<Index>,
 }
 
 impl ControlPanel {
+    fn new(height: &Rc<Index>) -> Self {
+        Self {
+            height: Rc::clone(height),
+            string: String::default(),
+        }
+    }
+
     /// Returns the edits needed to write the string.
     fn edits(&self) -> Vec<Edit> {
         vec![Edit::new(
-            Some(Address::new(Index::from(0_u8), Index::from(0_u8))),
+            Some(Address::new(self.height.sub_one(), Index::from(0_u8))),
             Change::Row(self.string.clone()),
         )]
     }
@@ -231,7 +254,7 @@ pub(crate) struct Pane {
     /// The number of columns needed to display the margin.
     margin_width: u8,
     /// The number of rows visible in the pane.
-    height: Index,
+    height: Rc<Index>,
     /// The number of lines in the data.
     line_count: usize,
     /// The control panel of the `Pane`.
@@ -245,7 +268,10 @@ pub(crate) struct Pane {
 impl Pane {
     /// Creates a new Pane with a given height.
     pub(crate) fn new(height: Index) -> Self {
+        let height = Rc::new(height);
+
         Self {
+            control_panel: ControlPanel::new(&height),
             height,
             ..Self::default()
         }
@@ -319,7 +345,7 @@ impl Pane {
 
     /// Returns an [`IndexIterator`] of the all visible rows.
     fn visible_rows(&self) -> IndexIterator {
-        IndexIterator::new(Index::from(0_u8), self.height)
+        IndexIterator::new(Index::from(0_u8), *self.height.deref())
     }
 
     /// Applies filter highlighting to the given [`Range`]s.

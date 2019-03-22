@@ -26,9 +26,14 @@ impl NonNegativeI32 {
         self.0.checked_div(rhs.0).map(Self)
     }
 
-    /// Adds 1 to the `NonNegativeI32`.
+    /// Adds 1.
     pub fn add_one(self) -> Self {
         Self(self.0.wrapping_add(1))
+    }
+
+    /// Subtracts 1.
+    pub fn sub_one(self) -> Self {
+        Self(self.0.wrapping_sub(1))
     }
 }
 
