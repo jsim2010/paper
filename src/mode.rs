@@ -12,7 +12,7 @@ pub(crate) use edit::Processor as EditProcessor;
 pub(crate) use filter::Processor as FilterProcessor;
 
 use crate::num::Length;
-use crate::storage::{self, Explorer, LspError};
+use crate::storage::{self, Explorer, LspError, ProgressParams};
 use crate::ui::{self, Address, Change, Color, Edit, Index, IndexType, BACKSPACE, ENTER};
 use crate::Mrc;
 use lsp_types::{Position, Range};
@@ -103,20 +103,6 @@ pub enum Initiation {
     SetSignals(Vec<Range>),
     /// Marks a list of [`Position`]s.
     Mark(Vec<Position>),
-}
-
-enum WindowProgress {}
-
-impl lsp_types::notification::Notification for WindowProgress {
-    type Params = ProgressParams;
-    const METHOD: &'static str = "window/progress";
-}
-
-struct ProgressParams {
-    id: String,
-    title: String,
-    message: Option<String>,
-    done: Option<bool>,
 }
 
 /// The control panel of a [`Pane`].
@@ -242,6 +228,11 @@ impl From<io::Error> for Flag {
     }
 }
 
+#[derive(Clone, Debug, Default, Hash)]
+struct NotificationManager {
+    notification: String,
+}
+
 /// Signfifies the pane of the current file.
 #[derive(Clone, Debug, Default, Hash)]
 pub(crate) struct Pane {
@@ -263,6 +254,7 @@ pub(crate) struct Pane {
     edits: Vec<Edit>,
     /// If `Pane` will clear and redraw on next update.
     will_wipe: bool,
+    notifications: NotificationManager,
 }
 
 impl Pane {
@@ -323,6 +315,12 @@ impl Pane {
     /// Sets [`Pane`] to be wiped on the next call to [`edits`]().
     fn wipe(&mut self) {
         self.will_wipe = true;
+    }
+
+    pub(crate) fn add_notification(&mut self, notification: ProgressParams) {
+        if let Some(message) = notification.message {
+            self.edits.push(Edit::new(Some(Address::new(Index::from(0_u8), Index::from(0_u8))), Change::Row(message)));
+        }
     }
 
     /// Resets the [`ControlPanel`].
@@ -606,7 +604,7 @@ impl Operation {
     }
 
     /// Creates a new `Operation` to continue execution with no special action.
-    fn maintain() -> Self {
+    pub(crate) fn maintain() -> Self {
         Self {
             mode: None,
             initiation: None,

@@ -105,7 +105,7 @@ macro_rules! mrc {
 #[derive(Debug)]
 pub struct Paper {
     /// User interface of the application.
-    ui: Rc<dyn UserInterface>,
+    ui: Mrc<dyn UserInterface>,
     /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
     /// The [`Explorer`] of the application.
@@ -119,10 +119,10 @@ pub struct Paper {
 impl Paper {
     /// Creates a new paper application.
     #[inline]
-    pub fn new(ui: Rc<dyn UserInterface>, explorer: Mrc<dyn Explorer>) -> Self {
+    pub fn new(ui: Mrc<dyn UserInterface>, explorer: Mrc<dyn Explorer>) -> Self {
         explorer.borrow_mut().start().expect("Starting explorer");
         let pane = mrc!(Pane::new(
-            ui.grid_height()
+            ui.borrow_mut().grid_height()
                 .expect("Accessing height of user interface")
         ));
         let display_mode_handler: Mrc<dyn Processor> =
@@ -153,7 +153,7 @@ impl Paper {
     /// Runs the application.
     #[inline]
     pub fn run(&mut self) -> Output<()> {
-        self.ui.init()?;
+        self.ui.borrow_mut().init()?;
 
         loop {
             if let Err(Flag::Quit) = self.step() {
@@ -161,18 +161,27 @@ impl Paper {
             }
         }
 
-        self.ui.close()?;
+        self.ui.borrow_mut().close()?;
         Ok(())
+    }
+
+    fn get_input(&mut self) -> Option<Input> {
+        self.ui.borrow_mut().receive_input()
     }
 
     /// Processes 1 input from the user.
     pub fn step(&mut self) -> Output<()> {
-        if let Some(Input::Character(input)) = self.ui.receive_input() {
-            let operation = self.current_processor_mut().borrow_mut().decode(input)?;
-            self.operate(&operation)
+        let operation = if let Some(Input::Character(input)) = self.get_input() {
+            self.current_processor_mut().borrow_mut().decode(input)?
         } else {
-            Ok(())
+            Operation::maintain()
+        };
+
+        if let Some(notification) = self.explorer.borrow_mut().receive_notification() {
+            self.pane.borrow_mut().add_notification(notification);
         }
+
+        self.operate(&operation)
     }
 
     /// Executes an [`Operation`].
@@ -187,7 +196,7 @@ impl Paper {
         let edits = self.pane.borrow_mut().edits();
 
         for edit in edits {
-            self.ui.apply(edit)?;
+            self.ui.borrow_mut().apply(edit)?;
         }
 
         Ok(())

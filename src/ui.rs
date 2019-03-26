@@ -2,10 +2,13 @@
 
 pub(crate) use crate::num::{Length, NonNegativeI32};
 
-use crate::{fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
+use crate::{Mrc, fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
+use crate::storage::ProgressParams;
 use pancurses::Input;
 use std::error;
 use std::rc::Rc;
+use std::sync::mpsc::Receiver;
+use std::cell::RefCell;
 
 /// The [`Result`] returned by functions of this module.
 pub type Outcome = Result<(), Error>;
@@ -61,6 +64,8 @@ pub enum Error {
     Winsch,
     /// Describes a possible error during call to `wmove()`.
     Wmove,
+    /// Describes a possible error during call to `nodelay()`.
+    Nodelay,
 }
 
 impl Error {
@@ -81,6 +86,7 @@ impl Error {
             Error::Wdelch => "wdelch",
             Error::Winsch => "winsch",
             Error::Wmove => "wmove",
+            Error::Nodelay => "nodelay",
             Error::NoUi => "",
         }
     }
@@ -245,12 +251,12 @@ pub trait UserInterface: Debug {
     fn apply(&self, edit: Edit) -> Outcome;
     /// Flashes the output.
     fn flash(&self) -> Outcome;
-    /// Gets input from the user.
+    /// Returns the input from the user.
     ///
     /// Returns [`None`] if no character input is provided.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     fn receive_input(&self) -> Option<Input>;
+    /// Sets the [`Receiver`] that provides notifications.
+    fn set_notification_provider(&mut self, provider: Option<Receiver<ProgressParams>>);
 }
 
 /// The user interface provided by a terminal.
@@ -258,15 +264,17 @@ pub trait UserInterface: Debug {
 pub struct Terminal {
     /// The window that interfaces with the application.
     window: pancurses::Window,
+    notification_provider: Option<Receiver<ProgressParams>>,
 }
 
 impl Terminal {
     /// Creates a new `Terminal`.
-    pub fn new() -> Rc<Self> {
-        Rc::new(Self {
+    pub fn new() -> Mrc<Self> {
+        Rc::new(RefCell::new(Self {
             // Must call initscr() first.
             window: pancurses::initscr(),
-        })
+            notification_provider: None,
+        }))
     }
 
     /// Converts given result of ui function to a [`Outcome`].
@@ -318,6 +326,10 @@ impl Terminal {
         Self::process(pancurses::noecho(), Error::Noecho)
     }
 
+    fn enable_nodelay(&self) -> Outcome {
+        Self::process(self.window.nodelay(true), Error::Nodelay)
+    }
+
     /// Sets the color of the next specified number of blocks from the cursor.
     fn format(&self, length: Length, color: Color) -> Outcome {
         Self::process(
@@ -355,6 +367,7 @@ impl UserInterface for Terminal {
         self.start_color()?;
         self.use_default_colors()?;
         self.disable_echo()?;
+        self.enable_nodelay()?;
         self.define_color(Color::Red, pancurses::COLOR_RED)?;
         self.define_color(Color::Blue, pancurses::COLOR_BLUE)?;
 
@@ -399,5 +412,9 @@ impl UserInterface for Terminal {
 
     fn receive_input(&self) -> Option<Input> {
         self.window.getch()
+    }
+
+    fn set_notification_provider(&mut self, provider: Option<Receiver<ProgressParams>>) {
+        self.notification_provider = provider;
     }
 }
