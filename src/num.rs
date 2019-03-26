@@ -22,13 +22,21 @@ pub struct NonNegativeI32(i32);
 
 impl NonNegativeI32 {
     /// Divides `NonNegativeI32` by given value, returning None if self is 0.
+    #[inline]
     pub fn checked_div(self, rhs: Self) -> Option<Self> {
         self.0.checked_div(rhs.0).map(Self)
     }
 
-    /// Adds 1 to the `NonNegativeI32`.
+    /// Adds 1.
+    #[inline]
     pub fn add_one(self) -> Self {
         Self(self.0.wrapping_add(1))
+    }
+
+    /// Subtracts 1.
+    #[inline]
+    pub fn sub_one(self) -> Self {
+        Self(self.0.wrapping_sub(1))
     }
 }
 
@@ -38,6 +46,7 @@ where
 {
     type Output = Self;
 
+    #[inline]
     fn add(self, other: T) -> Self::Output {
         Self(self.0 + other.borrow())
     }
@@ -47,30 +56,35 @@ impl<T> AddAssign<T> for NonNegativeI32
 where
     T: Borrow<i32>,
 {
+    #[inline]
     fn add_assign(&mut self, other: T) {
         self.0 += other.borrow();
     }
 }
 
 impl Borrow<i32> for NonNegativeI32 {
+    #[inline]
     fn borrow(&self) -> &i32 {
         &self.0
     }
 }
 
 impl Display for NonNegativeI32 {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
 impl From<u8> for NonNegativeI32 {
+    #[inline]
     fn from(value: u8) -> Self {
         Self(i32::from(value))
     }
 }
 
 impl From<u16> for NonNegativeI32 {
+    #[inline]
     fn from(value: u16) -> Self {
         Self(i32::from(value))
     }
@@ -78,18 +92,21 @@ impl From<u16> for NonNegativeI32 {
 
 impl From<NonNegativeI32> for u64 {
     #[allow(clippy::result_unwrap_used)] // converting NonNegativeI32 to u64 will never fail
+    #[inline]
     fn from(value: NonNegativeI32) -> Self {
         Self::try_from(value.0).unwrap()
     }
 }
 
 impl PartialEq<i32> for NonNegativeI32 {
+    #[inline]
     fn eq(&self, other: &i32) -> bool {
         self.0.eq(other)
     }
 }
 
 impl PartialOrd<i32> for NonNegativeI32 {
+    #[inline]
     fn partial_cmp(&self, other: &i32) -> Option<Ordering> {
         Some(self.0.cmp(other))
     }
@@ -98,6 +115,7 @@ impl PartialOrd<i32> for NonNegativeI32 {
 impl TryFrom<i32> for NonNegativeI32 {
     type Err = TryFromIntError;
 
+    #[inline]
     fn try_from(value: i32) -> Result<Self, Self::Err> {
         if value.is_negative() {
             Err(TryFromIntError::Underflow)
@@ -110,6 +128,7 @@ impl TryFrom<i32> for NonNegativeI32 {
 impl TryFrom<i64> for NonNegativeI32 {
     type Err = TryFromIntError;
 
+    #[inline]
     fn try_from(value: i64) -> Result<Self, Self::Err> {
         i32::try_from(value).map(Self)
     }
@@ -118,6 +137,7 @@ impl TryFrom<i64> for NonNegativeI32 {
 impl TryFrom<Length> for NonNegativeI32 {
     type Err = TryFromIntError;
 
+    #[inline]
     fn try_from(value: Length) -> Result<Self, Self::Err> {
         if let Length::Value(length) = value {
             Ok(length)
@@ -130,6 +150,7 @@ impl TryFrom<Length> for NonNegativeI32 {
 impl TryFrom<usize> for NonNegativeI32 {
     type Err = TryFromIntError;
 
+    #[inline]
     fn try_from(value: usize) -> Result<Self, Self::Err> {
         i32::try_from(value).map(Self)
     }
@@ -138,12 +159,14 @@ impl TryFrom<usize> for NonNegativeI32 {
 impl TryFrom<u64> for NonNegativeI32 {
     type Err = TryFromIntError;
 
+    #[inline]
     fn try_from(value: u64) -> Result<Self, Self::Err> {
         i32::try_from(value).map(Self)
     }
 }
 
 impl From<NonNegativeI32> for i32 {
+    #[inline]
     fn from(value: NonNegativeI32) -> Self {
         value.0
     }
@@ -152,6 +175,7 @@ impl From<NonNegativeI32> for i32 {
 impl TryFrom<NonNegativeI32> for usize {
     type Err = TryFromIntError;
 
+    #[inline]
     fn try_from(value: NonNegativeI32) -> Result<Self, Self::Err> {
         Self::try_from(value.0)
     }
@@ -168,6 +192,7 @@ pub enum Length {
 
 impl Length {
     /// Returns if `Length` is equal to 0.
+    #[inline]
     pub fn is_zero(self) -> bool {
         match self {
             Length::Value(NonNegativeI32(0)) => true,
@@ -179,6 +204,7 @@ impl Length {
 impl TryFrom<Length> for u64 {
     type Err = TryFromIntError;
 
+    #[inline]
     fn try_from(value: Length) -> Result<Self, Self::Err> {
         match value {
             Length::Value(x) => Self::try_from(x.0),
@@ -188,6 +214,7 @@ impl TryFrom<Length> for u64 {
 }
 
 impl From<Length> for i32 {
+    #[inline]
     fn from(value: Length) -> Self {
         match value {
             Length::Value(x) => Self::from(x),
@@ -197,12 +224,14 @@ impl From<Length> for i32 {
 }
 
 impl Default for Length {
+    #[inline]
     fn default() -> Self {
         Length::Value(NonNegativeI32::default())
     }
 }
 
 impl Display for Length {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Length::End => write!(f, "END"),
@@ -212,12 +241,14 @@ impl Display for Length {
 }
 
 impl From<u16> for Length {
+    #[inline]
     fn from(value: u16) -> Self {
         Length::Value(NonNegativeI32::from(value))
     }
 }
 
 impl From<u64> for Length {
+    #[inline]
     fn from(value: u64) -> Self {
         match NonNegativeI32::try_from(value) {
             Ok(length) => Length::Value(length),
@@ -229,6 +260,7 @@ impl From<u64> for Length {
 impl TryFrom<usize> for Length {
     type Err = TryFromIntError;
 
+    #[inline]
     fn try_from(value: usize) -> Result<Self, Self::Err> {
         NonNegativeI32::try_from(value).map(Length::Value)
     }

@@ -21,7 +21,7 @@ fn escape_returns_to_display() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 0, String::from("1 a")),
+            mock::display_row_edit(0, String::from("1 a")),
         ]
     );
 }

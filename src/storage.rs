@@ -5,12 +5,12 @@ use jsonrpc_core;
 use lsp_types::notification::Notification;
 use lsp_types::request::Request;
 use lsp_types::{lsp_notification, lsp_request};
-use serde;
-use serde_json;
+use serde::{Deserialize, Serialize};
+use serde_json::{self, Value};
 use std::cell::RefCell;
 use std::error;
 use std::fs;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::Rc;
@@ -26,6 +26,21 @@ pub trait Explorer: Debug {
     fn read(&mut self, path: &Path) -> Output<String>;
     /// Writes data to a file at the given path.
     fn write(&self, path: &Path, data: &str) -> Output<()>;
+    /// Returns the oldest notification from `Explorer`.
+    fn receive_notification(&mut self) -> Option<ProgressParams>;
+}
+
+#[derive(Deserialize, Debug)]
+/// `ProgressParams` defined by `VSCode`.
+pub struct ProgressParams {
+    /// The id of the notification.
+    id: String,
+    /// The title of the notification.
+    title: String,
+    /// The message of the notification.
+    pub message: Option<String>,
+    /// Indicates if no more notifications will be sent.
+    done: Option<bool>,
 }
 
 /// The interface with the language server.
@@ -45,24 +60,38 @@ struct LanguageClient {
     registrations: lsp_types::RegistrationParams,
     /// Handle of the receiver thread.
     receiver_handle: Option<JoinHandle<()>>,
+    /// Receives notifications.
+    notification_rx: Receiver<ProgressParams>,
 }
 
 /// Returns the length of the content that is next to be read.
-fn get_content_length(reader: &mut std::io::BufReader<ChildStdout>) -> Option<usize> {
+fn get_content_length(reader: &mut BufReader<ChildStdout>) -> Result<usize, LspError> {
     let mut line = String::new();
     let mut blank_line = String::new();
 
-    if reader.read_line(&mut line).is_ok() {
-        let mut split = line.trim().split(": ");
+    let mut _bytes_read = reader.read_line(&mut line)?;
+    let mut split = line.trim().split(": ");
 
-        if split.next() == Some("Content-Length") && reader.read_line(&mut blank_line).is_ok() {
-            return split
-                .next()
-                .and_then(|value_string| value_string.parse().ok());
-        }
+    if split.next() == Some("Content-Length") {
+        _bytes_read = reader.read_line(&mut blank_line)?;
+        Ok(split
+            .next()
+            .ok_or(LspError::Protocol)
+            .and_then(|value_string| value_string.parse().map_err(|_| LspError::Parse))?)
+    } else {
+        Err(LspError::Protocol)
     }
+}
 
-    None
+/// Returns the message from the language server.
+fn read_message(reader: &mut BufReader<ChildStdout>) -> Result<Value, LspError> {
+    let content_length = get_content_length(reader)?;
+    let mut content = vec![0; content_length];
+
+    reader.read_exact(&mut content)?;
+    let json_string = String::from_utf8(content).map_err(|_| LspError::Parse)?;
+    let message = serde_json::from_str(&json_string)?;
+    Ok(message)
 }
 
 impl LanguageClient {
@@ -81,9 +110,11 @@ impl LanguageClient {
                 .expect("Accessing stdout of language server process"),
         );
         let (result_tx, result_rx) = channel::<lsp_types::InitializeResult>();
+        let (notification_tx, notification_rx) = channel::<ProgressParams>();
         let new_client = Arc::new(Mutex::new(Self {
             server,
             result_rx,
+            notification_rx,
             request_id: 0,
             text_document_sync: lsp_types::TextDocumentSyncKind::None,
             is_document_symbol_provider: false,
@@ -95,57 +126,58 @@ impl LanguageClient {
         let client = Arc::clone(&new_client);
 
         let receiver_handle = thread::spawn(move || loop {
-            if let Some(content_length) = get_content_length(&mut reader) {
-                let mut content = vec![0; content_length];
-
-                if reader.read_exact(&mut content).is_ok() {
-                    if let Ok(json_string) = String::from_utf8(content) {
-                        let message_result: Result<serde_json::Value, _> =
-                            serde_json::from_str(&json_string);
-
-                        if let Ok(message) = message_result {
-                            if let Some(id) = message.get("id") {
-                                if let Ok(id) = serde_json::from_value::<u64>(id.to_owned()) {
-                                    if let Some(_method) = message.get("method") {
-                                        if let Ok(params) =
-                                            serde_json::from_value::<lsp_types::RegistrationParams>(
-                                                message.get("params").unwrap().to_owned(),
-                                            )
-                                        {
-                                            let mut client = client
-                                                .lock()
-                                                .expect("Accessing language client from receiver");
-                                            client.registrations = params;
-                                            client.send_response::<lsp_types::request::RegisterCapability>((), id).expect("Sending RegisterCapability to language server");
-                                        } else {
-                                            dbg!(message);
-                                        }
-                                    } else if let Some(result) = message.get("result") {
-                                        if let Ok(initialize_result) =
-                                            serde_json::from_value::<lsp_types::InitializeResult>(
-                                                result.to_owned(),
-                                            )
-                                        {
-                                            result_tx.send(initialize_result).expect(
-                                                "Transferring InitializeResult to be processed",
-                                            );
-                                        } else {
-                                            dbg!(result);
-                                        }
-                                    } else {
-                                        dbg!(message);
-                                    }
-                                } else {
-                                    dbg!(message);
-                                }
+            if let Ok(message) = read_message(&mut reader) {
+                if let Some(id) = message.get("id") {
+                    if let Ok(id) = serde_json::from_value::<u64>(id.to_owned()) {
+                        if let Some(_method) = message.get("method") {
+                            if let Ok(params) =
+                                serde_json::from_value::<lsp_types::RegistrationParams>(
+                                    message.get("params").unwrap().to_owned(),
+                                )
+                            {
+                                let mut client = client
+                                    .lock()
+                                    .expect("Accessing language client from receiver");
+                                client.registrations = params;
+                                client
+                                    .send_response::<lsp_types::request::RegisterCapability>((), id)
+                                    .expect("Sending RegisterCapability to language server");
                             } else {
                                 dbg!(message);
                             }
+                        } else if let Some(result) = message.get("result") {
+                            if let Ok(initialize_result) =
+                                serde_json::from_value::<lsp_types::InitializeResult>(
+                                    result.to_owned(),
+                                )
+                            {
+                                result_tx
+                                    .send(initialize_result)
+                                    .expect("Transferring InitializeResult to be processed");
+                            } else {
+                                dbg!(result);
+                            }
                         } else {
-                            dbg!(json_string);
+                            dbg!(message);
                         }
+                    } else {
+                        dbg!(message);
                     }
+                } else if let Some(_method) = message.get("method") {
+                    if let Ok(params) = serde_json::from_value::<ProgressParams>(
+                        message.get("params").unwrap().to_owned(),
+                    ) {
+                        notification_tx
+                            .send(params)
+                            .expect("Transferring notification")
+                    } else {
+                        dbg!(message);
+                    }
+                } else {
+                    dbg!(message);
                 }
+            } else {
+                dbg!("Unable to read message");
             }
         });
 
@@ -198,7 +230,7 @@ impl LanguageClient {
     /// Sends a request to the language server.
     fn send_request<T: Request>(&mut self, params: T::Params) -> Result<(), LspError>
     where
-        T::Params: serde::Serialize,
+        T::Params: Serialize,
     {
         if let serde_json::value::Value::Object(params) = serde_json::to_value(params)? {
             let request = jsonrpc_core::Call::MethodCall(jsonrpc_core::MethodCall {
@@ -217,7 +249,7 @@ impl LanguageClient {
     /// Sends a response to the language server.
     fn send_response<T: Request>(&mut self, result: T::Result, id: u64) -> Result<(), LspError>
     where
-        T::Result: serde::Serialize,
+        T::Result: Serialize,
     {
         let response = jsonrpc_core::Output::Success(jsonrpc_core::Success {
             jsonrpc: Some(jsonrpc_core::Version::V2),
@@ -230,7 +262,7 @@ impl LanguageClient {
     /// Sends a notification to the language server.
     fn send_notification<T: Notification>(&mut self, params: T::Params) -> Result<(), LspError>
     where
-        T::Params: serde::Serialize,
+        T::Params: Serialize,
     {
         if let serde_json::value::Value::Object(params) = serde_json::to_value(params)? {
             let notification = jsonrpc_core::Call::Notification(jsonrpc_core::Notification {
@@ -245,7 +277,7 @@ impl LanguageClient {
     }
 
     /// Sends a message to the language server.
-    fn send_message<T: serde::Serialize>(&mut self, message: &T) -> Result<(), LspError> {
+    fn send_message<T: Serialize>(&mut self, message: &T) -> Result<(), LspError> {
         let json_string = serde_json::to_string(message)?;
         write!(
             self.stdin_mut(),
@@ -254,6 +286,11 @@ impl LanguageClient {
             json_string
         )?;
         Ok(())
+    }
+
+    /// Return the notification from the `Explorer`.
+    fn receive_notification(&self) -> Option<ProgressParams> {
+        self.notification_rx.try_recv().ok()
     }
 }
 
@@ -269,11 +306,16 @@ pub enum LspError {
     },
     /// An error in IO.
     Io,
+    /// An error in parsing LSP data.
+    Parse,
+    /// An error in the LSP protocol.
+    Protocol,
     /// An error caused while managing threads.
     Thread(RecvError),
 }
 
 impl From<serde_json::Error> for LspError {
+    #[inline]
     fn from(error: serde_json::Error) -> Self {
         LspError::SerdeJson {
             line: error.line(),
@@ -283,18 +325,21 @@ impl From<serde_json::Error> for LspError {
 }
 
 impl From<io::Error> for LspError {
+    #[inline]
     fn from(_error: io::Error) -> Self {
         LspError::Io
     }
 }
 
 impl From<RecvError> for LspError {
+    #[inline]
     fn from(_error: RecvError) -> Self {
         LspError::Thread(RecvError)
     }
 }
 
 impl Display for LspError {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             LspError::SerdeJson { line, column } => {
@@ -302,29 +347,13 @@ impl Display for LspError {
             }
             LspError::Io => write!(f, "IO Error"),
             LspError::Thread(error) => write!(f, "Thread Error {}", error),
+            LspError::Parse => write!(f, "Parse Error"),
+            LspError::Protocol => write!(f, "Protocol Error"),
         }
     }
 }
 
 impl error::Error for LspError {}
-
-/// A null instance of [`Explorer`].
-#[derive(Debug, Default)]
-struct NullExplorer;
-
-impl Explorer for NullExplorer {
-    fn start(&mut self) -> Output<()> {
-        Err(Flag::Quit)
-    }
-
-    fn read(&mut self, _path: &Path) -> Output<String> {
-        Err(Flag::Quit)
-    }
-
-    fn write(&self, _path: &Path, _data: &str) -> Output<()> {
-        Err(Flag::Quit)
-    }
-}
 
 /// Signifies an [`Explorer`] of the local storage.
 #[derive(Debug)]
@@ -335,6 +364,7 @@ pub struct Local {
 
 impl Local {
     /// Creates a new Local.
+    #[inline]
     pub fn new() -> Rc<RefCell<Self>> {
         Rc::new(RefCell::new(Self {
             language_client: LanguageClient::new("rls"),
@@ -350,11 +380,13 @@ impl Local {
 }
 
 impl Explorer for Local {
+    #[inline]
     fn start(&mut self) -> Output<()> {
         self.language_client_mut().initialize()?;
         Ok(())
     }
 
+    #[inline]
     fn read(&mut self, path: &Path) -> Output<String> {
         let content = fs::read_to_string(path).map(|data| data.replace('\r', ""))?;
         self.language_client_mut()
@@ -371,9 +403,15 @@ impl Explorer for Local {
         Ok(content)
     }
 
+    #[inline]
     fn write(&self, path: &Path, data: &str) -> Output<()> {
         fs::write(path, data)?;
         Ok(())
+    }
+
+    #[inline]
+    fn receive_notification(&mut self) -> Option<ProgressParams> {
+        self.language_client_mut().receive_notification()
     }
 }
 
@@ -388,12 +426,14 @@ pub struct Error {
 impl error::Error for Error {}
 
 impl Display for Error {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "IO Error")
     }
 }
 
 impl From<io::Error> for Error {
+    #[inline]
     fn from(value: io::Error) -> Self {
         Self { kind: value.kind() }
     }

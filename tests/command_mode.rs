@@ -12,6 +12,9 @@ use paper::ui::{Index, BACKSPACE, ESC};
 #[test]
 fn characters_are_displayed_as_sketch() {
     let controller = Controller::new();
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create(
         &controller,
         vec![
@@ -28,7 +31,7 @@ fn characters_are_displayed_as_sketch() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_sketch_edit(String::from("abc"))]
+        &vec![mock::display_row_edit(7, String::from("abc"))]
     );
 }
 
@@ -40,6 +43,9 @@ fn characters_are_displayed_as_sketch() {
 #[test]
 fn backspace_removes_character_from_sketch() {
     let controller = Controller::new();
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create(
         &controller,
         vec![
@@ -57,7 +63,7 @@ fn backspace_removes_character_from_sketch() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_sketch_edit(String::from("ab"))]
+        &vec![mock::display_row_edit(7, String::from("ab"))]
     );
 }
 
@@ -83,7 +89,7 @@ fn escape_returns_to_display_mode() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 0, String::from("1 a")),
+            mock::display_row_edit(0, String::from("1 a")),
         ]
     );
 }

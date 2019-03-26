@@ -2,8 +2,9 @@
 
 pub(crate) use crate::num::{Length, NonNegativeI32};
 
-use crate::{fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
+use crate::{fmt, Debug, Display, Formatter, Mrc, TryFrom, TryFromIntError};
 use pancurses::Input;
+use std::cell::RefCell;
 use std::error;
 use std::rc::Rc;
 
@@ -61,6 +62,8 @@ pub enum Error {
     Winsch,
     /// Describes a possible error during call to `wmove()`.
     Wmove,
+    /// Describes a possible error during call to `nodelay()`.
+    Nodelay,
 }
 
 impl Error {
@@ -81,12 +84,14 @@ impl Error {
             Error::Wdelch => "wdelch",
             Error::Winsch => "winsch",
             Error::Wmove => "wmove",
+            Error::Nodelay => "nodelay",
             Error::NoUi => "",
         }
     }
 }
 
 impl Display for Error {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Error::NoUi => write!(f, "No UserInterface was created."),
@@ -108,6 +113,7 @@ pub struct Address {
 
 impl Address {
     /// Creates a new `Address` with a given row and column.
+    #[inline]
     pub fn new(row: Index, column: Index) -> Self {
         Self { row, column }
     }
@@ -132,6 +138,7 @@ impl Address {
 }
 
 impl Display for Address {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "({}, {})", self.row, self.column)
     }
@@ -157,12 +164,14 @@ pub enum Change {
 }
 
 impl Default for Change {
+    #[inline]
     fn default() -> Self {
         Change::Nothing
     }
 }
 
 impl Display for Change {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Change::Backspace => write!(f, "Backspace"),
@@ -200,6 +209,7 @@ impl Color {
 }
 
 impl Display for Color {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Color::Default => write!(f, "Default"),
@@ -225,6 +235,7 @@ pub struct Edit {
 
 impl Edit {
     /// Creates a new `Edit`.
+    #[inline]
     pub fn new(address: Option<Address>, change: Change) -> Self {
         Self { address, change }
     }
@@ -245,11 +256,9 @@ pub trait UserInterface: Debug {
     fn apply(&self, edit: Edit) -> Outcome;
     /// Flashes the output.
     fn flash(&self) -> Outcome;
-    /// Gets input from the user.
+    /// Returns the input from the user.
     ///
     /// Returns [`None`] if no character input is provided.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     fn receive_input(&self) -> Option<Input>;
 }
 
@@ -262,11 +271,12 @@ pub struct Terminal {
 
 impl Terminal {
     /// Creates a new `Terminal`.
-    pub fn new() -> Rc<Self> {
-        Rc::new(Self {
+    #[inline]
+    pub fn new() -> Mrc<Self> {
+        Rc::new(RefCell::new(Self {
             // Must call initscr() first.
             window: pancurses::initscr(),
-        })
+        }))
     }
 
     /// Converts given result of ui function to a [`Outcome`].
@@ -318,6 +328,11 @@ impl Terminal {
         Self::process(pancurses::noecho(), Error::Noecho)
     }
 
+    /// Sets user interface to not wait for an input.
+    fn enable_nodelay(&self) -> Outcome {
+        Self::process(self.window.nodelay(true), Error::Nodelay)
+    }
+
     /// Sets the color of the next specified number of blocks from the cursor.
     fn format(&self, length: Length, color: Color) -> Outcome {
         Self::process(
@@ -351,24 +366,29 @@ impl Terminal {
 }
 
 impl UserInterface for Terminal {
+    #[inline]
     fn init(&self) -> Outcome {
         self.start_color()?;
         self.use_default_colors()?;
         self.disable_echo()?;
+        self.enable_nodelay()?;
         self.define_color(Color::Red, pancurses::COLOR_RED)?;
         self.define_color(Color::Blue, pancurses::COLOR_BLUE)?;
 
         Ok(())
     }
 
+    #[inline]
     fn close(&self) -> Outcome {
         Self::process(pancurses::endwin(), Error::Endwin)
     }
 
+    #[inline]
     fn flash(&self) -> Outcome {
         Self::process(pancurses::flash(), Error::Flash)
     }
 
+    #[inline]
     fn apply(&self, edit: Edit) -> Outcome {
         if let Some(address) = edit.address {
             self.move_to(address)?;
@@ -393,10 +413,12 @@ impl UserInterface for Terminal {
     }
 
     // TODO: Store this value and update when size is changed.
+    #[inline]
     fn grid_height(&self) -> Result<Index, TryFromIntError> {
         Index::try_from(self.window.get_max_y())
     }
 
+    #[inline]
     fn receive_input(&self) -> Option<Input> {
         self.window.getch()
     }

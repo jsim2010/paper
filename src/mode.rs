@@ -12,7 +12,7 @@ pub(crate) use edit::Processor as EditProcessor;
 pub(crate) use filter::Processor as FilterProcessor;
 
 use crate::num::Length;
-use crate::storage::{self, Explorer, LspError};
+use crate::storage::{self, Explorer, LspError, ProgressParams};
 use crate::ui::{self, Address, Change, Color, Edit, Index, IndexType, BACKSPACE, ENTER};
 use crate::Mrc;
 use lsp_types::{Position, Range};
@@ -22,6 +22,7 @@ use std::io;
 use std::iter;
 use std::ops::{Add, Deref, Sub};
 use std::path::PathBuf;
+use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 
 /// Defines a [`Result`] with [`Flag`] as its Error.
@@ -61,6 +62,7 @@ pub enum Name {
 }
 
 impl Display for Name {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Name::Display => write!(f, "Display"),
@@ -73,6 +75,7 @@ impl Display for Name {
 }
 
 impl Default for Name {
+    #[inline]
     fn default() -> Self {
         Name::Display
     }
@@ -109,13 +112,23 @@ pub enum Initiation {
 struct ControlPanel {
     /// The [`String`] to be edited.
     string: String,
+    /// The height of the `Pane`.
+    height: Rc<Index>,
 }
 
 impl ControlPanel {
+    /// Creates a new `ControlPanel`.
+    fn new(height: &Rc<Index>) -> Self {
+        Self {
+            height: Rc::clone(height),
+            string: String::default(),
+        }
+    }
+
     /// Returns the edits needed to write the string.
     fn edits(&self) -> Vec<Edit> {
         vec![Edit::new(
-            Some(Address::new(Index::from(0_u8), Index::from(0_u8))),
+            Some(Address::new(self.height.sub_one(), Index::from(0_u8))),
             Change::Row(self.string.clone()),
         )]
     }
@@ -184,6 +197,7 @@ pub enum Flag {
 }
 
 impl Display for Flag {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Flag::Ui(error) => write!(f, "{}", error),
@@ -196,24 +210,28 @@ impl Display for Flag {
 }
 
 impl From<TryFromIntError> for Flag {
+    #[inline]
     fn from(error: TryFromIntError) -> Self {
         Flag::Conversion(error)
     }
 }
 
 impl From<ui::Error> for Flag {
+    #[inline]
     fn from(error: ui::Error) -> Self {
         Flag::Ui(error)
     }
 }
 
 impl From<LspError> for Flag {
+    #[inline]
     fn from(error: LspError) -> Self {
         Flag::Lsp(error)
     }
 }
 
 impl From<io::Error> for Flag {
+    #[inline]
     fn from(error: io::Error) -> Self {
         Flag::File(storage::Error::from(error))
     }
@@ -231,7 +249,7 @@ pub(crate) struct Pane {
     /// The number of columns needed to display the margin.
     margin_width: u8,
     /// The number of rows visible in the pane.
-    height: Index,
+    height: Rc<Index>,
     /// The number of lines in the data.
     line_count: usize,
     /// The control panel of the `Pane`.
@@ -245,7 +263,10 @@ pub(crate) struct Pane {
 impl Pane {
     /// Creates a new Pane with a given height.
     pub(crate) fn new(height: Index) -> Self {
+        let height = Rc::new(height);
+
         Self {
+            control_panel: ControlPanel::new(&height),
             height,
             ..Self::default()
         }
@@ -299,6 +320,16 @@ impl Pane {
         self.will_wipe = true;
     }
 
+    /// Adds the edits to display a notification.
+    pub(crate) fn add_notification(&mut self, notification: ProgressParams) {
+        if let Some(message) = notification.message {
+            self.edits.push(Edit::new(
+                Some(Address::new(Index::from(0_u8), Index::from(0_u8))),
+                Change::Row(message),
+            ));
+        }
+    }
+
     /// Resets the [`ControlPanel`].
     fn reset_control_panel(&mut self, id: Option<char>) {
         self.control_panel.clear();
@@ -319,7 +350,7 @@ impl Pane {
 
     /// Returns an [`IndexIterator`] of the all visible rows.
     fn visible_rows(&self) -> IndexIterator {
-        IndexIterator::new(Index::from(0_u8), self.height)
+        IndexIterator::new(Index::from(0_u8), *self.height.deref())
     }
 
     /// Applies filter highlighting to the given [`Range`]s.
@@ -580,7 +611,7 @@ impl Operation {
     }
 
     /// Creates a new `Operation` to continue execution with no special action.
-    fn maintain() -> Self {
+    pub(crate) fn maintain() -> Self {
         Self {
             mode: None,
             initiation: None,
@@ -590,6 +621,7 @@ impl Operation {
     /// Creates a new `Operation` to display a new file.
     ///
     /// The application enters Display mode as a consequence of this `Operation`.
+    #[inline]
     pub fn display_file(path: &str) -> Self {
         Self {
             mode: Some(Name::Display),

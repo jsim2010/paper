@@ -1,6 +1,6 @@
 use pancurses::Input;
 use paper::mode::{Operation, Output};
-use paper::num::Length;
+use paper::storage::ProgressParams;
 use paper::ui::{Address, Change, Edit, Index, UserInterface};
 use paper::Explorer;
 use paper::{ui, Paper};
@@ -36,7 +36,7 @@ pub fn create_with_file(
     );
 
     // Sets the data in the view based on the file stored by controller.
-    paper.operate(&Operation::display_file("mock"));
+    paper.operate(&Operation::display_file("mock")).unwrap();
 
     for input in setup {
         controller.borrow_mut().set_input(Some(input));
@@ -54,10 +54,10 @@ pub struct MockUserInterface {
 
 impl MockUserInterface {
     /// Creates a new `MockUserInterface`.
-    pub fn new(controller: &Rc<RefCell<Controller>>) -> Rc<Self> {
-        Rc::new(Self {
+    pub fn new(controller: &Rc<RefCell<Controller>>) -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(Self {
             controller: Rc::clone(controller),
-        })
+        }))
     }
 }
 
@@ -172,15 +172,15 @@ impl Explorer for MockExplorer {
     fn write(&self, _path: &Path, _data: &str) -> Output<()> {
         Ok(())
     }
+
+    fn receive_notification(&mut self) -> Option<ProgressParams> {
+        None
+    }
 }
 
-pub fn display_sketch_edit(sketch: String) -> Edit {
-    display_row_edit(0, 0, sketch)
-}
-
-pub fn display_row_edit(row: u16, column: u16, line: String) -> Edit {
+pub fn display_row_edit(row: u16, line: String) -> Edit {
     Edit::new(
-        Some(Address::new(Index::from(row), Index::from(column))),
+        Some(Address::new(Index::from(row), Index::from(0_u8))),
         Change::Row(line),
     )
 }

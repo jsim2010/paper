@@ -12,6 +12,9 @@ use paper::ui::Index;
 #[test]
 fn period_enters_command_mode() {
     let controller = Controller::new();
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create(&controller, vec![]);
     controller
         .borrow_mut()
@@ -21,7 +24,7 @@ fn period_enters_command_mode() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_sketch_edit(String::from(""))]
+        &vec![mock::display_row_edit(7, String::from(""))]
     );
 }
 
@@ -33,6 +36,9 @@ fn period_enters_command_mode() {
 #[test]
 fn pound_sign_enters_filter_mode() {
     let controller = Controller::new();
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create(&controller, vec![]);
     controller
         .borrow_mut()
@@ -42,7 +48,7 @@ fn pound_sign_enters_filter_mode() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_sketch_edit(String::from("#"))]
+        &vec![mock::display_row_edit(7, String::from("#"))]
     );
 }
 
@@ -54,6 +60,9 @@ fn pound_sign_enters_filter_mode() {
 #[test]
 fn backslash_enters_filter_mode() {
     let controller = Controller::new();
+    controller
+        .borrow_mut()
+        .set_grid_height(Ok(Index::from(8_u8)));
     let mut paper = mock::create(&controller, vec![]);
     controller
         .borrow_mut()
@@ -63,7 +72,7 @@ fn backslash_enters_filter_mode() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_sketch_edit(String::from("/"))]
+        &vec![mock::display_row_edit(7, String::from("/"))]
     );
 }
 
@@ -89,7 +98,7 @@ fn j_scrolls_down() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 0, String::from("3 c")),
+            mock::display_row_edit(0, String::from("3 c")),
         ]
     );
 }
@@ -116,7 +125,7 @@ fn j_does_not_scroll_past_last_line() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 0, String::from("2 b")),
+            mock::display_row_edit(0, String::from("2 b")),
         ]
     );
 }
@@ -168,9 +177,9 @@ fn k_scrolls_up() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 0, String::from("3 c")),
-            mock::display_row_edit(1, 0, String::from("4 d")),
-            mock::display_row_edit(2, 0, String::from("5 e")),
+            mock::display_row_edit(0, String::from("3 c")),
+            mock::display_row_edit(1, String::from("4 d")),
+            mock::display_row_edit(2, String::from("5 e")),
         ]
     );
 }
@@ -198,8 +207,8 @@ fn k_does_not_scroll_past_first_line() {
         controller.borrow().apply_calls(),
         &vec![
             mock::display_clear_edit(),
-            mock::display_row_edit(0, 0, String::from("1 a")),
-            mock::display_row_edit(1, 0, String::from("2 b")),
+            mock::display_row_edit(0, String::from("1 a")),
+            mock::display_row_edit(1, String::from("2 b")),
         ]
     );
 }
