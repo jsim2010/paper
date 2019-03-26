@@ -143,7 +143,7 @@ struct GridHeight(Result<Index, TryFromIntError>);
 
 impl Default for GridHeight {
     fn default() -> Self {
-        Self(Ok(Index::from(0_u8)))
+        Self(Ok(Index::new_unchecked(0)))
     }
 }
 
@@ -178,9 +178,12 @@ impl Explorer for MockExplorer {
     }
 }
 
-pub fn display_row_edit(row: u16, line: String) -> Edit {
+pub fn display_row_edit(row: u32, line: String) -> Edit {
     Edit::new(
-        Some(Address::new(Index::from(row), Index::from(0_u8))),
+        Some(Address::new(
+            Index::new_unchecked(row),
+            Index::new_unchecked(0),
+        )),
         Change::Row(line),
     )
 }

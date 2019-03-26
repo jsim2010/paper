@@ -2,11 +2,13 @@
 
 pub(crate) use crate::num::{Length, NonNegativeI32};
 
-use crate::{fmt, Debug, Display, Formatter, Mrc, TryFrom, TryFromIntError};
+use crate::ptr::Mrc;
 use pancurses::Input;
 use std::cell::RefCell;
 use std::error;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::rc::Rc;
+use try_from::{TryFrom, TryFromIntError};
 
 /// The [`Result`] returned by functions of this module.
 pub type Outcome = Result<(), Error>;

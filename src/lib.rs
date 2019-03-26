@@ -75,31 +75,17 @@ pub mod mode;
 pub mod num;
 pub mod storage;
 pub mod ui;
+#[macro_use]
+mod ptr;
 
 pub use storage::Explorer;
 
 use mode::{Flag, Operation, Output, Pane, Processor};
 use pancurses::Input;
-use std::borrow::Borrow;
-use std::cell::RefCell;
-use std::cmp::Ordering;
+use ptr::Mrc;
 use std::collections::HashMap;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::ops::{Add, AddAssign};
-use std::rc::Rc;
-use try_from::{TryFrom, TryFromIntError};
 use ui::UserInterface;
-
-/// A Mutable Reference Counter.
-///
-/// This is just a ([`Rc`]) of a [`RefCell`].
-type Mrc<T> = Rc<RefCell<T>>;
-
-macro_rules! mrc {
-    ($item:expr) => {
-        Rc::new(RefCell::new($item))
-    };
-}
 
 /// The paper application.
 #[derive(Debug)]
