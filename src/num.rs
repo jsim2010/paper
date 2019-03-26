@@ -27,11 +27,16 @@ impl NonNegativeI32 {
     ///
     /// `value <= i32::max_value()`
     // Follows the precedent set by `NonZeroUsize`.
-    pub fn new_unchecked(value: u32) -> Self {
+    pub unsafe fn new_unchecked(value: u32) -> Self {
         Self(
             i32::try_from(value)
                 .unwrap_or_else(|_| panic!("Creating `NonNegativeI32 from {}.", value)),
         )
+    }
+
+    /// Creates a new `NonNegativeI32` with a value of zero.
+    pub fn zero() -> Self {
+        Self(0)
     }
 
     /// Computes `self / rhs`, returning `None` if `rhs == 0` or the division results in overflow.
@@ -76,20 +81,12 @@ impl TryFrom<i32> for NonNegativeI32 {
     }
 }
 
-impl TryFrom<usize> for NonNegativeI32 {
-    type Err = TryFromIntError;
-
-    #[inline]
-    fn try_from(value: usize) -> Result<Self, Self::Err> {
-        i32::try_from(value).map(Self)
-    }
-}
-
 impl TryFrom<u64> for NonNegativeI32 {
     type Err = TryFromIntError;
 
     #[inline]
     fn try_from(value: u64) -> Result<Self, Self::Err> {
+        // Converted value will be >= 0.
         i32::try_from(value).map(Self)
     }
 }
@@ -102,10 +99,9 @@ impl From<NonNegativeI32> for i32 {
 }
 
 impl From<NonNegativeI32> for u64 {
-    #[allow(clippy::result_unwrap_used)] // converting NonNegativeI32 to u64 will never fail
     #[inline]
     fn from(value: NonNegativeI32) -> Self {
-        Self::try_from(value.0).unwrap()
+        Self::try_from(value.0).expect("Converting `NonNegativeI32` to u64.")
     }
 }
 
@@ -118,12 +114,12 @@ impl TryFrom<NonNegativeI32> for usize {
     }
 }
 
-/// Signifies the number of elements in a list.
+/// Signifies a number of elements in a list.
 #[derive(Clone, Copy, Eq, Debug, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Length {
-    /// The value that covers all indexes.
+    /// The number of elements.
     Value(NonNegativeI32),
-    /// The value needed to cover all elements from the current one to the end.
+    /// Represents the value equal to all elements from the current one to the end.
     End,
 }
 
@@ -134,28 +130,6 @@ impl Length {
         match self {
             Length::Value(NonNegativeI32(0)) => true,
             _ => false,
-        }
-    }
-}
-
-impl TryFrom<Length> for u64 {
-    type Err = TryFromIntError;
-
-    #[inline]
-    fn try_from(value: Length) -> Result<Self, Self::Err> {
-        match value {
-            Length::Value(x) => Self::try_from(x.0),
-            Length::End => Err(TryFromIntError::Underflow),
-        }
-    }
-}
-
-impl From<Length> for i32 {
-    #[inline]
-    fn from(value: Length) -> Self {
-        match value {
-            Length::Value(x) => Self::from(x),
-            Length::End => END,
         }
     }
 }
@@ -187,11 +161,12 @@ impl From<u64> for Length {
     }
 }
 
-impl TryFrom<usize> for Length {
-    type Err = TryFromIntError;
-
+impl From<Length> for i32 {
     #[inline]
-    fn try_from(value: usize) -> Result<Self, Self::Err> {
-        NonNegativeI32::try_from(value).map(Length::Value)
+    fn from(value: Length) -> Self {
+        match value {
+            Length::Value(x) => Self::from(x),
+            Length::End => END,
+        }
     }
 }

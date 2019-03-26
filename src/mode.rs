@@ -128,7 +128,7 @@ impl ControlPanel {
     /// Returns the edits needed to write the string.
     fn edits(&self) -> Vec<Edit> {
         vec![Edit::new(
-            Some(Address::new(self.height.sub_one(), Index::new_unchecked(0))),
+            Some(Address::new(self.height.sub_one(), Index::zero())),
             Change::Row(self.string.clone()),
         )]
     }
@@ -287,7 +287,7 @@ impl Pane {
                         if let Some(line_data) = self.line_data(line_index) {
                             if let Ok(line_number) = LineNumber::try_from(line_index) {
                                 self.edits.push(Edit::new(
-                                    Some(Address::new(row, Index::new_unchecked(0))),
+                                    Some(Address::new(row, Index::zero())),
                                     Change::Row(format!(
                                         "{: >width$} {}",
                                         line_number,
@@ -324,10 +324,7 @@ impl Pane {
     pub(crate) fn add_notification(&mut self, notification: ProgressParams) {
         if let Some(message) = notification.message {
             self.edits.push(Edit::new(
-                Some(Address::new(
-                    Index::new_unchecked(0),
-                    Index::new_unchecked(0),
-                )),
+                Some(Address::new(Index::zero(), Index::zero())),
                 Change::Row(message),
             ));
         }
@@ -353,14 +350,14 @@ impl Pane {
 
     /// Returns an [`IndexIterator`] of the all visible rows.
     fn visible_rows(&self) -> IndexIterator {
-        IndexIterator::new(Index::new_unchecked(0), *self.height.deref())
+        IndexIterator::new(Index::zero(), *self.height.deref())
     }
 
     /// Applies filter highlighting to the given [`Range`]s.
     fn apply_filter(&mut self, noises: &[Range], signals: &[Range]) {
         for row in self.visible_rows() {
             self.edits.push(Edit::new(
-                Some(Address::new(row, Index::new_unchecked(0))),
+                Some(Address::new(row, Index::zero())),
                 Change::Format(Length::End, Color::Default),
             ));
         }
@@ -516,8 +513,8 @@ impl Pane {
     fn scroll_delta(&self) -> u64 {
         u64::from(
             self.height
-                .checked_div(Index::new_unchecked(4))
-                .unwrap_or_else(|| Index::new_unchecked(0)),
+                .checked_div(unsafe { Index::new_unchecked(4) })
+                .unwrap_or_else(Index::zero),
         )
     }
 

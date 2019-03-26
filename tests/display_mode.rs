@@ -12,9 +12,7 @@ use paper::ui::Index;
 #[test]
 fn period_enters_command_mode() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create(&controller, vec![]);
     controller
         .borrow_mut()
@@ -36,9 +34,7 @@ fn period_enters_command_mode() {
 #[test]
 fn pound_sign_enters_filter_mode() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create(&controller, vec![]);
     controller
         .borrow_mut()
@@ -60,9 +56,7 @@ fn pound_sign_enters_filter_mode() {
 #[test]
 fn backslash_enters_filter_mode() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create(&controller, vec![]);
     controller
         .borrow_mut()
@@ -84,9 +78,7 @@ fn backslash_enters_filter_mode() {
 #[test]
 fn j_scrolls_down() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create_with_file(&controller, vec![], "a\nb\nc");
     controller
         .borrow_mut()
@@ -111,9 +103,7 @@ fn j_scrolls_down() {
 #[test]
 fn j_does_not_scroll_past_last_line() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create_with_file(&controller, vec![], "a\nb");
     controller
         .borrow_mut()
@@ -138,9 +128,7 @@ fn j_does_not_scroll_past_last_line() {
 #[test]
 fn j_at_end_does_nothing() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create_with_file(&controller, vec![], "a");
     controller
         .borrow_mut()
@@ -159,9 +147,7 @@ fn j_at_end_does_nothing() {
 #[test]
 fn k_scrolls_up() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create_with_file(
         &controller,
         vec![Input::Character('j'), Input::Character('j')],
@@ -193,9 +179,7 @@ fn k_scrolls_up() {
 #[test]
 fn k_does_not_scroll_past_first_line() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create_with_file(&controller, vec![Input::Character('j')], "a\nb");
     controller
         .borrow_mut()
@@ -221,9 +205,7 @@ fn k_does_not_scroll_past_first_line() {
 #[test]
 fn k_at_first_line_does_nothing() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create_with_file(&controller, vec![], "a");
     controller
         .borrow_mut()

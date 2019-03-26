@@ -123,8 +123,6 @@ impl Address {
     /// Returns the column of `self`.
     ///
     /// Used with [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
     fn x(self) -> IndexType {
         IndexType::from(self.column)
     }
@@ -132,8 +130,6 @@ impl Address {
     /// Returns the row of `self`.
     ///
     /// Used with [`pancurses`].
-    ///
-    /// [`pancurses`]: ../../pancurses/index.html
     fn y(self) -> IndexType {
         IndexType::from(self.row)
     }

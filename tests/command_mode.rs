@@ -12,9 +12,7 @@ use paper::ui::{Index, BACKSPACE, ESC};
 #[test]
 fn characters_are_displayed_as_sketch() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create(
         &controller,
         vec![
@@ -43,9 +41,7 @@ fn characters_are_displayed_as_sketch() {
 #[test]
 fn backspace_removes_character_from_sketch() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create(
         &controller,
         vec![
@@ -75,9 +71,7 @@ fn backspace_removes_character_from_sketch() {
 #[test]
 fn escape_returns_to_display_mode() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(5)));
+    controller.borrow_mut().set_grid_height(Ok(5));
     let mut paper = mock::create_with_file(&controller, vec![Input::Character('.')], "a");
     controller
         .borrow_mut()

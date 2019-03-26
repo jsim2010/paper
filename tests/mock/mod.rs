@@ -129,8 +129,11 @@ impl Controller {
         &self.apply_calls
     }
 
-    pub fn set_grid_height(&mut self, grid_height: Result<Index, TryFromIntError>) {
-        self.grid_height.0 = grid_height;
+    pub fn set_grid_height(&mut self, grid_height: Result<u32, TryFromIntError>) {
+        self.grid_height.0 = match grid_height {
+            Ok(height) => Ok(unsafe { Index::new_unchecked(height) }),
+            Err(error) => Err(error),
+        };
     }
 
     pub fn grid_height(&self) -> &Result<Index, TryFromIntError> {
@@ -143,7 +146,7 @@ struct GridHeight(Result<Index, TryFromIntError>);
 
 impl Default for GridHeight {
     fn default() -> Self {
-        Self(Ok(Index::new_unchecked(0)))
+        Self(Ok(Index::zero()))
     }
 }
 
@@ -181,8 +184,8 @@ impl Explorer for MockExplorer {
 pub fn display_row_edit(row: u32, line: String) -> Edit {
     Edit::new(
         Some(Address::new(
-            Index::new_unchecked(row),
-            Index::new_unchecked(0),
+            unsafe { Index::new_unchecked(row) },
+            Index::zero(),
         )),
         Change::Row(line),
     )

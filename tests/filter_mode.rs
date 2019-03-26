@@ -7,9 +7,7 @@ use paper::ui::{Index, ESC};
 #[test]
 fn escape_returns_to_display() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::new_unchecked(5)));
+    controller.borrow_mut().set_grid_height(Ok(5));
     let mut paper = mock::create_with_file(&controller, vec![Input::Character('#')], "a");
     controller
         .borrow_mut()
