@@ -5,7 +5,7 @@ script = ["rustup component add clippy", "cargo install cargo-readme"]
 dependencies = ["check-format", "check-readme", "deny-clippy", "test-verbose"]
 
 [tasks.fix]
-dependencies = ["format", "fix-readme", "fix-cargo"]
+dependencies = ["format", "fix-readme"]
 
 [config]
 on_error_task = "delete-temp-readme"
@@ -25,6 +25,3 @@ script = ["cargo readme > r", "fc r README.md"]
 
 [tasks.delete-temp-readme]
 script = ["if exist r rm r"]
-
-[tasks.fix-cargo]
-script = ["cargo fix --allow-dirty"]

@@ -2,13 +2,11 @@
 
 pub(crate) use crate::num::{Length, NonNegativeI32};
 
-use crate::storage::ProgressParams;
 use crate::{fmt, Debug, Display, Formatter, Mrc, TryFrom, TryFromIntError};
 use pancurses::Input;
 use std::cell::RefCell;
 use std::error;
 use std::rc::Rc;
-use std::sync::mpsc::Receiver;
 
 /// The [`Result`] returned by functions of this module.
 pub type Outcome = Result<(), Error>;
@@ -93,6 +91,7 @@ impl Error {
 }
 
 impl Display for Error {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Error::NoUi => write!(f, "No UserInterface was created."),
@@ -114,6 +113,7 @@ pub struct Address {
 
 impl Address {
     /// Creates a new `Address` with a given row and column.
+    #[inline]
     pub fn new(row: Index, column: Index) -> Self {
         Self { row, column }
     }
@@ -138,6 +138,7 @@ impl Address {
 }
 
 impl Display for Address {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "({}, {})", self.row, self.column)
     }
@@ -163,12 +164,14 @@ pub enum Change {
 }
 
 impl Default for Change {
+    #[inline]
     fn default() -> Self {
         Change::Nothing
     }
 }
 
 impl Display for Change {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Change::Backspace => write!(f, "Backspace"),
@@ -206,6 +209,7 @@ impl Color {
 }
 
 impl Display for Color {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Color::Default => write!(f, "Default"),
@@ -231,6 +235,7 @@ pub struct Edit {
 
 impl Edit {
     /// Creates a new `Edit`.
+    #[inline]
     pub fn new(address: Option<Address>, change: Change) -> Self {
         Self { address, change }
     }
@@ -266,6 +271,7 @@ pub struct Terminal {
 
 impl Terminal {
     /// Creates a new `Terminal`.
+    #[inline]
     pub fn new() -> Mrc<Self> {
         Rc::new(RefCell::new(Self {
             // Must call initscr() first.
@@ -322,6 +328,7 @@ impl Terminal {
         Self::process(pancurses::noecho(), Error::Noecho)
     }
 
+    /// Sets user interface to not wait for an input.
     fn enable_nodelay(&self) -> Outcome {
         Self::process(self.window.nodelay(true), Error::Nodelay)
     }
@@ -359,6 +366,7 @@ impl Terminal {
 }
 
 impl UserInterface for Terminal {
+    #[inline]
     fn init(&self) -> Outcome {
         self.start_color()?;
         self.use_default_colors()?;
@@ -370,14 +378,17 @@ impl UserInterface for Terminal {
         Ok(())
     }
 
+    #[inline]
     fn close(&self) -> Outcome {
         Self::process(pancurses::endwin(), Error::Endwin)
     }
 
+    #[inline]
     fn flash(&self) -> Outcome {
         Self::process(pancurses::flash(), Error::Flash)
     }
 
+    #[inline]
     fn apply(&self, edit: Edit) -> Outcome {
         if let Some(address) = edit.address {
             self.move_to(address)?;
@@ -402,10 +413,12 @@ impl UserInterface for Terminal {
     }
 
     // TODO: Store this value and update when size is changed.
+    #[inline]
     fn grid_height(&self) -> Result<Index, TryFromIntError> {
         Index::try_from(self.window.get_max_y())
     }
 
+    #[inline]
     fn receive_input(&self) -> Option<Input> {
         self.window.getch()
     }

@@ -67,8 +67,9 @@
 )] // These lints are not always correct; issues should be detected by tests or other lints.
 #![allow(clippy::implicit_return)]
 // This goes against rust convention and would require return calls in places it is not helpful (i.e. closures).
-// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
-// single_use_lifetimes: issue rust-lang/rust#55057
+#![allow(clippy::missing_inline_in_public_items)] // Mistakenly marks derived traits.
+
+// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences, single_use_lifetimes: issue rust-lang/rust#55057
 
 pub mod mode;
 pub mod num;
@@ -165,11 +166,13 @@ impl Paper {
         Ok(())
     }
 
+    /// Returns the input from the `UserInterface`.
     fn get_input(&mut self) -> Option<Input> {
         self.ui.borrow_mut().receive_input()
     }
 
     /// Processes 1 input from the user.
+    #[inline]
     pub fn step(&mut self) -> Output<()> {
         let operation = if let Some(Input::Character(input)) = self.get_input() {
             self.current_processor_mut().borrow_mut().decode(input)?
@@ -185,6 +188,7 @@ impl Paper {
     }
 
     /// Executes an [`Operation`].
+    #[inline]
     pub fn operate(&mut self, operation: &Operation) -> Output<()> {
         if let Some(new_mode) = operation.mode() {
             self.mode = *new_mode;

@@ -62,6 +62,7 @@ pub enum Name {
 }
 
 impl Display for Name {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Name::Display => write!(f, "Display"),
@@ -74,6 +75,7 @@ impl Display for Name {
 }
 
 impl Default for Name {
+    #[inline]
     fn default() -> Self {
         Name::Display
     }
@@ -110,10 +112,12 @@ pub enum Initiation {
 struct ControlPanel {
     /// The [`String`] to be edited.
     string: String,
+    /// The height of the `Pane`.
     height: Rc<Index>,
 }
 
 impl ControlPanel {
+    /// Creates a new `ControlPanel`.
     fn new(height: &Rc<Index>) -> Self {
         Self {
             height: Rc::clone(height),
@@ -193,6 +197,7 @@ pub enum Flag {
 }
 
 impl Display for Flag {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Flag::Ui(error) => write!(f, "{}", error),
@@ -205,32 +210,31 @@ impl Display for Flag {
 }
 
 impl From<TryFromIntError> for Flag {
+    #[inline]
     fn from(error: TryFromIntError) -> Self {
         Flag::Conversion(error)
     }
 }
 
 impl From<ui::Error> for Flag {
+    #[inline]
     fn from(error: ui::Error) -> Self {
         Flag::Ui(error)
     }
 }
 
 impl From<LspError> for Flag {
+    #[inline]
     fn from(error: LspError) -> Self {
         Flag::Lsp(error)
     }
 }
 
 impl From<io::Error> for Flag {
+    #[inline]
     fn from(error: io::Error) -> Self {
         Flag::File(storage::Error::from(error))
     }
-}
-
-#[derive(Clone, Debug, Default, Hash)]
-struct NotificationManager {
-    notification: String,
 }
 
 /// Signfifies the pane of the current file.
@@ -254,7 +258,6 @@ pub(crate) struct Pane {
     edits: Vec<Edit>,
     /// If `Pane` will clear and redraw on next update.
     will_wipe: bool,
-    notifications: NotificationManager,
 }
 
 impl Pane {
@@ -317,6 +320,7 @@ impl Pane {
         self.will_wipe = true;
     }
 
+    /// Adds the edits to display a notification.
     pub(crate) fn add_notification(&mut self, notification: ProgressParams) {
         if let Some(message) = notification.message {
             self.edits.push(Edit::new(
@@ -617,6 +621,7 @@ impl Operation {
     /// Creates a new `Operation` to display a new file.
     ///
     /// The application enters Display mode as a consequence of this `Operation`.
+    #[inline]
     pub fn display_file(path: &str) -> Self {
         Self {
             mode: Some(Name::Display),
