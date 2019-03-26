@@ -69,7 +69,10 @@ fn get_content_length(reader: &mut BufReader<ChildStdout>) -> Result<usize, LspE
 
     if split.next() == Some("Content-Length") {
         let _bytes_read = reader.read_line(&mut blank_line)?;
-        Ok(split.next().ok_or(LspError::Protocol).and_then(|value_string| value_string.parse().map_err(|_| LspError::Parse))?)
+        Ok(split
+            .next()
+            .ok_or(LspError::Protocol)
+            .and_then(|value_string| value_string.parse().map_err(|_| LspError::Parse))?)
     } else {
         Err(LspError::Protocol)
     }
@@ -122,28 +125,26 @@ impl LanguageClient {
             if let Some(id) = message.get("id") {
                 if let Ok(id) = serde_json::from_value::<u64>(id.to_owned()) {
                     if let Some(_method) = message.get("method") {
-                        if let Ok(params) =
-                            serde_json::from_value::<lsp_types::RegistrationParams>(
-                                message.get("params").unwrap().to_owned(),
-                            )
-                        {
+                        if let Ok(params) = serde_json::from_value::<lsp_types::RegistrationParams>(
+                            message.get("params").unwrap().to_owned(),
+                        ) {
                             let mut client = client
                                 .lock()
                                 .expect("Accessing language client from receiver");
                             client.registrations = params;
-                            client.send_response::<lsp_types::request::RegisterCapability>((), id).expect("Sending RegisterCapability to language server");
+                            client
+                                .send_response::<lsp_types::request::RegisterCapability>((), id)
+                                .expect("Sending RegisterCapability to language server");
                         } else {
                             dbg!(message);
                         }
                     } else if let Some(result) = message.get("result") {
                         if let Ok(initialize_result) =
-                            serde_json::from_value::<lsp_types::InitializeResult>(
-                                result.to_owned(),
-                            )
+                            serde_json::from_value::<lsp_types::InitializeResult>(result.to_owned())
                         {
-                            result_tx.send(initialize_result).expect(
-                                "Transferring InitializeResult to be processed",
-                            );
+                            result_tx
+                                .send(initialize_result)
+                                .expect("Transferring InitializeResult to be processed");
                         } else {
                             dbg!(result);
                         }
@@ -154,9 +155,12 @@ impl LanguageClient {
                     dbg!(message);
                 }
             } else if let Some(_method) = message.get("method") {
-                if let Ok(params) = serde_json::from_value::<ProgressParams>(message.get("params").unwrap().to_owned()) {
-                    notification_tx.send(params).expect("Transferring notification")
-
+                if let Ok(params) = serde_json::from_value::<ProgressParams>(
+                    message.get("params").unwrap().to_owned(),
+                ) {
+                    notification_tx
+                        .send(params)
+                        .expect("Transferring notification")
                 } else {
                     dbg!(message);
                 }

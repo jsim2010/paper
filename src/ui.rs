@@ -2,13 +2,13 @@
 
 pub(crate) use crate::num::{Length, NonNegativeI32};
 
-use crate::{Mrc, fmt, Debug, Display, Formatter, TryFrom, TryFromIntError};
 use crate::storage::ProgressParams;
+use crate::{fmt, Debug, Display, Formatter, Mrc, TryFrom, TryFromIntError};
 use pancurses::Input;
+use std::cell::RefCell;
 use std::error;
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
-use std::cell::RefCell;
 
 /// The [`Result`] returned by functions of this module.
 pub type Outcome = Result<(), Error>;
@@ -255,8 +255,6 @@ pub trait UserInterface: Debug {
     ///
     /// Returns [`None`] if no character input is provided.
     fn receive_input(&self) -> Option<Input>;
-    /// Sets the [`Receiver`] that provides notifications.
-    fn set_notification_provider(&mut self, provider: Option<Receiver<ProgressParams>>);
 }
 
 /// The user interface provided by a terminal.
@@ -264,7 +262,6 @@ pub trait UserInterface: Debug {
 pub struct Terminal {
     /// The window that interfaces with the application.
     window: pancurses::Window,
-    notification_provider: Option<Receiver<ProgressParams>>,
 }
 
 impl Terminal {
@@ -273,7 +270,6 @@ impl Terminal {
         Rc::new(RefCell::new(Self {
             // Must call initscr() first.
             window: pancurses::initscr(),
-            notification_provider: None,
         }))
     }
 
@@ -412,9 +408,5 @@ impl UserInterface for Terminal {
 
     fn receive_input(&self) -> Option<Input> {
         self.window.getch()
-    }
-
-    fn set_notification_provider(&mut self, provider: Option<Receiver<ProgressParams>>) {
-        self.notification_provider = provider;
     }
 }

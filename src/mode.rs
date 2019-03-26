@@ -319,7 +319,10 @@ impl Pane {
 
     pub(crate) fn add_notification(&mut self, notification: ProgressParams) {
         if let Some(message) = notification.message {
-            self.edits.push(Edit::new(Some(Address::new(Index::from(0_u8), Index::from(0_u8))), Change::Row(message)));
+            self.edits.push(Edit::new(
+                Some(Address::new(Index::from(0_u8), Index::from(0_u8))),
+                Change::Row(message),
+            ));
         }
     }
 

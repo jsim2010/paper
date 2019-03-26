@@ -67,7 +67,6 @@
 )] // These lints are not always correct; issues should be detected by tests or other lints.
 #![allow(clippy::implicit_return)]
 // This goes against rust convention and would require return calls in places it is not helpful (i.e. closures).
-#![allow(clippy::missing_inline_in_public_items)]
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences
 // single_use_lifetimes: issue rust-lang/rust#55057
 
@@ -122,7 +121,8 @@ impl Paper {
     pub fn new(ui: Mrc<dyn UserInterface>, explorer: Mrc<dyn Explorer>) -> Self {
         explorer.borrow_mut().start().expect("Starting explorer");
         let pane = mrc!(Pane::new(
-            ui.borrow_mut().grid_height()
+            ui.borrow_mut()
+                .grid_height()
                 .expect("Accessing height of user interface")
         ));
         let display_mode_handler: Mrc<dyn Processor> =
