@@ -1,10 +1,11 @@
 //! Implements `Explorer` for local storage.
 use super::ProgressParams;
 use crate::ptr::Mrc;
-use crate::storage::LanguageClient;
+use crate::lsp::LanguageClient;
 use crate::Output;
 use lsp_types::{lsp_notification, DidOpenTextDocumentParams, TextDocumentItem, Url};
 use std::fs;
+use std::io::{Error, ErrorKind};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -46,10 +47,7 @@ impl super::Explorer for Explorer {
                 DidOpenTextDocumentParams {
                     text_document: TextDocumentItem::new(
                         Url::from_file_path(path).map_err(|_| {
-                            std::io::Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                "Not absolute or invalid prefix",
-                            )
+                            Error::new(ErrorKind::InvalidInput, "Not absolute or invalid prefix")
                         })?,
                         "rust".into(),
                         0,

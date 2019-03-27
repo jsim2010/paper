@@ -88,6 +88,8 @@ pub mod num;
 pub mod storage;
 pub mod ui;
 
+mod lsp;
+
 pub use file::local::Explorer as LocalExplorer;
 pub use file::Explorer;
 
