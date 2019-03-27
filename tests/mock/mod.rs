@@ -1,7 +1,7 @@
 use pancurses::Input;
 use paper::mode::{Operation, Output};
 use paper::storage::ProgressParams;
-use paper::ui::{Address, Change, Edit, Index, UserInterface};
+use paper::ui::{Address, Change, Edit, Index, PossibleError, UserInterface};
 use paper::Explorer;
 use paper::{ui, Paper};
 use std::cell::RefCell;
@@ -62,20 +62,20 @@ impl MockUserInterface {
 }
 
 impl UserInterface for MockUserInterface {
-    fn init(&self) -> ui::Outcome {
+    fn init(&self) -> PossibleError {
         Ok(())
     }
 
-    fn close(&self) -> ui::Outcome {
+    fn close(&self) -> PossibleError {
         Ok(())
     }
 
-    fn apply(&self, edit: Edit) -> ui::Outcome {
+    fn apply(&self, edit: Edit) -> PossibleError {
         self.controller.borrow_mut().add_apply_call(edit);
         Ok(())
     }
 
-    fn flash(&self) -> ui::Outcome {
+    fn flash(&self) -> PossibleError {
         Ok(())
     }
 

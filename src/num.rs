@@ -1,6 +1,6 @@
 //! Defines helpful numerical functionality.
 use std::fmt::{self, Display, Formatter};
-use std::ops::Add;
+use std::ops::{Add, Sub};
 use try_from::{TryFrom, TryFromIntError};
 
 /// The internal value that represents a `Length::End`.
@@ -57,7 +57,7 @@ impl NonNegativeI32 {
     #[inline]
     // Follows the nightly `Step` trait.
     pub fn sub_one(self) -> Self {
-        Self(self.0.wrapping_sub(1))
+        Self(self.0.sub(1))
     }
 }
 
@@ -86,6 +86,16 @@ impl TryFrom<u64> for NonNegativeI32 {
 
     #[inline]
     fn try_from(value: u64) -> Result<Self, Self::Err> {
+        // Converted value will be >= 0.
+        i32::try_from(value).map(Self)
+    }
+}
+
+impl TryFrom<usize> for NonNegativeI32 {
+    type Err = TryFromIntError;
+
+    #[inline]
+    fn try_from(value: usize) -> Result<Self, Self::Err> {
         // Converted value will be >= 0.
         i32::try_from(value).map(Self)
     }

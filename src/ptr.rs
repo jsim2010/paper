@@ -11,6 +11,7 @@ pub(crate) type Mrc<T> = Rc<RefCell<T>>;
 #[macro_export]
 macro_rules! mrc {
     ($item:expr) => {
+        // Must use full path inside of macro.
         std::rc::Rc::new(std::cell::RefCell::new($item))
     };
 }

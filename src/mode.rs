@@ -1,19 +1,20 @@
 //! Implements the modality of the application.
-mod action;
-mod command;
-mod display;
-mod edit;
-mod filter;
+macro_rules! add_mode {
+    ($mode:ident, $processor:ident) => {
+        mod $mode;
+        pub(crate) use $mode::Processor as $processor;
+    };
+}
 
-pub(crate) use action::Processor as ActionProcessor;
-pub(crate) use command::Processor as CommandProcessor;
-pub(crate) use display::Processor as DisplayProcessor;
-pub(crate) use edit::Processor as EditProcessor;
-pub(crate) use filter::Processor as FilterProcessor;
+add_mode!(action, ActionProcessor);
+add_mode!(command, CommandProcessor);
+add_mode!(display, DisplayProcessor);
+add_mode!(edit, EditProcessor);
+add_mode!(filter, FilterProcessor);
 
 use crate::num::Length;
 use crate::storage::{self, Explorer, LspError, ProgressParams};
-use crate::ui::{self, Address, Change, Color, Edit, Index, IndexType, BACKSPACE, ENTER};
+use crate::ui::{self, Address, Change, Color, Edit, Index, BACKSPACE, ENTER};
 use crate::Mrc;
 use lsp_types::{Position, Range};
 use std::cmp;
@@ -37,14 +38,6 @@ type Line = u64;
 ///
 /// The value of a `LineIndex` is equal to its respective [`Line`].
 type LineIndex = usize;
-
-/// The [`Range`] covering the entire given line.
-fn line_range(line: u64) -> Range {
-    Range::new(
-        Position::new(line, 0),
-        Position::new(line, u64::max_value()),
-    )
-}
 
 /// Signifies the name of an application mode.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -251,7 +244,7 @@ pub(crate) struct Pane {
     /// The number of rows visible in the pane.
     height: Rc<Index>,
     /// The number of lines in the data.
-    line_count: usize,
+    line_count: Line,
     /// The control panel of the `Pane`.
     control_panel: ControlPanel,
     /// The edits `Pane` needs to make to update the [`UserInterface`].
@@ -393,34 +386,41 @@ impl Pane {
 
     /// Adds a character at a [`Position`].
     pub(crate) fn add(&mut self, position: Position, input: char) -> Result<(), TryFromIntError> {
+        //let mut new_text = String::new();
+        //let mut range = Range::new(position, position);
+
         if input == BACKSPACE {
             if position.character == 0 {
                 if position.line != 0 {
+                    //range.start.line -= 1;
+                    //range.start.character = u64::max_value();
                     self.will_wipe = true;
                     self.refresh();
                 }
             } else {
+                //range.start.character -= 1;
                 let address = self.address_at(position);
 
                 if address.is_some() {
                     self.edits.push(Edit::new(address, Change::Backspace));
                 }
             }
-        } else if input == ENTER {
-            self.will_wipe = true;
-            self.refresh();
         } else {
-            let address = self.address_at(position);
+            //new_text.push(input);
 
-            if address.is_some() {
-                self.edits.push(Edit::new(address, Change::Insert(input)));
+            if input == ENTER {
+                self.will_wipe = true;
+                self.refresh();
+            } else {
+                let address = self.address_at(position);
+
+                if address.is_some() {
+                    self.edits.push(Edit::new(address, Change::Insert(input)));
+                }
             }
         }
 
-        let pointer = self
-            .line_indices()
-            .nth(LineIndex::try_from(position.line)?)
-            .and_then(|index_value| Index::try_from(index_value).ok());
+        let pointer = self.line_indices().nth(LineIndex::try_from(position.line)?);
 
         if let Some(index) = pointer {
             let mut index = usize::try_from(index)? as u64;
@@ -442,11 +442,11 @@ impl Pane {
     }
 
     /// Iterates through the indexes that indicate where each line starts.
-    pub(crate) fn line_indices(&self) -> impl Iterator<Item = IndexType> + '_ {
-        iter::once(0).chain(self.data.match_indices(ENTER).flat_map(|(index, _)| {
+    pub(crate) fn line_indices(&self) -> impl Iterator<Item = Index> + '_ {
+        iter::once(Index::zero()).chain(self.data.match_indices(ENTER).flat_map(|(index, _)| {
             index
                 .checked_add(1)
-                .and_then(|i| IndexType::try_from(i).ok())
+                .and_then(|value| Index::try_from(value).ok())
                 .into_iter()
         }))
     }
@@ -497,7 +497,7 @@ impl Pane {
 
     /// Updates the pane's metadata.
     fn refresh(&mut self) {
-        self.line_count = self.lines().count();
+        self.line_count = self.lines().count() as u64;
         self.update_margin_width()
     }
 
