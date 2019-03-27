@@ -1,7 +1,7 @@
 //! Implements functionality for the application while in display mode.
 use super::{Initiation, Operation, Output, Pane};
+use crate::file::Explorer;
 use crate::ptr::Mrc;
-use crate::storage::Explorer;
 use std::cell::Ref;
 use std::env;
 

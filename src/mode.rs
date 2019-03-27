@@ -1,21 +1,16 @@
 //! Implements the modality of the application.
-macro_rules! add_mode {
-    ($mode:ident, $processor:ident) => {
-        mod $mode;
-        pub(crate) use $mode::Processor as $processor;
-    };
-}
+add_trait_child!(Processor, action, ActionProcessor);
+add_trait_child!(Processor, command, CommandProcessor);
+add_trait_child!(Processor, display, DisplayProcessor);
+add_trait_child!(Processor, edit, EditProcessor);
+add_trait_child!(Processor, filter, FilterProcessor);
 
-add_mode!(action, ActionProcessor);
-add_mode!(command, CommandProcessor);
-add_mode!(display, DisplayProcessor);
-add_mode!(edit, EditProcessor);
-add_mode!(filter, FilterProcessor);
-
+use crate::file::{Explorer, ProgressParams};
 use crate::num::Length;
-use crate::storage::{self, Explorer, LspError, ProgressParams};
+use crate::storage::{self, LspError};
 use crate::ui::{self, Address, Change, Color, Edit, Index, BACKSPACE, ENTER};
 use crate::Mrc;
+use crate::Output;
 use lsp_types::{Position, Range};
 use std::cmp;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -25,9 +20,6 @@ use std::ops::{Add, Deref, Sub};
 use std::path::PathBuf;
 use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
-
-/// Defines a [`Result`] with [`Flag`] as its Error.
-pub type Output<T> = Result<T, Flag>;
 
 /// Defines the type that identifies a line.
 ///
@@ -213,13 +205,6 @@ impl From<ui::Error> for Flag {
     #[inline]
     fn from(error: ui::Error) -> Self {
         Flag::Ui(error)
-    }
-}
-
-impl From<LspError> for Flag {
-    #[inline]
-    fn from(error: LspError) -> Self {
-        Flag::Lsp(error)
     }
 }
 

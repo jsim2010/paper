@@ -1,51 +1,23 @@
 //! Implements the functionality to interact with data located in different storages.
-use crate::mode::{Flag, Output};
-use crate::{fmt, Debug, Display, Formatter};
+use crate::file::ProgressParams;
+use crate::mode::Flag;
+use crate::{fmt, Display, Formatter};
 use jsonrpc_core;
 use lsp_types::notification::Notification;
 use lsp_types::request::Request;
 use lsp_types::{lsp_notification, lsp_request};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{self, Value};
-use std::cell::RefCell;
 use std::error;
-use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, RecvError};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-
-/// Interacts and processes file data.
-pub trait Explorer: Debug {
-    /// Initializes all functionality needed by the Explorer.
-    fn start(&mut self) -> Output<()>;
-    /// Returns the data from the file at a given path.
-    fn read(&mut self, path: &Path) -> Output<String>;
-    /// Writes data to a file at the given path.
-    fn write(&self, path: &Path, data: &str) -> Output<()>;
-    /// Returns the oldest notification from `Explorer`.
-    fn receive_notification(&mut self) -> Option<ProgressParams>;
-}
-
-#[derive(Deserialize, Debug)]
-/// `ProgressParams` defined by `VSCode`.
-pub struct ProgressParams {
-    /// The id of the notification.
-    id: String,
-    /// The title of the notification.
-    title: String,
-    /// The message of the notification.
-    pub message: Option<String>,
-    /// Indicates if no more notifications will be sent.
-    done: Option<bool>,
-}
 
 /// The interface with the language server.
 #[derive(Debug)]
-struct LanguageClient {
+pub(crate) struct LanguageClient {
     /// The thread running the language server.
     server: Child,
     /// The id for the next request to be sent by the `LanguageClient`.
@@ -96,7 +68,7 @@ fn read_message(reader: &mut BufReader<ChildStdout>) -> Result<Value, LspError> 
 
 impl LanguageClient {
     /// Creates a new `LanguageClient`.
-    fn new(command: &str) -> Arc<Mutex<Self>> {
+    pub(crate) fn new(command: &str) -> Arc<Mutex<Self>> {
         let mut server = Command::new(command)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -197,7 +169,7 @@ impl LanguageClient {
     }
 
     /// Initializes the language server.
-    fn initialize(&mut self) -> Result<(), LspError> {
+    pub(crate) fn initialize(&mut self) -> Result<(), LspError> {
         self.send_request::<lsp_request!("initialize")>(lsp_types::InitializeParams {
             process_id: Some(u64::from(std::process::id())),
             root_path: None,
@@ -260,7 +232,10 @@ impl LanguageClient {
     }
 
     /// Sends a notification to the language server.
-    fn send_notification<T: Notification>(&mut self, params: T::Params) -> Result<(), LspError>
+    pub(crate) fn send_notification<T: Notification>(
+        &mut self,
+        params: T::Params,
+    ) -> Result<(), LspError>
     where
         T::Params: Serialize,
     {
@@ -289,7 +264,7 @@ impl LanguageClient {
     }
 
     /// Return the notification from the `Explorer`.
-    fn receive_notification(&self) -> Option<ProgressParams> {
+    pub(crate) fn receive_notification(&self) -> Option<ProgressParams> {
         self.notification_rx.try_recv().ok()
     }
 }
@@ -355,63 +330,10 @@ impl Display for LspError {
 
 impl error::Error for LspError {}
 
-/// Signifies an [`Explorer`] of the local storage.
-#[derive(Debug)]
-pub struct Local {
-    /// The [`LanguageClient`] fo the local storage [`Explorer`].
-    language_client: Arc<Mutex<LanguageClient>>,
-}
-
-impl Local {
-    /// Creates a new Local.
+impl From<LspError> for Flag {
     #[inline]
-    pub fn new() -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(Self {
-            language_client: LanguageClient::new("rls"),
-        }))
-    }
-
-    /// Returns a mutable reference to the language_client.
-    fn language_client_mut(&mut self) -> MutexGuard<'_, LanguageClient> {
-        self.language_client
-            .lock()
-            .expect("Accessing language_client")
-    }
-}
-
-impl Explorer for Local {
-    #[inline]
-    fn start(&mut self) -> Output<()> {
-        self.language_client_mut().initialize()?;
-        Ok(())
-    }
-
-    #[inline]
-    fn read(&mut self, path: &Path) -> Output<String> {
-        let content = fs::read_to_string(path).map(|data| data.replace('\r', ""))?;
-        self.language_client_mut()
-            .send_notification::<lsp_notification!("textDocument/didOpen")>(
-                lsp_types::DidOpenTextDocumentParams {
-                    text_document: lsp_types::TextDocumentItem::new(
-                        lsp_types::Url::from_file_path(path).map_err(|_| Flag::Quit)?,
-                        "rust".into(),
-                        0,
-                        content.clone(),
-                    ),
-                },
-            )?;
-        Ok(content)
-    }
-
-    #[inline]
-    fn write(&self, path: &Path, data: &str) -> Output<()> {
-        fs::write(path, data)?;
-        Ok(())
-    }
-
-    #[inline]
-    fn receive_notification(&mut self) -> Option<ProgressParams> {
-        self.language_client_mut().receive_notification()
+    fn from(error: LspError) -> Self {
+        Flag::Lsp(error)
     }
 }
 

@@ -1,9 +1,8 @@
 use pancurses::Input;
-use paper::mode::{Operation, Output};
-use paper::storage::ProgressParams;
+use paper::file::ProgressParams;
+use paper::mode::Operation;
 use paper::ui::{Address, Change, Edit, Index, PossibleError, UserInterface};
-use paper::Explorer;
-use paper::{ui, Paper};
+use paper::{ui, Explorer, Output, Paper};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;

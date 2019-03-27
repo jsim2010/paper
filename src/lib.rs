@@ -71,21 +71,35 @@
 
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences, single_use_lifetimes: issue rust-lang/rust#55057
 
+macro_rules! add_trait_child {
+    ($trait:ident, $child:ident, $name:ident) => {
+        mod $child;
+        pub(crate) use $child::$trait as $name;
+    };
+}
+
+#[macro_use]
+mod ptr;
+
+// file uses a macro from ptr and thus must be loaded after ptr.
+pub mod file;
 pub mod mode;
 pub mod num;
 pub mod storage;
 pub mod ui;
-#[macro_use]
-mod ptr;
 
-pub use storage::Explorer;
+pub use file::local::Explorer as LocalExplorer;
+pub use file::Explorer;
 
-use mode::{Flag, Operation, Output, Pane, Processor};
+use mode::{Flag, Operation, Pane, Processor};
 use pancurses::Input;
 use ptr::Mrc;
 use std::collections::HashMap;
-use std::fmt::{self, Debug, Display, Formatter};
+use std::fmt::{self, Display, Formatter};
 use ui::UserInterface;
+
+/// Defines a [`Result`] with [`Flag`] as its Error.
+pub type Output<T> = Result<T, Flag>;
 
 /// The paper application.
 #[derive(Debug)]
