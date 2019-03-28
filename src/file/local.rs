@@ -1,9 +1,9 @@
 //! Implements `Explorer` for local storage.
 use super::ProgressParams;
+use crate::lsp::{LanguageClient, Message};
 use crate::ptr::Mrc;
-use crate::lsp::LanguageClient;
 use crate::Output;
-use lsp_types::{lsp_notification, DidOpenTextDocumentParams, TextDocumentItem, Url};
+use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, Url};
 use std::fs;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
@@ -43,7 +43,7 @@ impl super::Explorer for Explorer {
     fn read(&mut self, path: &Path) -> Output<String> {
         let text = fs::read_to_string(path).map(|data| data.replace('\r', ""))?;
         self.language_client_mut()
-            .send_notification::<lsp_notification!("textDocument/didOpen")>(
+            .send_message(&Message::did_open_text_document(
                 DidOpenTextDocumentParams {
                     text_document: TextDocumentItem::new(
                         Url::from_file_path(path).map_err(|_| {
@@ -54,7 +54,7 @@ impl super::Explorer for Explorer {
                         text.clone(),
                     ),
                 },
-            )?;
+            ))?;
         Ok(text)
     }
 

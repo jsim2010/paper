@@ -1,9 +1,9 @@
 //! Implements the functionality to interact with data located in different storages.
 use crate::mode::Flag;
 use crate::{fmt, Display, Formatter};
-use serde_json::{self};
+use serde_json;
 use std::error;
-use std::io::{self};
+use std::io;
 use std::sync::mpsc::RecvError;
 
 /// An error within the Language Server Protocol functionality.

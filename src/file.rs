@@ -2,7 +2,7 @@
 pub(crate) mod local;
 
 use crate::Output;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::path::Path;
 
@@ -18,7 +18,7 @@ pub trait Explorer: Debug {
     fn receive_notification(&mut self) -> Option<ProgressParams>;
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Serialize)]
 /// `ProgressParams` defined by `VSCode`.
 pub struct ProgressParams {
     /// The id of the notification.
