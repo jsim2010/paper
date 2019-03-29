@@ -5,7 +5,8 @@ add_trait_child!(Processor, display, DisplayProcessor);
 add_trait_child!(Processor, edit, EditProcessor);
 add_trait_child!(Processor, filter, FilterProcessor);
 
-use crate::file::{Explorer, ProgressParams};
+use crate::file::Explorer;
+use crate::lsp::ProgressParams;
 use crate::num::Length;
 use crate::storage::{self, LspError};
 use crate::ui::{self, Address, Change, Color, Edit, Index, BACKSPACE, ENTER};

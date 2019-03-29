@@ -1,5 +1,5 @@
 use pancurses::Input;
-use paper::file::ProgressParams;
+use paper::lsp::ProgressParams;
 use paper::mode::Operation;
 use paper::ui::{Address, Change, Edit, Index, PossibleError, UserInterface};
 use paper::{ui, Explorer, Output, Paper};

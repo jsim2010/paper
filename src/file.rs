@@ -1,8 +1,8 @@
 //! Defines the interaction with files.
 pub(crate) mod local;
 
+use crate::lsp::ProgressParams;
 use crate::Output;
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::path::Path;
 
@@ -16,17 +16,4 @@ pub trait Explorer: Debug {
     fn write(&self, path: &Path, text: &str) -> Output<()>;
     /// Returns the oldest notification from `Explorer`.
     fn receive_notification(&mut self) -> Option<ProgressParams>;
-}
-
-#[derive(Deserialize, Debug, Serialize)]
-/// `ProgressParams` defined by `VSCode`.
-pub struct ProgressParams {
-    /// The id of the notification.
-    id: String,
-    /// The title of the notification.
-    title: String,
-    /// The message of the notification.
-    pub message: Option<String>,
-    /// Indicates if no more notifications will be sent.
-    done: Option<bool>,
 }

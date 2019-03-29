@@ -43,7 +43,7 @@ impl super::Explorer for Explorer {
     fn read(&mut self, path: &Path) -> Output<String> {
         let text = fs::read_to_string(path).map(|data| data.replace('\r', ""))?;
         self.language_client_mut()
-            .send_message(Message::did_open_text_document(
+            .send_message(Message::did_open_text_document_notification(
                 DidOpenTextDocumentParams {
                     text_document: TextDocumentItem::new(
                         Url::from_file_path(path).map_err(|_| {
