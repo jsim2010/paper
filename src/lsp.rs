@@ -1,21 +1,18 @@
 use crate::file::ProgressParams;
 use crate::storage::LspError;
-use jsonrpc_core;
-use lsp_types::notification::{DidOpenTextDocument, Initialized, Notification};
-use lsp_types::request::{Initialize, RegisterCapability, Request};
+use jsonrpc_core::{self, Id, Version};
 use lsp_types::{
-    ClientCapabilities, DidOpenTextDocumentParams, InitializeParams, InitializeResult, Registration,
-    RegistrationParams, ServerCapabilities, Url,
+    ClientCapabilities, DidOpenTextDocumentParams, InitializeParams, InitializeResult, Registration, InitializedParams,
+    RegistrationParams, ServerCapabilities, Url, PublishDiagnosticsParams
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{self, Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread::{JoinHandle, Builder};
 use std::env;
-use try_from::TryFrom;
 
 /// The interface with the language server.
 #[derive(Debug)]
@@ -51,9 +48,9 @@ impl LanguageClient {
         their_client
             .lock()
             .expect("Locking language client")
-            .receiver_handle = Some(thread::spawn(move || {
+            .receiver_handle = Builder::new().name("LangClientRx".to_string()).spawn(move || {
             Self::process(my_client, notification_tx)
-        }));
+        }).ok();
         their_client
     }
 
@@ -70,31 +67,35 @@ impl LanguageClient {
         let mut messages = MessageReader::new(&mut client);
 
         loop {
-            if let Ok(message) = messages.next_message() {
-                match message {
-                    Message::Request(id, request) => {
-                        Self::process_request(&mut client, id, request);
+            match messages.next_message() {
+                Ok(message) => {
+                    match message.message {
+                        Message::Request(request) => {
+                            Self::process_request(&mut client, request);
+                        }
+                        Message::Response(response) => {
+                            Self::process_response(&mut client, response);
+                        }
+                        Message::Notification(notification) => {
+                            Self::process_notification(&notification_tx, notification);
+                        }
                     }
-                    Message::Response(_id, response) => {
-                        Self::process_response(&mut client, response);
-                    }
-                    Message::Notification(notification) => {
-                        Self::process_notification(&notification_tx, notification);
-                    }
-                    Message::Unknown => (),
+                }
+                Err(e) => {
+                    dbg!(e);
                 }
             }
         }
     }
 
-    fn process_request(client: &mut Arc<Mutex<LanguageClient>>, id: u64, request: RequestParams) {
+    fn process_request(client: &mut Arc<Mutex<LanguageClient>>, request: RequestMessage) {
         let mut client = client.lock().expect("Locking language client");
 
-        match request {
-            RequestParams::RegisterCapability(params) => {
+        match request.method {
+            RequestMethod::RegisterCapability(params) => {
                 client.registrations = params.registrations;
                 client
-                    .send_message(&Message::register_capability_result(id))
+                    .send_message(Message::register_capability_result(request.id))
                     .unwrap();
             }
             _ => {
@@ -103,14 +104,14 @@ impl LanguageClient {
         }
     }
 
-    fn process_response(client: &mut Arc<Mutex<LanguageClient>>, response: Response) {
+    fn process_response(client: &mut Arc<Mutex<LanguageClient>>, response: ResponseMessage) {
         let mut client = client.lock().expect("Locking language client");
 
-        match response {
-            Response::Result(ResultValue::Initialize(result)) => {
+        match response.status {
+            Status::Result(ResultValue::Initialize(result)) => {
                 client.server_capabilities = result.capabilities;
                 client
-                    .send_message(&Message::initialized_notification())
+                    .send_message(Message::initialized_notification())
                     .unwrap()
             }
             _ => {
@@ -121,16 +122,18 @@ impl LanguageClient {
 
     fn process_notification(
         notification_tx: &Sender<ProgressParams>,
-        notification: NotificationParams,
+        notification: NotificationMessage,
     ) {
+        // TODO: Might be easier to store the data in client then check it periodically.
         match notification {
-            NotificationParams::WindowProgress(params) => notification_tx.send(params).unwrap(),
+            NotificationMessage::WindowProgress(params) => notification_tx.send(params).unwrap(),
             _ => (),
         }
     }
 
     pub(crate) fn initialize(&mut self) -> Result<(), LspError> {
-        let result = self.send_message(&Message::initialize_request(
+        self.request_id += 1;
+        self.send_message(Message::initialize_request(
             self.request_id,
             InitializeParams {
                 process_id: Some(u64::from(process::id())),
@@ -144,70 +147,19 @@ impl LanguageClient {
                 trace: None,
                 workspace_folders: None,
             },
-        ));
-
-        if result.is_ok() {
-            self.request_id += 1;
-        }
-
-        result
+        ))
     }
 
     /// Sends a message to the language server.
-    pub(crate) fn send_message(&mut self, message: &Message) -> Result<(), LspError> {
-        let json_string = match message {
-            Message::Request(id, params) => {
-                if let Value::Object(params_value) = serde_json::to_value(params)? {
-                    let request = jsonrpc_core::Call::MethodCall(jsonrpc_core::MethodCall {
-                        jsonrpc: Some(jsonrpc_core::Version::V2),
-                        method: message.method(),
-                        params: jsonrpc_core::Params::Map(params_value),
-                        id: jsonrpc_core::Id::Num(*id),
-                    });
-                    Some(serde_json::to_string(&request)?)
-                } else {
-                    None
-                }
-            }
-            Message::Response(id, response) => match response {
-                Response::Result(result) => {
-                    let content = jsonrpc_core::Output::Success(jsonrpc_core::Success {
-                        jsonrpc: Some(jsonrpc_core::Version::V2),
-                        result: serde_json::to_value(result)?,
-                        id: jsonrpc_core::Id::Num(*id),
-                    });
-                    Some(serde_json::to_string(&content)?)
-                }
-                Response::Error(_) => None,
-            },
-            Message::Notification(params) => {
-                if let serde_json::value::Value::Object(params) = serde_json::to_value(params)? {
-                    let notification =
-                        jsonrpc_core::Call::Notification(jsonrpc_core::Notification {
-                            jsonrpc: Some(jsonrpc_core::Version::V2),
-                            method: message.method(),
-                            params: jsonrpc_core::Params::Map(params),
-                        });
-                    Some(serde_json::to_string(&notification)?)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
+    pub(crate) fn send_message(&mut self, message: Message) -> Result<(), LspError> {
+        let json_string = serde_json::to_string(&AbstractMessage::new(message))?;
 
-        // TODO: Move self.old_message to here (currently blocked by fact that different messages
-        // return different types for their content.
-        // We should convert to value first.
-
-        if let Some(data) = json_string {
-            write!(
-                self.stdin_mut(),
-                "Content-Length: {}\r\n\r\n{}",
-                data.len(),
-                data
-            )?;
-        }
+        write!(
+            self.stdin_mut(),
+            "Content-Length: {}\r\n\r\n{}",
+            json_string.len(),
+            json_string
+        )?;
 
         Ok(())
     }
@@ -233,121 +185,111 @@ impl LanguageClient {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct AbstractMessage {
+    jsonrpc: Version,
+
+    #[serde(flatten)]
+    message: Message,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
 pub(crate) enum Message {
-    Unknown,
-    Request(u64, RequestParams),
-    Response(u64, Response),
-    Notification(NotificationParams),
+    Request(RequestMessage),
+    Response(ResponseMessage),
+    Notification(NotificationMessage),
 }
 
-impl Message {
-    fn method(&self) -> String {
-        match self {
-            Message::Request(_id, params) => params.method(),
-            Message::Notification(params) => params.method(),
-            _ => "",
-        }
-        .to_string()
-    }
-
-    fn initialize_request(id: u64, params: InitializeParams) -> Self {
-        Message::Request(id, RequestParams::Initialize(params))
-    }
-
-    fn register_capability_result(id: u64) -> Self {
-        Message::Response(id, Response::Result(ResultValue::RegisterCapability))
-    }
-
-    fn initialized_notification() -> Self {
-        Message::Notification(NotificationParams::Initialized)
-    }
-
-    pub(crate) fn did_open_text_document(params: DidOpenTextDocumentParams) -> Self {
-        Message::Notification(NotificationParams::DidOpenTextDocument(params))
-    }
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RequestMessage {
+    id: Id,
+    #[serde(flatten)]
+    method: RequestMethod,
 }
 
-#[derive(Serialize)]
-pub(crate) enum NotificationParams {
-    WindowProgress(ProgressParams),
-    Initialized,
-    DidOpenTextDocument(DidOpenTextDocumentParams),
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "method", content = "params")]
+pub(crate) enum RequestMethod {
+    #[serde(rename = "initialize")]
+    Initialize(InitializeParams),
+    #[serde(rename = "client/registerCapability")]
+    RegisterCapability(RegistrationParams),
 }
 
-impl NotificationParams {
-    fn method(&self) -> &str {
-        match self {
-            NotificationParams::WindowProgress(_) => "window/progress",
-            NotificationParams::Initialized => Initialized::METHOD,
-            NotificationParams::DidOpenTextDocument(_) => DidOpenTextDocument::METHOD,
-        }
-    }
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResponseMessage {
+    id: Id,
+    #[serde(flatten)]
+    status: Status,
 }
 
-pub(crate) enum Response {
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum Status {
     Result(ResultValue),
-    Error(jsonrpc_core::ErrorCode),
+    Error(ResponseError),
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
 pub(crate) enum ResultValue {
     Initialize(InitializeResult),
     RegisterCapability,
 }
 
-#[derive(Serialize)]
-pub(crate) enum RequestParams {
-    RegisterCapability(RegistrationParams),
-    Initialize(InitializeParams),
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct ResponseError {
+    code: u64,
+    message: String,
+    data: Option<Value>,
 }
 
-impl RequestParams {
-    fn method(&self) -> &str {
-        match self {
-            RequestParams::RegisterCapability(_) => RegisterCapability::METHOD,
-            RequestParams::Initialize(_) => Initialize::METHOD,
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "method", content = "params")]
+pub(crate) enum NotificationMessage {
+    #[serde(rename = "window/progress")]
+    WindowProgress(ProgressParams),
+    #[serde(rename = "initialized")]
+    Initialized(InitializedParams),
+    #[serde(rename = "textDocument/didOpen")]
+    DidOpenTextDocument(DidOpenTextDocumentParams),
+    #[serde(rename = "textDocument/publishDiagnostics")]
+    PublishDiagnostics(PublishDiagnosticsParams),
+}
+
+impl AbstractMessage {
+    fn new(message: Message) -> Self {
+        Self {
+            jsonrpc: Version::V2,
+            message: message,
         }
     }
 }
 
-impl TryFrom<Value> for Message {
-    type Err = LspError;
+impl Message {
+    fn initialize_request(id: u64, params: InitializeParams) -> Self {
+        Message::Request(RequestMessage {
+            id: Id::Num(id),
+            method: RequestMethod::Initialize(params)
+        })
+    }
 
-    fn try_from(value: Value) -> Result<Self, Self::Err> {
-        if let Some(id_value) = value.get("id") {
-            if let Ok(id) = serde_json::from_value::<u64>(id_value.to_owned()) {
-                if value.get("method").is_some() {
-                    if let Ok(params) = serde_json::from_value::<RegistrationParams>(
-                        value.get("params").unwrap().to_owned(),
-                    ) {
-                        return Ok(Message::Request(
-                            id,
-                            RequestParams::RegisterCapability(params),
-                        ));
-                    }
-                } else if let Some(result) = value.get("result") {
-                    if let Ok(initialize_result) =
-                        serde_json::from_value::<InitializeResult>(result.to_owned())
-                    {
-                        return Ok(Message::Response(
-                            id,
-                            Response::Result(ResultValue::Initialize(initialize_result)),
-                        ));
-                    }
-                }
-            }
-        } else if value.get("method").is_some() {
-            if let Ok(params) =
-                serde_json::from_value::<ProgressParams>(value.get("params").unwrap().to_owned())
-            {
-                return Ok(Message::Notification(NotificationParams::WindowProgress(
-                    params,
-                )));
-            }
-        }
+    fn register_capability_result(id: Id) -> Self {
+        Message::Response(ResponseMessage {
+            id,
+            status: Status::Result(ResultValue::RegisterCapability),
+        })
+    }
 
-        dbg!(value);
-        Ok(Message::Unknown)
+    fn initialized_notification() -> Self {
+        Message::Notification(NotificationMessage::Initialized(InitializedParams{}))
+    }
+
+    pub(crate) fn did_open_text_document(params: DidOpenTextDocumentParams) -> Self {
+        Message::Notification(NotificationMessage::DidOpenTextDocument(params))
     }
 }
 
@@ -362,15 +304,11 @@ impl MessageReader {
         }
     }
 
-    fn next_message(&mut self) -> Result<Message, LspError> {
-        let content_length = self.get_content_length()?;
-        let mut content = vec![0; content_length];
-
+    fn next_message(&mut self) -> Result<AbstractMessage, LspError> {
+        let mut content = vec![0; self.get_content_length()?];
         self.reader.read_exact(&mut content)?;
-        let json_string = String::from_utf8(content).map_err(|_| LspError::Parse)?;
-        serde_json::from_str(&json_string)
-            .map_err(|_| LspError::Parse)
-            .and_then(|content| Message::try_from(content))
+        // TODO: Improve error handling to give better info.
+        serde_json::from_slice(&content).map_err(|_| LspError::Parse)
     }
 
     fn get_content_length(&mut self) -> Result<usize, LspError> {
