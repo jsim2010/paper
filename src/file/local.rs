@@ -1,13 +1,12 @@
 //! Implements `Explorer` for local storage.
-use super::ProgressParams;
+use super::{Effect, ProgressParams};
 use crate::lsp::{LanguageClient, Message};
 use crate::ptr::Mrc;
-use crate::Output;
 use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, Url};
 use std::env;
 use std::fs;
-use std::io::{Error, ErrorKind};
-use std::path::Path;
+use std::io::{self, ErrorKind};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Signifies an `Explorer` of the local storage.
@@ -35,21 +34,32 @@ impl Explorer {
 
 impl super::Explorer for Explorer {
     #[inline]
-    fn start(&mut self) -> Output<()> {
+    fn start(&mut self) -> Effect<()> {
         self.language_client_mut()
             .initialize(env::current_dir()?.as_path())?;
         Ok(())
     }
 
     #[inline]
-    fn read(&mut self, path: &Path) -> Output<String> {
-        let text = fs::read_to_string(path).map(|data| data.replace('\r', ""))?;
+    fn read(&mut self, path: &PathBuf) -> Effect<String> {
+        let absolute_path = if path.is_absolute() {
+            path.clone()
+        } else {
+            let mut new_path = env::current_dir()?;
+            new_path.push(path);
+            new_path
+        };
+
+        let text = fs::read_to_string(absolute_path.clone()).map(|data| data.replace('\r', ""))?;
         self.language_client_mut()
             .send_message(Message::did_open_text_document_notification(
                 DidOpenTextDocumentParams {
                     text_document: TextDocumentItem::new(
-                        Url::from_file_path(path).map_err(|_| {
-                            Error::new(ErrorKind::InvalidInput, "Not absolute or invalid prefix")
+                        Url::from_file_path(absolute_path).map_err(|_| {
+                            io::Error::new(
+                                ErrorKind::InvalidInput,
+                                "Not absolute or invalid prefix",
+                            )
                         })?,
                         "rust".into(),
                         0,
@@ -61,7 +71,7 @@ impl super::Explorer for Explorer {
     }
 
     #[inline]
-    fn write(&self, path: &Path, text: &str) -> Output<()> {
+    fn write(&self, path: &Path, text: &str) -> Effect<()> {
         fs::write(path, text)?;
         Ok(())
     }

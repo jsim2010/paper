@@ -5,16 +5,14 @@ add_trait_child!(Processor, display, DisplayProcessor);
 add_trait_child!(Processor, edit, EditProcessor);
 add_trait_child!(Processor, filter, FilterProcessor);
 
-use crate::file::Explorer;
+use crate::file::{self, Explorer};
 use crate::lsp::{self, ProgressParams};
 use crate::num::Length;
+use crate::ptr::Mrc;
 use crate::ui::{self, Address, Change, Color, Edit, Index, BACKSPACE, ENTER};
-use crate::Mrc;
-use crate::Output;
 use lsp_types::{Position, Range};
 use std::cmp;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::io;
 use std::iter;
 use std::ops::{Add, Deref, Sub};
 use std::path::PathBuf;
@@ -25,11 +23,12 @@ use try_from::{TryFrom, TryFromIntError};
 ///
 /// Defined by [`Position`].
 type Line = u64;
-
 /// Defines the type that indexes a collection of lines.
 ///
 /// The value of a `LineIndex` is equal to its respective [`Line`].
 type LineIndex = usize;
+/// Defines a [`Result`] with [`Flag`] as its Error.
+pub type Output<T> = Result<T, Flag>;
 
 /// Signifies the name of an application mode.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -172,7 +171,7 @@ pub enum Flag {
     /// An error with an attempt to convert values.
     Conversion(TryFromIntError),
     /// An error with the file interaction.
-    File(io::Error),
+    File(file::Error),
     /// An error with the Language Server Protocol.
     Lsp(lsp::Error),
     /// Quits the application.
@@ -208,9 +207,9 @@ impl From<ui::Error> for Flag {
     }
 }
 
-impl From<io::Error> for Flag {
+impl From<file::Error> for Flag {
     #[inline]
-    fn from(error: io::Error) -> Self {
+    fn from(error: file::Error) -> Self {
         Flag::File(error)
     }
 }

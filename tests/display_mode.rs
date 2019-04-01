@@ -2,7 +2,6 @@ mod mock;
 
 use mock::Controller;
 use pancurses::Input;
-use paper::ui::Index;
 
 /// `.` in Display mode should enter Command mode.
 ///

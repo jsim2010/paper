@@ -2,7 +2,7 @@ mod mock;
 
 use mock::Controller;
 use pancurses::Input;
-use paper::ui::{Index, BACKSPACE, ESC};
+use paper::ui::{BACKSPACE, ESC};
 
 /// Entering characters in Command mode should add text to sketch and display.
 ///

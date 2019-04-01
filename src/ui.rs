@@ -12,7 +12,7 @@ use try_from::{TryFrom, TryFromIntError};
 /// The type of all grid index values.
 pub type Index = NonNegativeI32;
 /// The [`Result`] returned by functions of this module.
-pub type PossibleError = Result<(), Error>;
+pub type Effect = Result<(), Error>;
 
 /// The character that represents the `Backspace` key.
 pub const BACKSPACE: char = '\u{08}';
@@ -240,15 +240,15 @@ impl Edit {
 /// background color.
 pub trait UserInterface: Debug {
     /// Sets up the user interface for use.
-    fn init(&self) -> PossibleError;
+    fn init(&self) -> Effect;
     /// Closes the user interface.
-    fn close(&self) -> PossibleError;
+    fn close(&self) -> Effect;
     /// Returns the number of cells that make up the height of the grid.
     fn grid_height(&self) -> Result<Index, TryFromIntError>;
     /// Applies the edit to the output.
-    fn apply(&self, edit: Edit) -> PossibleError;
+    fn apply(&self, edit: Edit) -> Effect;
     /// Flashes the output.
-    fn flash(&self) -> PossibleError;
+    fn flash(&self) -> Effect;
     /// Returns the input from the user.
     ///
     /// Returns [`None`] if no character input is provided.
@@ -272,8 +272,8 @@ impl Terminal {
         }))
     }
 
-    /// Converts the given result of a `Terminal` function to a [`PossibleError`].
-    fn process(result: i32, error: Error) -> PossibleError {
+    /// Converts the given result of a `Terminal` function to a [`Effect`].
+    fn process(result: i32, error: Error) -> Effect {
         if result == pancurses::OK {
             Ok(())
         } else {
@@ -282,27 +282,27 @@ impl Terminal {
     }
 
     /// Overwrites the block at cursor with a character.
-    fn add_char(&self, c: char) -> PossibleError {
+    fn add_char(&self, c: char) -> Effect {
         Self::process(self.window.addch(c), Error::Waddch)
     }
 
     /// Writes a string starting at the cursor.
-    fn add_str(&self, s: String) -> PossibleError {
+    fn add_str(&self, s: String) -> Effect {
         Self::process(self.window.addstr(s), Error::Waddstr)
     }
 
     /// Clears the entire window.
-    fn clear_all(&self) -> PossibleError {
+    fn clear_all(&self) -> Effect {
         Self::process(self.window.clear(), Error::Wclear)
     }
 
     /// Clears all blocks from the cursor to the end of the row.
-    fn clear_to_row_end(&self) -> PossibleError {
+    fn clear_to_row_end(&self) -> Effect {
         Self::process(self.window.clrtoeol(), Error::Wcleartoeol)
     }
 
     /// Defines [`Color`] as having a background color.
-    fn define_color(&self, color: Color, background: i16) -> PossibleError {
+    fn define_color(&self, color: Color, background: i16) -> Effect {
         Self::process(
             pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
             Error::InitPair,
@@ -312,22 +312,22 @@ impl Terminal {
     /// Deletes the character at the cursor.
     ///
     /// All subseqent characters are shifted to the left and a blank block is added at the end.
-    fn delete_char(&self) -> PossibleError {
+    fn delete_char(&self) -> Effect {
         Self::process(self.window.delch(), Error::Wdelch)
     }
 
     /// Disables echoing received characters on the screen.
-    fn disable_echo(&self) -> PossibleError {
+    fn disable_echo(&self) -> Effect {
         Self::process(pancurses::noecho(), Error::Noecho)
     }
 
     /// Sets user interface to not wait for an input.
-    fn enable_nodelay(&self) -> PossibleError {
+    fn enable_nodelay(&self) -> Effect {
         Self::process(self.window.nodelay(true), Error::Nodelay)
     }
 
     /// Sets the color of the next specified number of blocks from the cursor.
-    fn format(&self, length: Length, color: Color) -> PossibleError {
+    fn format(&self, length: Length, color: Color) -> Effect {
         Self::process(
             self.window
                 .chgat(i32::from(length), pancurses::A_NORMAL, color.cp()),
@@ -336,31 +336,31 @@ impl Terminal {
     }
 
     /// Inserts a character at the cursor, shifting all subsequent blocks to the right.
-    fn insert_char(&self, c: char) -> PossibleError {
+    fn insert_char(&self, c: char) -> Effect {
         Self::process(self.window.insch(c), Error::Winsch)
     }
 
     /// Moves the cursor to an [`Address`].
-    fn move_to(&self, address: Address) -> PossibleError {
+    fn move_to(&self, address: Address) -> Effect {
         Self::process(self.window.mv(address.y(), address.x()), Error::Wmove)
     }
 
     /// Initializes color processing.
     ///
     /// Must be called before any other color manipulation routine is called.
-    fn start_color(&self) -> PossibleError {
+    fn start_color(&self) -> Effect {
         Self::process(pancurses::start_color(), Error::StartColor)
     }
 
     /// Initializes the default colors.
-    fn use_default_colors(&self) -> PossibleError {
+    fn use_default_colors(&self) -> Effect {
         Self::process(pancurses::use_default_colors(), Error::UseDefaultColors)
     }
 }
 
 impl UserInterface for Terminal {
     #[inline]
-    fn init(&self) -> PossibleError {
+    fn init(&self) -> Effect {
         self.start_color()?;
         self.use_default_colors()?;
         self.disable_echo()?;
@@ -371,17 +371,17 @@ impl UserInterface for Terminal {
     }
 
     #[inline]
-    fn close(&self) -> PossibleError {
+    fn close(&self) -> Effect {
         Self::process(pancurses::endwin(), Error::Endwin)
     }
 
     #[inline]
-    fn flash(&self) -> PossibleError {
+    fn flash(&self) -> Effect {
         Self::process(pancurses::flash(), Error::Flash)
     }
 
     #[inline]
-    fn apply(&self, edit: Edit) -> PossibleError {
+    fn apply(&self, edit: Edit) -> Effect {
         if let Some(address) = edit.address {
             self.move_to(address)?;
         }

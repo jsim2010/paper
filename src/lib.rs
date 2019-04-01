@@ -86,15 +86,12 @@ pub mod ui;
 
 pub use file::local::Explorer as LocalExplorer;
 pub use file::Explorer;
+pub use ui::UserInterface;
 
-use mode::{Flag, Operation, Pane, Processor};
+use mode::{Flag, Operation, Output, Pane, Processor};
 use pancurses::Input;
 use ptr::Mrc;
 use std::collections::HashMap;
-use ui::UserInterface;
-
-/// Defines a [`Result`] with [`Flag`] as its Error.
-pub type Output<T> = Result<T, Flag>;
 
 /// The paper application.
 #[derive(Debug)]

@@ -2,7 +2,7 @@ mod mock;
 
 use mock::Controller;
 use pancurses::Input;
-use paper::ui::{Index, ESC};
+use paper::ui::ESC;
 
 #[test]
 fn escape_returns_to_display() {

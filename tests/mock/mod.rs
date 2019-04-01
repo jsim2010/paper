@@ -1,10 +1,11 @@
 use pancurses::Input;
+use paper::file;
 use paper::lsp::ProgressParams;
 use paper::mode::Operation;
-use paper::ui::{Address, Change, Edit, Index, PossibleError, UserInterface};
-use paper::{ui, Explorer, Output, Paper};
+use paper::ui::{self, Address, Change, Edit, Index};
+use paper::{Explorer, Paper, UserInterface};
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use try_from::TryFromIntError;
 
@@ -61,20 +62,20 @@ impl MockUserInterface {
 }
 
 impl UserInterface for MockUserInterface {
-    fn init(&self) -> PossibleError {
+    fn init(&self) -> ui::Effect {
         Ok(())
     }
 
-    fn close(&self) -> PossibleError {
+    fn close(&self) -> ui::Effect {
         Ok(())
     }
 
-    fn apply(&self, edit: Edit) -> PossibleError {
+    fn apply(&self, edit: Edit) -> ui::Effect {
         self.controller.borrow_mut().add_apply_call(edit);
         Ok(())
     }
 
-    fn flash(&self) -> PossibleError {
+    fn flash(&self) -> ui::Effect {
         Ok(())
     }
 
@@ -163,15 +164,15 @@ impl MockExplorer {
 }
 
 impl Explorer for MockExplorer {
-    fn start(&mut self) -> Output<()> {
+    fn start(&mut self) -> file::Effect<()> {
         Ok(())
     }
 
-    fn read(&mut self, _path: &Path) -> Output<String> {
+    fn read(&mut self, _path: &PathBuf) -> file::Effect<String> {
         Ok(self.controller.borrow().file().to_string())
     }
 
-    fn write(&self, _path: &Path, _data: &str) -> Output<()> {
+    fn write(&self, _path: &Path, _data: &str) -> file::Effect<()> {
         Ok(())
     }
 
