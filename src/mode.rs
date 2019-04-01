@@ -6,9 +6,8 @@ add_trait_child!(Processor, edit, EditProcessor);
 add_trait_child!(Processor, filter, FilterProcessor);
 
 use crate::file::Explorer;
-use crate::lsp::ProgressParams;
+use crate::lsp::{self, ProgressParams};
 use crate::num::Length;
-use crate::storage::{self, LspError};
 use crate::ui::{self, Address, Change, Color, Edit, Index, BACKSPACE, ENTER};
 use crate::Mrc;
 use crate::Output;
@@ -166,16 +165,16 @@ impl Deref for ControlPanel {
 }
 
 /// Signifies an alert to stop the application.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub enum Flag {
     /// An error with the user interface.
     Ui(ui::Error),
     /// An error with an attempt to convert values.
     Conversion(TryFromIntError),
     /// An error with the file interaction.
-    File(storage::Error),
+    File(io::Error),
     /// An error with the Language Server Protocol.
-    Lsp(LspError),
+    Lsp(lsp::Error),
     /// Quits the application.
     ///
     /// This is not actually an error, just a way to kill the application.
@@ -212,7 +211,7 @@ impl From<ui::Error> for Flag {
 impl From<io::Error> for Flag {
     #[inline]
     fn from(error: io::Error) -> Self {
-        Flag::File(storage::Error::from(error))
+        Flag::File(error)
     }
 }
 

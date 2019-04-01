@@ -82,7 +82,6 @@ pub mod file;
 pub mod lsp;
 pub mod mode;
 pub mod num;
-pub mod storage;
 pub mod ui;
 
 pub use file::local::Explorer as LocalExplorer;
@@ -92,7 +91,6 @@ use mode::{Flag, Operation, Pane, Processor};
 use pancurses::Input;
 use ptr::Mrc;
 use std::collections::HashMap;
-use std::fmt::{self, Display, Formatter};
 use ui::UserInterface;
 
 /// Defines a [`Result`] with [`Flag`] as its Error.

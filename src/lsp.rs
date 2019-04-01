@@ -1,5 +1,5 @@
 //! Implements the client side of the language server protocol.
-use crate::storage::LspError;
+use crate::mode::Flag;
 use jsonrpc_core::{self, Id, Version};
 use lsp_types::{
     ClientCapabilities, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
@@ -8,10 +8,10 @@ use lsp_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::env;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::fmt::{self, Display, Formatter};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::Path;
 use std::process::{self, Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{Builder, JoinHandle};
 
@@ -28,21 +28,20 @@ pub(crate) struct LanguageClient {
     registrations: Vec<Registration>,
     /// Handle of the receiver thread.
     receiver_handle: Option<JoinHandle<()>>,
-    /// Receives notifications.
-    notification_rx: Receiver<ProgressParams>,
+    /// Notifications from the language server.
+    notifications: Vec<ProgressParams>,
 }
 
 impl LanguageClient {
     /// Creates a new `LanguageClient`.
     pub(crate) fn new(command: &str) -> Arc<Mutex<Self>> {
         let server = Self::spawn_server(command);
-        let (notification_tx, notification_rx) = mpsc::channel::<ProgressParams>();
         let their_client = Arc::new(Mutex::new(Self {
             server,
-            notification_rx,
             request_id: u64::default(),
             server_capabilities: ServerCapabilities::default(),
             registrations: Vec::new(),
+            notifications: Vec::new(),
             receiver_handle: None,
         }));
         let my_client = Arc::clone(&their_client);
@@ -51,7 +50,7 @@ impl LanguageClient {
             .expect("Locking language client")
             .receiver_handle = Builder::new()
             .name("LangClientRx".to_string())
-            .spawn(move || Self::process(my_client, &notification_tx))
+            .spawn(move || Self::process(my_client))
             .ok();
         their_client
     }
@@ -67,75 +66,67 @@ impl LanguageClient {
     }
 
     /// Process a message received from the language server.
-    fn process(mut client: Arc<Mutex<Self>>, notification_tx: &Sender<ProgressParams>) {
+    fn process(mut client: Arc<Mutex<Self>>) {
         let mut messages = MessageReader::new(&mut client);
 
         loop {
-            match messages.next_message() {
-                Ok(message) => match message.message {
-                    Message::Request(request) => {
-                        Self::process_request(&mut client, request);
-                    }
-                    Message::Response(response) => {
-                        Self::process_response(&mut client, response);
-                    }
-                    Message::Notification(notification) => {
-                        Self::process_notification(notification_tx, notification);
-                    }
-                },
-                Err(e) => {
-                    dbg!(e);
+            let message = messages.next_message().expect("Reading next message");
+            let mut myself = client.lock().expect("Locking language client");
+
+            match message.message {
+                Message::Request(request) => {
+                    myself
+                        .process_request(request)
+                        .expect("Processing request.");
+                }
+                Message::Response(response) => {
+                    myself
+                        .process_response(response)
+                        .expect("Processing response.");
+                }
+                Message::Notification(notification) => {
+                    myself.process_notification(notification);
                 }
             }
         }
     }
 
     /// Processes a request received from the language server.
-    fn process_request(client: &mut Arc<Mutex<Self>>, request: RequestMessage) {
-        let mut client = client.lock().expect("Locking language client");
-
+    fn process_request(&mut self, request: RequestMessage) -> Result<(), Error> {
         if let RequestMethod::RegisterCapability(params) = request.method {
-            client.registrations = params.registrations;
-            client
-                .send_message(Message::register_capability_response(request.id))
-                .expect("Sending registerCapability response");
+            self.registrations = params.registrations;
+            return self.send_message(Message::register_capability_response(request.id));
         }
+
+        Ok(())
     }
 
     /// Processes a response received from the language server.
-    fn process_response(client: &mut Arc<Mutex<Self>>, response: ResponseMessage) {
-        let mut client = client.lock().expect("Locking language client");
-
+    fn process_response(&mut self, response: ResponseMessage) -> Result<(), Error> {
         if let Status::Result(ResultValue::Initialize(result)) = response.status {
-            client.server_capabilities = result.capabilities;
-            client
-                .send_message(Message::initialized_notification())
-                .expect("Sending initialized notification");
+            self.server_capabilities = result.capabilities;
+            return self.send_message(Message::initialized_notification());
         }
+
+        Ok(())
     }
 
     /// Processes a notification received from the language server.
-    fn process_notification(
-        notification_tx: &Sender<ProgressParams>,
-        notification: NotificationMessage,
-    ) {
-        // TODO: Might be easier to store the data in client then check it periodically.
+    fn process_notification(&mut self, notification: NotificationMessage) {
         if let NotificationMessage::WindowProgress(params) = notification {
-            notification_tx.send(params).expect("Queuing progress data");
+            self.notifications.push(params);
         }
     }
 
     /// Initializes the language server.
-    pub(crate) fn initialize(&mut self) -> Result<(), LspError> {
+    pub(crate) fn initialize(&mut self, root_dir: &Path) -> Result<(), Error> {
         self.request_id += 1;
         self.send_message(Message::initialize_request(
             self.request_id,
             InitializeParams {
                 process_id: Some(u64::from(process::id())),
                 root_path: None,
-                root_uri: Some(
-                    Url::from_file_path(env::current_dir()?.as_path()).map_err(|_| LspError::Io)?,
-                ),
+                root_uri: Some(Url::from_directory_path(root_dir).map_err(|_| Error::InvalidPath)?),
                 initialization_options: None,
                 capabilities: ClientCapabilities::default(),
                 trace: None,
@@ -145,7 +136,7 @@ impl LanguageClient {
     }
 
     /// Sends a message to the language server.
-    pub(crate) fn send_message(&mut self, message: Message) -> Result<(), LspError> {
+    pub(crate) fn send_message(&mut self, message: Message) -> Result<(), Error> {
         let json_string = serde_json::to_string(&AbstractMessage::new(message))?;
 
         write!(
@@ -167,8 +158,8 @@ impl LanguageClient {
     }
 
     /// Return the notification from the `Explorer`.
-    pub(crate) fn receive_notification(&self) -> Option<ProgressParams> {
-        self.notification_rx.try_recv().ok()
+    pub(crate) fn receive_notification(&mut self) -> Option<ProgressParams> {
+        self.notifications.pop()
     }
 
     /// Returns the stdout of the language server.
@@ -177,6 +168,50 @@ impl LanguageClient {
             .stdout
             .take()
             .expect("Taking stdout of language server")
+    }
+}
+
+/// Specifies an error that occurred within the processing of LSP.
+#[derive(Debug)]
+pub enum Error {
+    /// Caused by an invalid path.
+    InvalidPath,
+    /// Caused by serialization error.
+    Serialization(serde_json::Error),
+    /// Caused by I/O error.
+    Io(io::Error),
+    /// An error during parsing a LSP message.
+    Parse,
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::InvalidPath => write!(f, "Invalid path for language client"),
+            Error::Serialization(e) => {
+                write!(f, "Error with serialization of LSP message caused by {}", e)
+            }
+            Error::Io(e) => write!(f, "Io error in language client caused by {}", e),
+            Error::Parse => write!(f, "Error while parsing LSP message"),
+        }
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(error: serde_json::Error) -> Self {
+        Error::Serialization(error)
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Self {
+        Error::Io(error)
+    }
+}
+
+impl From<Error> for Flag {
+    fn from(error: Error) -> Self {
+        Flag::Lsp(error)
     }
 }
 
@@ -357,17 +392,17 @@ impl MessageReader {
     }
 
     /// Returns the next message from the language server.
-    fn next_message(&mut self) -> Result<AbstractMessage, LspError> {
+    fn next_message(&mut self) -> Result<AbstractMessage, Error> {
         let mut content = vec![0; self.get_content_length()?];
         self.reader.read_exact(&mut content)?;
         // TODO: Improve error handling to give better info.
-        serde_json::from_slice(&content).map_err(|_| LspError::Parse)
+        serde_json::from_slice(&content).map_err(|_| Error::Parse)
     }
 
     /// Returns the length of the content.
     ///
     /// When this returns, the reader will point to the content of the message.
-    fn get_content_length(&mut self) -> Result<usize, LspError> {
+    fn get_content_length(&mut self) -> Result<usize, Error> {
         let mut line = String::new();
         let mut blank_line = String::new();
 
@@ -378,10 +413,10 @@ impl MessageReader {
             _bytes_read = self.reader.read_line(&mut blank_line)?;
             Ok(split
                 .next()
-                .ok_or(LspError::Protocol)
-                .and_then(|value_string| value_string.parse().map_err(|_| LspError::Parse))?)
+                .ok_or(Error::Parse)
+                .and_then(|value_string| value_string.parse().map_err(|_| Error::Parse))?)
         } else {
-            Err(LspError::Protocol)
+            Err(Error::Parse)
         }
     }
 }

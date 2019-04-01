@@ -4,6 +4,7 @@ use crate::lsp::{LanguageClient, Message};
 use crate::ptr::Mrc;
 use crate::Output;
 use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, Url};
+use std::env;
 use std::fs;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
@@ -35,7 +36,8 @@ impl Explorer {
 impl super::Explorer for Explorer {
     #[inline]
     fn start(&mut self) -> Output<()> {
-        self.language_client_mut().initialize()?;
+        self.language_client_mut()
+            .initialize(env::current_dir()?.as_path())?;
         Ok(())
     }
 
