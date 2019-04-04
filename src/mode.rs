@@ -1,50 +1,34 @@
 //! Implements the modality of the application.
-mod action;
-mod command;
-mod display;
-mod edit;
-mod filter;
+add_trait_child!(Processor, action, ActionProcessor);
+add_trait_child!(Processor, command, CommandProcessor);
+add_trait_child!(Processor, display, DisplayProcessor);
+add_trait_child!(Processor, edit, EditProcessor);
+add_trait_child!(Processor, filter, FilterProcessor);
 
-pub(crate) use action::Processor as ActionProcessor;
-pub(crate) use command::Processor as CommandProcessor;
-pub(crate) use display::Processor as DisplayProcessor;
-pub(crate) use edit::Processor as EditProcessor;
-pub(crate) use filter::Processor as FilterProcessor;
-
+use crate::file::{self, Explorer};
+use crate::lsp::{self, ProgressParams};
 use crate::num::Length;
-use crate::storage::{self, Explorer, LspError, ProgressParams};
-use crate::ui::{self, Address, Change, Color, Edit, Index, IndexType, BACKSPACE, ENTER};
-use crate::Mrc;
+use crate::ptr::Mrc;
+use crate::ui::{self, Address, Change, Color, Edit, Index, BACKSPACE, ENTER};
 use lsp_types::{Position, Range};
 use std::cmp;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::io;
 use std::iter;
 use std::ops::{Add, Deref, Sub};
 use std::path::PathBuf;
 use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 
-/// Defines a [`Result`] with [`Flag`] as its Error.
-pub type Output<T> = Result<T, Flag>;
-
 /// Defines the type that identifies a line.
 ///
 /// Defined by [`Position`].
 type Line = u64;
-
 /// Defines the type that indexes a collection of lines.
 ///
 /// The value of a `LineIndex` is equal to its respective [`Line`].
 type LineIndex = usize;
-
-/// The [`Range`] covering the entire given line.
-fn line_range(line: u64) -> Range {
-    Range::new(
-        Position::new(line, 0),
-        Position::new(line, u64::max_value()),
-    )
-}
+/// Defines a [`Result`] with [`Flag`] as its Error.
+pub type Output<T> = Result<T, Flag>;
 
 /// Signifies the name of an application mode.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -128,7 +112,7 @@ impl ControlPanel {
     /// Returns the edits needed to write the string.
     fn edits(&self) -> Vec<Edit> {
         vec![Edit::new(
-            Some(Address::new(self.height.sub_one(), Index::from(0_u8))),
+            Some(Address::new(self.height.sub_one(), Index::zero())),
             Change::Row(self.string.clone()),
         )]
     }
@@ -180,16 +164,16 @@ impl Deref for ControlPanel {
 }
 
 /// Signifies an alert to stop the application.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub enum Flag {
     /// An error with the user interface.
     Ui(ui::Error),
     /// An error with an attempt to convert values.
     Conversion(TryFromIntError),
     /// An error with the file interaction.
-    File(storage::Error),
+    File(file::Error),
     /// An error with the Language Server Protocol.
-    Lsp(LspError),
+    Lsp(lsp::Error),
     /// Quits the application.
     ///
     /// This is not actually an error, just a way to kill the application.
@@ -223,17 +207,10 @@ impl From<ui::Error> for Flag {
     }
 }
 
-impl From<LspError> for Flag {
+impl From<file::Error> for Flag {
     #[inline]
-    fn from(error: LspError) -> Self {
-        Flag::Lsp(error)
-    }
-}
-
-impl From<io::Error> for Flag {
-    #[inline]
-    fn from(error: io::Error) -> Self {
-        Flag::File(storage::Error::from(error))
+    fn from(error: file::Error) -> Self {
+        Flag::File(error)
     }
 }
 
@@ -251,7 +228,7 @@ pub(crate) struct Pane {
     /// The number of rows visible in the pane.
     height: Rc<Index>,
     /// The number of lines in the data.
-    line_count: usize,
+    line_count: Line,
     /// The control panel of the `Pane`.
     control_panel: ControlPanel,
     /// The edits `Pane` needs to make to update the [`UserInterface`].
@@ -287,7 +264,7 @@ impl Pane {
                         if let Some(line_data) = self.line_data(line_index) {
                             if let Ok(line_number) = LineNumber::try_from(line_index) {
                                 self.edits.push(Edit::new(
-                                    Some(Address::new(row, Index::from(0_u8))),
+                                    Some(Address::new(row, Index::zero())),
                                     Change::Row(format!(
                                         "{: >width$} {}",
                                         line_number,
@@ -324,7 +301,7 @@ impl Pane {
     pub(crate) fn add_notification(&mut self, notification: ProgressParams) {
         if let Some(message) = notification.message {
             self.edits.push(Edit::new(
-                Some(Address::new(Index::from(0_u8), Index::from(0_u8))),
+                Some(Address::new(Index::zero(), Index::zero())),
                 Change::Row(message),
             ));
         }
@@ -350,14 +327,14 @@ impl Pane {
 
     /// Returns an [`IndexIterator`] of the all visible rows.
     fn visible_rows(&self) -> IndexIterator {
-        IndexIterator::new(Index::from(0_u8), *self.height.deref())
+        IndexIterator::new(Index::zero(), *self.height.deref())
     }
 
     /// Applies filter highlighting to the given [`Range`]s.
     fn apply_filter(&mut self, noises: &[Range], signals: &[Range]) {
         for row in self.visible_rows() {
             self.edits.push(Edit::new(
-                Some(Address::new(row, Index::from(0_u8))),
+                Some(Address::new(row, Index::zero())),
                 Change::Format(Length::End, Color::Default),
             ));
         }
@@ -393,34 +370,41 @@ impl Pane {
 
     /// Adds a character at a [`Position`].
     pub(crate) fn add(&mut self, position: Position, input: char) -> Result<(), TryFromIntError> {
+        //let mut new_text = String::new();
+        //let mut range = Range::new(position, position);
+
         if input == BACKSPACE {
             if position.character == 0 {
                 if position.line != 0 {
+                    //range.start.line -= 1;
+                    //range.start.character = u64::max_value();
                     self.will_wipe = true;
                     self.refresh();
                 }
             } else {
+                //range.start.character -= 1;
                 let address = self.address_at(position);
 
                 if address.is_some() {
                     self.edits.push(Edit::new(address, Change::Backspace));
                 }
             }
-        } else if input == ENTER {
-            self.will_wipe = true;
-            self.refresh();
         } else {
-            let address = self.address_at(position);
+            //new_text.push(input);
 
-            if address.is_some() {
-                self.edits.push(Edit::new(address, Change::Insert(input)));
+            if input == ENTER {
+                self.will_wipe = true;
+                self.refresh();
+            } else {
+                let address = self.address_at(position);
+
+                if address.is_some() {
+                    self.edits.push(Edit::new(address, Change::Insert(input)));
+                }
             }
         }
 
-        let pointer = self
-            .line_indices()
-            .nth(LineIndex::try_from(position.line)?)
-            .and_then(|index_value| Index::try_from(index_value).ok());
+        let pointer = self.line_indices().nth(LineIndex::try_from(position.line)?);
 
         if let Some(index) = pointer {
             let mut index = usize::try_from(index)? as u64;
@@ -442,11 +426,11 @@ impl Pane {
     }
 
     /// Iterates through the indexes that indicate where each line starts.
-    pub(crate) fn line_indices(&self) -> impl Iterator<Item = IndexType> + '_ {
-        iter::once(0).chain(self.data.match_indices(ENTER).flat_map(|(index, _)| {
+    pub(crate) fn line_indices(&self) -> impl Iterator<Item = Index> + '_ {
+        iter::once(Index::zero()).chain(self.data.match_indices(ENTER).flat_map(|(index, _)| {
             index
                 .checked_add(1)
-                .and_then(|i| IndexType::try_from(i).ok())
+                .and_then(|value| Index::try_from(value).ok())
                 .into_iter()
         }))
     }
@@ -497,7 +481,7 @@ impl Pane {
 
     /// Updates the pane's metadata.
     fn refresh(&mut self) {
-        self.line_count = self.lines().count();
+        self.line_count = self.lines().count() as u64;
         self.update_margin_width()
     }
 
@@ -513,8 +497,8 @@ impl Pane {
     fn scroll_delta(&self) -> u64 {
         u64::from(
             self.height
-                .checked_div(Index::from(4_u8))
-                .unwrap_or_else(|| Index::from(0_u8)),
+                .checked_div(unsafe { Index::new_unchecked(4) })
+                .unwrap_or_else(Index::zero),
         )
     }
 

@@ -1,11 +1,11 @@
 use pancurses::Input;
-use paper::mode::{Operation, Output};
-use paper::storage::ProgressParams;
-use paper::ui::{Address, Change, Edit, Index, UserInterface};
-use paper::Explorer;
-use paper::{ui, Paper};
+use paper::file;
+use paper::lsp::ProgressParams;
+use paper::mode::Operation;
+use paper::ui::{self, Address, Change, Edit, Index};
+use paper::{Explorer, Paper, UserInterface};
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use try_from::TryFromIntError;
 
@@ -62,20 +62,20 @@ impl MockUserInterface {
 }
 
 impl UserInterface for MockUserInterface {
-    fn init(&self) -> ui::Outcome {
+    fn init(&self) -> ui::Effect {
         Ok(())
     }
 
-    fn close(&self) -> ui::Outcome {
+    fn close(&self) -> ui::Effect {
         Ok(())
     }
 
-    fn apply(&self, edit: Edit) -> ui::Outcome {
+    fn apply(&self, edit: Edit) -> ui::Effect {
         self.controller.borrow_mut().add_apply_call(edit);
         Ok(())
     }
 
-    fn flash(&self) -> ui::Outcome {
+    fn flash(&self) -> ui::Effect {
         Ok(())
     }
 
@@ -129,8 +129,11 @@ impl Controller {
         &self.apply_calls
     }
 
-    pub fn set_grid_height(&mut self, grid_height: Result<Index, TryFromIntError>) {
-        self.grid_height.0 = grid_height;
+    pub fn set_grid_height(&mut self, grid_height: Result<u32, TryFromIntError>) {
+        self.grid_height.0 = match grid_height {
+            Ok(height) => Ok(unsafe { Index::new_unchecked(height) }),
+            Err(error) => Err(error),
+        };
     }
 
     pub fn grid_height(&self) -> &Result<Index, TryFromIntError> {
@@ -143,7 +146,7 @@ struct GridHeight(Result<Index, TryFromIntError>);
 
 impl Default for GridHeight {
     fn default() -> Self {
-        Self(Ok(Index::from(0_u8)))
+        Self(Ok(Index::zero()))
     }
 }
 
@@ -161,15 +164,15 @@ impl MockExplorer {
 }
 
 impl Explorer for MockExplorer {
-    fn start(&mut self) -> Output<()> {
+    fn start(&mut self) -> file::Effect<()> {
         Ok(())
     }
 
-    fn read(&mut self, _path: &Path) -> Output<String> {
+    fn read(&mut self, _path: &PathBuf) -> file::Effect<String> {
         Ok(self.controller.borrow().file().to_string())
     }
 
-    fn write(&self, _path: &Path, _data: &str) -> Output<()> {
+    fn write(&self, _path: &Path, _data: &str) -> file::Effect<()> {
         Ok(())
     }
 
@@ -178,9 +181,12 @@ impl Explorer for MockExplorer {
     }
 }
 
-pub fn display_row_edit(row: u16, line: String) -> Edit {
+pub fn display_row_edit(row: u32, line: String) -> Edit {
     Edit::new(
-        Some(Address::new(Index::from(row), Index::from(0_u8))),
+        Some(Address::new(
+            unsafe { Index::new_unchecked(row) },
+            Index::zero(),
+        )),
         Change::Row(line),
     )
 }

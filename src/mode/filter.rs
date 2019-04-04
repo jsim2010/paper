@@ -1,12 +1,14 @@
 //! Implements functionality for the application while in filter mode.
-use super::{line_range, Initiation, LineNumber, Operation, Output, Pane};
+use super::{Initiation, LineNumber, Operation, Output, Pane};
+use crate::ptr::Mrc;
 use crate::ui::{ENTER, ESC};
-use crate::Mrc;
 use lsp_types::{Position, Range};
 use rec::ChCls::{Any, Digit, End, Not, Sign};
 use rec::{opt, some, tkn, var, Element, Pattern};
 use std::cmp;
+use std::collections::HashMap;
 use std::fmt::Debug;
+use std::rc::Rc;
 use try_from::{TryFrom, TryFromIntError};
 
 /// The [`Processor`] of the filter mode.
@@ -19,7 +21,7 @@ pub(crate) struct Processor {
     /// Matches the first feature of a filter.
     first_feature_pattern: Pattern,
     /// Filters supported by the application
-    filters: PaperFilters,
+    filters: HashMap<char, Rc<dyn Filter>>,
     /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
 }
@@ -27,11 +29,17 @@ pub(crate) struct Processor {
 impl Processor {
     /// Creates a new `Processor` for the filter mode.
     pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
+        let line_filter: Rc<dyn Filter> = Rc::new(LineFilter::default());
+        let pattern_filter: Rc<dyn Filter> = Rc::new(PatternFilter::default());
+
         Self {
             noises: Vec::new(),
             signals: Vec::new(),
             first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
-            filters: PaperFilters::default(),
+            filters: [('#', line_filter), ('/', pattern_filter)]
+                .iter()
+                .cloned()
+                .collect(),
             pane: Mrc::clone(pane),
         }
     }
@@ -51,7 +59,10 @@ impl super::Processor for Processor {
         self.noises.clear();
 
         for line in 0..pane.line_count {
-            self.noises.push(line_range(line as u64));
+            self.noises.push(Range::new(
+                Position::new(line, 0),
+                Position::new(line, u64::max_value()),
+            ));
         }
 
         Ok(())
@@ -80,11 +91,8 @@ impl super::Processor for Processor {
                     self.signals = self.noises.clone();
 
                     if let Some(id) = last_feature.chars().nth(0) {
-                        for filter in self.filters.iter() {
-                            if id == filter.id() {
-                                filter.extract(last_feature, &mut self.signals, &pane)?;
-                                break;
-                            }
+                        if let Some(filter) = self.filters.get(&id) {
+                            filter.extract(last_feature, &mut self.signals, &pane)?;
                         }
                     }
                 }
@@ -92,47 +100,6 @@ impl super::Processor for Processor {
                 pane.apply_filter(&self.noises, &self.signals);
                 Ok(Operation::maintain())
             }
-        }
-    }
-}
-
-/// Signifies all of the [`Filters`] used by the application.
-#[derive(Debug, Default)]
-struct PaperFilters {
-    /// The [`Filter`] that matches lines.
-    line: LineFilter,
-    /// The [`Filter`] that matches patterns.
-    pattern: PatternFilter,
-}
-
-impl PaperFilters {
-    /// Returns the [`Iterator`] of [`Filters`].
-    fn iter(&self) -> PaperFiltersIter<'_> {
-        PaperFiltersIter {
-            index: 0,
-            filters: self,
-        }
-    }
-}
-
-/// Signifies an [`Iterator`] through all of the [`Filters`].
-struct PaperFiltersIter<'a> {
-    /// The current index of the iteration.
-    index: usize,
-    /// The filters to be iterated.
-    filters: &'a PaperFilters,
-}
-
-impl<'a> Iterator for PaperFiltersIter<'a> {
-    type Item = &'a dyn Filter;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.index += 1;
-
-        match self.index {
-            1 => Some(&self.filters.line),
-            2 => Some(&self.filters.pattern),
-            _ => None,
         }
     }
 }

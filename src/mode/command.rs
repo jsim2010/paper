@@ -1,5 +1,6 @@
 //! Implements functionality for the application while in command mode.
-use super::{Flag, Initiation, Mrc, Operation, Output, Pane};
+use super::{Flag, Initiation, Operation, Output, Pane};
+use crate::ptr::Mrc;
 use crate::ui::{ENTER, ESC};
 use rec::ChCls::{Any, End, Whitespace};
 use rec::{lazy_some, some, tkn, var, Element, Pattern};
