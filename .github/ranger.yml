@@ -1,0 +1,3 @@
+labels:
+  # Automatically squash a PR when the 'approved' label is added to it.
+  'approved': squash
