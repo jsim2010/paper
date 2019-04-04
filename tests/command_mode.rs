@@ -2,7 +2,7 @@ mod mock;
 
 use mock::Controller;
 use pancurses::Input;
-use paper::ui::{Index, BACKSPACE, ESC};
+use paper::ui::{BACKSPACE, ESC};
 
 /// Entering characters in Command mode should add text to sketch and display.
 ///
@@ -12,9 +12,7 @@ use paper::ui::{Index, BACKSPACE, ESC};
 #[test]
 fn characters_are_displayed_as_sketch() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::from(8_u8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create(
         &controller,
         vec![
@@ -43,9 +41,7 @@ fn characters_are_displayed_as_sketch() {
 #[test]
 fn backspace_removes_character_from_sketch() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::from(8_u8)));
+    controller.borrow_mut().set_grid_height(Ok(8));
     let mut paper = mock::create(
         &controller,
         vec![
@@ -75,9 +71,7 @@ fn backspace_removes_character_from_sketch() {
 #[test]
 fn escape_returns_to_display_mode() {
     let controller = Controller::new();
-    controller
-        .borrow_mut()
-        .set_grid_height(Ok(Index::from(5_u8)));
+    controller.borrow_mut().set_grid_height(Ok(5));
     let mut paper = mock::create_with_file(&controller, vec![Input::Character('.')], "a");
     controller
         .borrow_mut()

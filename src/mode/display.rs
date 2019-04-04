@@ -1,7 +1,8 @@
 //! Implements functionality for the application while in display mode.
 use super::{Initiation, Operation, Output, Pane};
-use crate::storage::Explorer;
-use crate::Mrc;
+use crate::file::Explorer;
+use crate::ptr::Mrc;
+use std::cell::Ref;
 
 /// The [`Processor`] of the display mode.
 #[derive(Clone, Debug)]
@@ -28,18 +29,10 @@ impl super::Processor for Processor {
 
         match initiation {
             Some(Initiation::SetView(path)) => {
-                let absolute_path = if path.is_absolute() {
-                    path.clone()
-                } else {
-                    let mut new_path = std::env::current_dir()?;
-                    new_path.push(path);
-                    new_path
-                };
-
-                pane.change(&self.explorer, &absolute_path)?;
+                pane.change(&self.explorer, path)?;
             }
             Some(Initiation::Save) => {
-                let explorer: std::cell::Ref<'_, (dyn Explorer)> = self.explorer.borrow();
+                let explorer: Ref<'_, (dyn Explorer)> = self.explorer.borrow();
                 explorer.write(&pane.path, &pane.data)?;
             }
             _ => (),
