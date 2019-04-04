@@ -1,7 +1,7 @@
 //! Implements functionality for the application while in edit mode.
 use super::{Initiation, Operation, Output, Pane, Position};
 use crate::ptr::Mrc;
-use crate::ui::ESC;
+use crate::ui::{BACKSPACE, ESC};
 
 /// The [`Processor`] of the edit mode.
 #[derive(Debug)]
@@ -39,8 +39,8 @@ impl super::Processor for Processor {
         if input == ESC {
             Ok(Operation::enter_display())
         } else {
-            for &position in &self.positions {
-                pane.add(position, input)?;
+            for mut position in &mut self.positions {
+                pane.add(&mut position, input)?;
             }
 
             Ok(Operation::maintain())

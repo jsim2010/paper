@@ -115,6 +115,10 @@ impl Address {
         Self { row, column }
     }
 
+    fn is_end_of_row(&self) -> bool {
+        self.column == Index::max_value()
+    }
+
     /// Returns the column of `self`.
     ///
     /// Used with [`pancurses`].
@@ -137,23 +141,36 @@ impl Display for Address {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Span {
+    first: Address,
+    last: Address,
+}
+
+impl Span {
+    pub fn new(first: Address, last: Address) -> Self {
+        Self { first, last }
+    }
+}
+
+impl Display for Span {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "[{} -> {}]", self.first, self.last)
+    }
+}
+
 /// Signifies a modification to the grid.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Change {
-    /// Removes the previous cell, moving all subsequent cells to the left.
-    Backspace,
     /// Clears all cells.
     Clear,
     /// Sets the color of a given number of cells.
     Format(Length, Color),
-    /// Inserts a cell containing a character, moving all subsequent cells to the right.
-    Insert(char),
     /// Does nothing.
     Nothing,
-    /// Writes the characters of a string in sequence and clears all subsequent cells.
-    Row(String),
     /// Flashes the display.
     Flash,
+    Text(Span, String),
 }
 
 impl Default for Change {
@@ -167,13 +184,11 @@ impl Display for Change {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Change::Backspace => write!(f, "Backspace"),
             Change::Clear => write!(f, "Clear"),
             Change::Format(n, color) => write!(f, "Format {} cells to {}", n, color),
-            Change::Insert(input) => write!(f, "Insert '{}'", input),
             Change::Nothing => write!(f, "Nothing"),
-            Change::Row(row_str) => write!(f, "Write row '{}'", row_str),
             Change::Flash => write!(f, "Flash"),
+            Change::Text(span, text) => write!(f, "Set {} to {}", span, text),
         }
     }
 }
@@ -387,20 +402,32 @@ impl UserInterface for Terminal {
         }
 
         match edit.change {
-            Change::Backspace => {
-                // Add BACKSPACE (move cursor 1 cell to the left) and delete that character.
-                self.add_char(BACKSPACE)?;
-                self.delete_char()
-            }
             Change::Clear => self.clear_all(),
             Change::Format(n, color) => self.format(n, color),
-            Change::Insert(c) => self.insert_char(c),
             Change::Nothing => Ok(()),
-            Change::Row(s) => {
-                self.add_str(s)?;
-                self.clear_to_row_end()
-            }
             Change::Flash => self.flash(),
+            Change::Text(span, text) => {
+                // Currently only support
+                // - removing a single character (not ENTER)
+                // - inserting text that does not include ENTER
+                // - overwriting to the end of the row
+                self.move_to(span.first)?;
+
+                if text.is_empty() {
+                    self.delete_char()
+                } else {
+                    if span.first == span.last {
+                        for c in text.chars().rev() {
+                            self.insert_char(c)?;
+                        }
+                    } else if span.last.is_end_of_row() {
+                        self.add_str(text)?;
+                        self.clear_to_row_end()?;
+                    }
+
+                    Ok(())
+                }
+            }
         }
     }
 

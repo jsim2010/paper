@@ -39,6 +39,10 @@ impl NonNegativeI32 {
         Self(0)
     }
 
+    pub fn max_value() -> Self {
+        Self(i32::max_value())
+    }
+
     /// Computes `self / rhs`, returning `None` if `rhs == 0` or the division results in overflow.
     #[inline]
     // Follows the format set by checked_div() from primitive types.

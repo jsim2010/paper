@@ -9,7 +9,7 @@ use crate::file::{self, Explorer};
 use crate::lsp::{self, ProgressParams};
 use crate::num::Length;
 use crate::ptr::Mrc;
-use crate::ui::{self, Address, Change, Color, Edit, Index, BACKSPACE, ENTER};
+use crate::ui::{self, Address, Change, Color, Edit, Index, Span, BACKSPACE, ENTER};
 use lsp_types::{Position, Range};
 use std::cmp;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -111,9 +111,12 @@ impl ControlPanel {
 
     /// Returns the edits needed to write the string.
     fn edits(&self) -> Vec<Edit> {
+        let row = self.height.sub_one();
+
+        /// TODO: Could potentially improve to change only the chars that have been changed.
         vec![Edit::new(
-            Some(Address::new(self.height.sub_one(), Index::zero())),
-            Change::Row(self.string.clone()),
+            None,
+            Change::Text(Span::new(Address::new(row, Index::zero()), Address::new(row, Index::max_value())), self.string.clone()),
         )]
     }
 
@@ -264,8 +267,8 @@ impl Pane {
                         if let Some(line_data) = self.line_data(line_index) {
                             if let Ok(line_number) = LineNumber::try_from(line_index) {
                                 self.edits.push(Edit::new(
-                                    Some(Address::new(row, Index::zero())),
-                                    Change::Row(format!(
+                                    None,
+                                    Change::Text(Span::new(Address::new(row, Index::zero()), Address::new(row, Index::max_value())), format!(
                                         "{: >width$} {}",
                                         line_number,
                                         line_data,
@@ -301,8 +304,8 @@ impl Pane {
     pub(crate) fn add_notification(&mut self, notification: ProgressParams) {
         if let Some(message) = notification.message {
             self.edits.push(Edit::new(
-                Some(Address::new(Index::zero(), Index::zero())),
-                Change::Row(message),
+                None,
+                Change::Text(Span::new(Address::new(Index::zero(), Index::zero()), Address::new(Index::zero(), Index::max_value())), message),
             ));
         }
     }
@@ -369,46 +372,38 @@ impl Pane {
     }
 
     /// Adds a character at a [`Position`].
-    pub(crate) fn add(&mut self, position: Position, input: char) -> Result<(), TryFromIntError> {
-        //let mut new_text = String::new();
-        //let mut range = Range::new(position, position);
+    pub(crate) fn add(&mut self, position: &mut Position, input: char) -> Result<(), TryFromIntError> {
+        let mut new_text = String::new();
+        let mut range = Range::new(*position, *position);
 
         if input == BACKSPACE {
             if position.character == 0 {
                 if position.line != 0 {
-                    //range.start.line -= 1;
-                    //range.start.character = u64::max_value();
+                    range.start.line -= 1;
+                    range.start.character = u64::max_value();
                     self.will_wipe = true;
                     self.refresh();
                 }
             } else {
-                //range.start.character -= 1;
-                let address = self.address_at(position);
-
-                if address.is_some() {
-                    self.edits.push(Edit::new(address, Change::Backspace));
-                }
+                range.start.character -= 1;
+                self.edits.push(Edit::new(None, Change::Text(self.span_at(range).unwrap(), new_text)));
             }
         } else {
-            //new_text.push(input);
+            new_text.push(input);
 
             if input == ENTER {
                 self.will_wipe = true;
                 self.refresh();
             } else {
-                let address = self.address_at(position);
-
-                if address.is_some() {
-                    self.edits.push(Edit::new(address, Change::Insert(input)));
-                }
+                self.edits.push(Edit::new(None, Change::Text(self.span_at(range).unwrap(), new_text)));
             }
         }
 
-        let pointer = self.line_indices().nth(LineIndex::try_from(position.line)?);
+        let pointer = self.line_indices().nth(LineIndex::try_from(range.start.line)?);
 
         if let Some(index) = pointer {
             let mut index = usize::try_from(index)? as u64;
-            index += position.character;
+            index += range.start.character;
             let data_index = usize::try_from(index)?;
 
             if input == BACKSPACE {
@@ -417,8 +412,10 @@ impl Pane {
                 match self.data.remove(data_index) {
                     _ => {}
                 }
+                *position = range.start;
             } else {
-                self.data.insert(data_index.saturating_sub(1), input);
+                self.data.insert(data_index, input);
+                position.character += 1;
             }
         }
 
@@ -467,6 +464,10 @@ impl Pane {
             self.column_at(&position)
                 .map(|column| Address::new(row, column))
         })
+    }
+
+    fn span_at(&self, range: Range) -> Option<Span> {
+        self.address_at(range.start).and_then(|first| self.address_at(range.end).map(|last| Span::new(first, last)))
     }
 
     /// An [`Iterator`] of all lines in the pane's data.
