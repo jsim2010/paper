@@ -2,9 +2,6 @@
 //!
 //! This project is very much in an alpha state.
 //!
-//! [![Waffle.io - Columns and their card
-//! count](https://badge.waffle.io/jsim2010/paper.svg?columns=all)](https://waffle.io/jsim2010/paper)
-//!
 //! Its features include:
 //! - Modal editing (keys implement different functionality depending on the current mode).
 //! - Extensive but relatively simple filter grammar that allows user to select any text.
@@ -44,7 +41,6 @@
     rust_2018_idioms,
     future_incompatible,
     unused,
-    box_pointers,
     macro_use_extern_crate,
     missing_copy_implementations,
     missing_debug_implementations,
@@ -69,37 +65,33 @@
 // This goes against rust convention and would require return calls in places it is not helpful (i.e. closures).
 #![allow(clippy::missing_inline_in_public_items)] // Mistakenly marks derived traits.
 
-// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences, single_use_lifetimes: issue rust-lang/rust#55057
+// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences, single_use_lifetimes: issue rust-lang/rust#55057, box_pointers
 
+macro_rules! add_trait_child {
+    ($trait:ident, $child:ident, $name:ident) => {
+        mod $child;
+        pub(crate) use $child::$trait as $name;
+    };
+}
+
+#[macro_use]
+mod ptr;
+
+// file uses a macro from ptr and thus must be loaded after ptr.
+pub mod file;
+pub mod lsp;
 pub mod mode;
 pub mod num;
-pub mod storage;
 pub mod ui;
 
-pub use storage::Explorer;
+pub use file::local::Explorer as LocalExplorer;
+pub use file::Explorer;
+pub use ui::UserInterface;
 
 use mode::{Flag, Operation, Output, Pane, Processor};
 use pancurses::Input;
-use std::borrow::Borrow;
-use std::cell::RefCell;
-use std::cmp::Ordering;
+use ptr::Mrc;
 use std::collections::HashMap;
-use std::fmt::{self, Debug, Display, Formatter};
-use std::ops::{Add, AddAssign};
-use std::rc::Rc;
-use try_from::{TryFrom, TryFromIntError};
-use ui::UserInterface;
-
-/// A Mutable Reference Counter.
-///
-/// This is just a ([`Rc`]) of a [`RefCell`].
-type Mrc<T> = Rc<RefCell<T>>;
-
-macro_rules! mrc {
-    ($item:expr) => {
-        Rc::new(RefCell::new($item))
-    };
-}
 
 /// The paper application.
 #[derive(Debug)]
