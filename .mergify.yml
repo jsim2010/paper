@@ -1,0 +1,18 @@
+pull_request_rules:
+  - name: squash approved PR
+    conditions:
+      - label=ready
+      - status-success=Travis CI - Pull Request
+      - base=master
+    actions:
+      delete_head_branch: {}
+      merge:
+        method: squash
+  - name: merge dependabot PR
+    conditions:
+      - author=dependabot[bot]
+      - status-success=Travis CI - Pull Request
+      - base=master
+    actions:
+      merge:
+        method: squash
