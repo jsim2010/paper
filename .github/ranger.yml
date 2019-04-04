@@ -1,3 +1,7 @@
 labels:
   # Automatically squash a PR when the 'approved' label is added to it.
   'approved': squash
+
+merges:
+  # Delete branch after merging the PR.
+  - action: delete_branch
