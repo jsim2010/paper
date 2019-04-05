@@ -1,16 +1,16 @@
 //! Implements how the user interfaces with the application.
+pub use crate::num::NonNegativeI32 as Index;
 
-use crate::num::{Length, NonNegativeI32};
 use crate::ptr::Mrc;
 use pancurses::Input;
-use std::cell::RefCell;
-use std::error;
-use std::fmt::{self, Debug, Display, Formatter};
-use std::rc::Rc;
+use std::{
+    cell::RefCell,
+    error,
+    fmt::{self, Debug, Display, Formatter},
+    rc::Rc,
+};
 use try_from::{TryFrom, TryFromIntError};
 
-/// The type of all grid index values.
-pub type Index = NonNegativeI32;
 /// The [`Result`] returned by functions of this module.
 pub type Effect = Result<(), Error>;
 
@@ -115,6 +115,11 @@ impl Address {
         Self { row, column }
     }
 
+    /// Returns if `Address` represents the end of a row.
+    fn is_end_of_row(self) -> bool {
+        self.column == Index::max_value()
+    }
+
     /// Returns the column of `self`.
     ///
     /// Used with [`pancurses`].
@@ -137,23 +142,48 @@ impl Display for Address {
     }
 }
 
+/// Signifies a sequence of `Address`es.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Span {
+    /// The first `Address` included in the `Span`.
+    first: Address,
+    /// The first `Address` not included in the `Span`.
+    last: Address,
+}
+
+impl Span {
+    /// Creates a new `Span`.
+    pub fn new(first: Address, last: Address) -> Self {
+        Self { first, last }
+    }
+
+    /// Returns the length of the `Span`.
+    ///
+    /// Assumes that the `Span` only covers 1 row.
+    fn length(&self) -> i32 {
+        self.last.x().saturating_sub(self.first.x())
+    }
+}
+
+impl Display for Span {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "[{} -> {}]", self.first, self.last)
+    }
+}
+
 /// Signifies a modification to the grid.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Change {
-    /// Removes the previous cell, moving all subsequent cells to the left.
-    Backspace,
     /// Clears all cells.
     Clear,
     /// Sets the color of a given number of cells.
-    Format(Length, Color),
-    /// Inserts a cell containing a character, moving all subsequent cells to the right.
-    Insert(char),
+    Format(Span, Color),
     /// Does nothing.
     Nothing,
-    /// Writes the characters of a string in sequence and clears all subsequent cells.
-    Row(String),
     /// Flashes the display.
     Flash,
+    /// Sets the text for a given `Span` of `Addresses`.
+    Text(Span, String),
 }
 
 impl Default for Change {
@@ -167,13 +197,11 @@ impl Display for Change {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Change::Backspace => write!(f, "Backspace"),
             Change::Clear => write!(f, "Clear"),
-            Change::Format(n, color) => write!(f, "Format {} cells to {}", n, color),
-            Change::Insert(input) => write!(f, "Insert '{}'", input),
+            Change::Format(span, color) => write!(f, "Format {} to {}", span, color),
             Change::Nothing => write!(f, "Nothing"),
-            Change::Row(row_str) => write!(f, "Write row '{}'", row_str),
             Change::Flash => write!(f, "Flash"),
+            Change::Text(span, text) => write!(f, "Set {} to {}", span, text),
         }
     }
 }
@@ -214,26 +242,6 @@ impl Display for Color {
     }
 }
 
-/// Signifies a [`Change`] to make to an [`Address`].
-///
-/// [`Change`]: enum.Change.html
-/// [`Address`]: struct.Address.html
-#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
-pub struct Edit {
-    /// The [`Change`] to be made.
-    change: Change,
-    /// The [`Address`] on which the [`Change`] is intended.
-    address: Option<Address>,
-}
-
-impl Edit {
-    /// Creates a new `Edit`.
-    #[inline]
-    pub fn new(address: Option<Address>, change: Change) -> Self {
-        Self { address, change }
-    }
-}
-
 /// The interface between the user and the application.
 ///
 /// All output is displayed in a grid of cells. Each cell contains one character and can change its
@@ -245,8 +253,8 @@ pub trait UserInterface: Debug {
     fn close(&self) -> Effect;
     /// Returns the number of cells that make up the height of the grid.
     fn grid_height(&self) -> Result<Index, TryFromIntError>;
-    /// Applies the edit to the output.
-    fn apply(&self, edit: Edit) -> Effect;
+    /// Applies the `Change` to the output.
+    fn apply(&self, change: Change) -> Effect;
     /// Flashes the output.
     fn flash(&self) -> Effect;
     /// Returns the input from the user.
@@ -279,11 +287,6 @@ impl Terminal {
         } else {
             Err(error)
         }
-    }
-
-    /// Overwrites the block at cursor with a character.
-    fn add_char(&self, c: char) -> Effect {
-        Self::process(self.window.addch(c), Error::Waddch)
     }
 
     /// Writes a string starting at the cursor.
@@ -327,10 +330,9 @@ impl Terminal {
     }
 
     /// Sets the color of the next specified number of blocks from the cursor.
-    fn format(&self, length: Length, color: Color) -> Effect {
+    fn format(&self, length: i32, color: Color) -> Effect {
         Self::process(
-            self.window
-                .chgat(i32::from(length), pancurses::A_NORMAL, color.cp()),
+            self.window.chgat(length, pancurses::A_NORMAL, color.cp()),
             Error::Wchgat,
         )
     }
@@ -381,26 +383,39 @@ impl UserInterface for Terminal {
     }
 
     #[inline]
-    fn apply(&self, edit: Edit) -> Effect {
-        if let Some(address) = edit.address {
-            self.move_to(address)?;
-        }
-
-        match edit.change {
-            Change::Backspace => {
-                // Add BACKSPACE (move cursor 1 cell to the left) and delete that character.
-                self.add_char(BACKSPACE)?;
-                self.delete_char()
-            }
+    fn apply(&self, change: Change) -> Effect {
+        match change {
             Change::Clear => self.clear_all(),
-            Change::Format(n, color) => self.format(n, color),
-            Change::Insert(c) => self.insert_char(c),
-            Change::Nothing => Ok(()),
-            Change::Row(s) => {
-                self.add_str(s)?;
-                self.clear_to_row_end()
+            Change::Format(span, color) => {
+                self.move_to(span.first)?;
+                self.format(span.length(), color)
             }
+            Change::Nothing => Ok(()),
             Change::Flash => self.flash(),
+            Change::Text(span, text) => {
+                // Currently only support
+                // - removing a single character (not ENTER)
+                // - inserting text that does not include ENTER
+                // - overwriting to the end of the row
+                self.move_to(span.first)?;
+
+                if text.is_empty() {
+                    self.delete_char()
+                } else {
+                    if span.first == span.last {
+                        for c in text.chars().rev() {
+                            self.insert_char(c)?;
+                        }
+                    } else if span.last.is_end_of_row() {
+                        self.add_str(text)?;
+                        self.clear_to_row_end()?;
+                    } else {
+                        self.add_str(text)?;
+                    }
+
+                    Ok(())
+                }
+            }
         }
     }
 

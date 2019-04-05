@@ -1,13 +1,16 @@
 //! Implements `Explorer` for local storage.
 use super::{Effect, ProgressParams};
-use crate::lsp::{LanguageClient, Message};
-use crate::ptr::Mrc;
+use crate::{
+    lsp::{LanguageClient, Message},
+    ptr::Mrc,
+};
 use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, Url};
-use std::env;
-use std::fs;
-use std::io::{self, ErrorKind};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{
+    env, fs,
+    io::{self, ErrorKind},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 /// Signifies an `Explorer` of the local storage.
 #[derive(Debug)]

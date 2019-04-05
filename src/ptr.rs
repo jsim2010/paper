@@ -1,6 +1,5 @@
 //! Defines smart pointer functionality.
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 /// A Mutable Reference Counter.
 ///

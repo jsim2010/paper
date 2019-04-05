@@ -5,18 +5,21 @@ add_trait_child!(Processor, display, DisplayProcessor);
 add_trait_child!(Processor, edit, EditProcessor);
 add_trait_child!(Processor, filter, FilterProcessor);
 
-use crate::file::{self, Explorer};
-use crate::lsp::{self, ProgressParams};
-use crate::num::Length;
-use crate::ptr::Mrc;
-use crate::ui::{self, Address, Change, Color, Edit, Index, BACKSPACE, ENTER};
+use crate::{
+    file::{self, Explorer},
+    lsp::{self, ProgressParams},
+    ptr::Mrc,
+    ui::{self, Address, Change, Color, Index, Span, BACKSPACE, ENTER},
+};
 use lsp_types::{Position, Range};
-use std::cmp;
-use std::fmt::{self, Debug, Display, Formatter};
-use std::iter;
-use std::ops::{Add, Deref, Sub};
-use std::path::PathBuf;
-use std::rc::Rc;
+use std::{
+    cmp,
+    fmt::{self, Debug, Display, Formatter},
+    iter,
+    ops::{Add, Deref, Sub},
+    path::PathBuf,
+    rc::Rc,
+};
 use try_from::{TryFrom, TryFromIntError};
 
 /// Defines the type that identifies a line.
@@ -109,11 +112,17 @@ impl ControlPanel {
         }
     }
 
-    /// Returns the edits needed to write the string.
-    fn edits(&self) -> Vec<Edit> {
-        vec![Edit::new(
-            Some(Address::new(self.height.sub_one(), Index::zero())),
-            Change::Row(self.string.clone()),
+    /// Returns the `Change`s needed to display the `ControlPanel`.
+    fn changes(&self) -> Vec<Change> {
+        let row = self.height.sub_one();
+
+        /// TODO: Could potentially improve to change only the chars that have been changed.
+        vec![Change::Text(
+            Span::new(
+                Address::new(row, Index::zero()),
+                Address::new(row, Index::max_value()),
+            ),
+            self.string.clone(),
         )]
     }
 
@@ -140,18 +149,18 @@ impl ControlPanel {
         self.string.push(input);
     }
 
-    /// Adds the input and returns the appropriate user interface edits.
-    fn edits_after_add(&mut self, input: char) -> Vec<Edit> {
+    /// Adds the input and returns the appropriate `Change`s.
+    fn changes_after_add(&mut self, input: char) -> Vec<Change> {
         if self.add(input) {
-            self.edits()
+            self.changes()
         } else {
-            self.flash_edits()
+            self.flash_changes()
         }
     }
 
-    /// Returns the edits needed to flash the user interface.
-    fn flash_edits(&self) -> Vec<Edit> {
-        vec![Edit::new(None, Change::Flash)]
+    /// Returns the `Change`s needed to flash the user interface.
+    fn flash_changes(&self) -> Vec<Change> {
+        vec![Change::Flash]
     }
 }
 
@@ -231,8 +240,8 @@ pub(crate) struct Pane {
     line_count: Line,
     /// The control panel of the `Pane`.
     control_panel: ControlPanel,
-    /// The edits `Pane` needs to make to update the [`UserInterface`].
-    edits: Vec<Edit>,
+    /// The `Change`s `Pane` needs to make to update the [`UserInterface`].
+    changes: Vec<Change>,
     /// If `Pane` will clear and redraw on next update.
     will_wipe: bool,
 }
@@ -249,11 +258,11 @@ impl Pane {
         }
     }
 
-    /// Returns the edits needed to update `Pane`.
-    pub(crate) fn edits(&mut self) -> Vec<Edit> {
+    /// Returns the `Change`s needed to update `Pane`.
+    pub(crate) fn changes(&mut self) -> Vec<Change> {
         if self.will_wipe {
-            self.edits.clear();
-            self.edits.push(Edit::new(None, Change::Clear));
+            self.changes.clear();
+            self.changes.push(Change::Clear);
 
             if let Ok(start_line_index) = LineIndex::try_from(self.first_line) {
                 for row in self.visible_rows() {
@@ -263,14 +272,17 @@ impl Pane {
                     {
                         if let Some(line_data) = self.line_data(line_index) {
                             if let Ok(line_number) = LineNumber::try_from(line_index) {
-                                self.edits.push(Edit::new(
-                                    Some(Address::new(row, Index::zero())),
-                                    Change::Row(format!(
+                                self.changes.push(Change::Text(
+                                    Span::new(
+                                        Address::new(row, Index::zero()),
+                                        Address::new(row, Index::max_value()),
+                                    ),
+                                    format!(
                                         "{: >width$} {}",
                                         line_number,
                                         line_data,
                                         width = usize::from(self.margin_width)
-                                    )),
+                                    ),
                                 ));
                             } else {
                                 break;
@@ -287,22 +299,25 @@ impl Pane {
             self.will_wipe = false;
         }
 
-        let edits = self.edits.clone();
-        self.edits.clear();
-        edits
+        let changes = self.changes.clone();
+        self.changes.clear();
+        changes
     }
 
-    /// Sets [`Pane`] to be wiped on the next call to [`edits`]().
+    /// Sets [`Pane`] to be wiped on the next call to `changes`().
     fn wipe(&mut self) {
         self.will_wipe = true;
     }
 
-    /// Adds the edits to display a notification.
+    /// Adds the `Change`s to display a notification.
     pub(crate) fn add_notification(&mut self, notification: ProgressParams) {
         if let Some(message) = notification.message {
-            self.edits.push(Edit::new(
-                Some(Address::new(Index::zero(), Index::zero())),
-                Change::Row(message),
+            self.changes.push(Change::Text(
+                Span::new(
+                    Address::new(Index::zero(), Index::zero()),
+                    Address::new(Index::zero(), Index::max_value()),
+                ),
+                message,
             ));
         }
     }
@@ -316,13 +331,13 @@ impl Pane {
             self.control_panel.add_non_bs(filter_id);
         }
 
-        self.edits.append(&mut self.control_panel.edits());
+        self.changes.append(&mut self.control_panel.changes());
     }
 
     /// Adds an input to the control panel.
     fn input_to_control_panel(&mut self, input: char) {
-        self.edits
-            .append(&mut self.control_panel.edits_after_add(input));
+        self.changes
+            .append(&mut self.control_panel.changes_after_add(input));
     }
 
     /// Returns an [`IndexIterator`] of the all visible rows.
@@ -333,29 +348,24 @@ impl Pane {
     /// Applies filter highlighting to the given [`Range`]s.
     fn apply_filter(&mut self, noises: &[Range], signals: &[Range]) {
         for row in self.visible_rows() {
-            self.edits.push(Edit::new(
-                Some(Address::new(row, Index::zero())),
-                Change::Format(Length::End, Color::Default),
+            self.changes.push(Change::Format(
+                Span::new(
+                    Address::new(row, Index::zero()),
+                    Address::new(row, Index::max_value()),
+                ),
+                Color::Default,
             ));
         }
 
         for noise in noises {
-            let address = self.address_at(noise.start);
-            let length = Length::from(noise.end.character.saturating_sub(noise.start.character));
-
-            if address.is_some() && !length.is_zero() {
-                self.edits
-                    .push(Edit::new(address, Change::Format(length, Color::Blue)));
+            if let Some(span) = self.span_at(*noise) {
+                self.changes.push(Change::Format(span, Color::Blue));
             }
         }
 
         for signal in signals {
-            let address = self.address_at(signal.start);
-            let length = Length::from(signal.end.character.saturating_sub(signal.start.character));
-
-            if address.is_some() && !length.is_zero() {
-                self.edits
-                    .push(Edit::new(address, Change::Format(length, Color::Red)));
+            if let Some(span) = self.span_at(*signal) {
+                self.changes.push(Change::Format(span, Color::Red));
             }
         }
     }
@@ -369,46 +379,49 @@ impl Pane {
     }
 
     /// Adds a character at a [`Position`].
-    pub(crate) fn add(&mut self, position: Position, input: char) -> Result<(), TryFromIntError> {
-        //let mut new_text = String::new();
-        //let mut range = Range::new(position, position);
+    pub(crate) fn add(
+        &mut self,
+        position: &mut Position,
+        input: char,
+    ) -> Result<(), TryFromIntError> {
+        let mut new_text = String::new();
+        let mut range = Range::new(*position, *position);
 
         if input == BACKSPACE {
             if position.character == 0 {
                 if position.line != 0 {
-                    //range.start.line -= 1;
-                    //range.start.character = u64::max_value();
+                    range.start.line -= 1;
+                    range.start.character = u64::max_value();
                     self.will_wipe = true;
                     self.refresh();
                 }
             } else {
-                //range.start.character -= 1;
-                let address = self.address_at(position);
+                range.start.character -= 1;
 
-                if address.is_some() {
-                    self.edits.push(Edit::new(address, Change::Backspace));
+                if let Some(span) = self.span_at(range) {
+                    self.changes.push(Change::Text(span, new_text));
                 }
             }
         } else {
-            //new_text.push(input);
+            new_text.push(input);
 
             if input == ENTER {
                 self.will_wipe = true;
                 self.refresh();
+            } else if let Some(span) = self.span_at(range) {
+                self.changes.push(Change::Text(span, new_text));
             } else {
-                let address = self.address_at(position);
-
-                if address.is_some() {
-                    self.edits.push(Edit::new(address, Change::Insert(input)));
-                }
+                // Do nothing.
             }
         }
 
-        let pointer = self.line_indices().nth(LineIndex::try_from(position.line)?);
+        let pointer = self
+            .line_indices()
+            .nth(LineIndex::try_from(range.start.line)?);
 
         if let Some(index) = pointer {
             let mut index = usize::try_from(index)? as u64;
-            index += position.character;
+            index += range.start.character;
             let data_index = usize::try_from(index)?;
 
             if input == BACKSPACE {
@@ -417,8 +430,10 @@ impl Pane {
                 match self.data.remove(data_index) {
                     _ => {}
                 }
+                *position = range.start;
             } else {
-                self.data.insert(data_index.saturating_sub(1), input);
+                self.data.insert(data_index, input);
+                position.character += 1;
             }
         }
 
@@ -466,6 +481,14 @@ impl Pane {
         self.row_at(&position).and_then(|row| {
             self.column_at(&position)
                 .map(|column| Address::new(row, column))
+        })
+    }
+
+    /// Returns the `Span` associated with the given `Range`.
+    fn span_at(&self, range: Range) -> Option<Span> {
+        self.address_at(range.start).and_then(|first| {
+            self.address_at(range.end)
+                .map(|last| Span::new(first, last))
         })
     }
 

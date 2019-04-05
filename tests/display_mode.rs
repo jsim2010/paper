@@ -21,7 +21,7 @@ fn period_enters_command_mode() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_row_edit(7, String::from(""))]
+        &vec![mock::row_change(7, String::from(""))]
     );
 }
 
@@ -43,7 +43,7 @@ fn pound_sign_enters_filter_mode() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_row_edit(7, String::from("#"))]
+        &vec![mock::row_change(7, String::from("#"))]
     );
 }
 
@@ -65,7 +65,7 @@ fn backslash_enters_filter_mode() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_row_edit(7, String::from("/"))]
+        &vec![mock::row_change(7, String::from("/"))]
     );
 }
 
@@ -88,8 +88,8 @@ fn j_scrolls_down() {
     assert_eq!(
         controller.borrow().apply_calls(),
         &vec![
-            mock::display_clear_edit(),
-            mock::display_row_edit(0, String::from("3 c")),
+            mock::clear_change(),
+            mock::row_change(0, String::from("3 c")),
         ]
     );
 }
@@ -113,8 +113,8 @@ fn j_does_not_scroll_past_last_line() {
     assert_eq!(
         controller.borrow().apply_calls(),
         &vec![
-            mock::display_clear_edit(),
-            mock::display_row_edit(0, String::from("2 b")),
+            mock::clear_change(),
+            mock::row_change(0, String::from("2 b")),
         ]
     );
 }
@@ -161,10 +161,10 @@ fn k_scrolls_up() {
     assert_eq!(
         controller.borrow().apply_calls(),
         &vec![
-            mock::display_clear_edit(),
-            mock::display_row_edit(0, String::from("3 c")),
-            mock::display_row_edit(1, String::from("4 d")),
-            mock::display_row_edit(2, String::from("5 e")),
+            mock::clear_change(),
+            mock::row_change(0, String::from("3 c")),
+            mock::row_change(1, String::from("4 d")),
+            mock::row_change(2, String::from("5 e")),
         ]
     );
 }
@@ -189,9 +189,9 @@ fn k_does_not_scroll_past_first_line() {
     assert_eq!(
         controller.borrow().apply_calls(),
         &vec![
-            mock::display_clear_edit(),
-            mock::display_row_edit(0, String::from("1 a")),
-            mock::display_row_edit(1, String::from("2 b")),
+            mock::clear_change(),
+            mock::row_change(0, String::from("1 a")),
+            mock::row_change(1, String::from("2 b")),
         ]
     );
 }

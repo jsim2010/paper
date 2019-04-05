@@ -1,14 +1,9 @@
 //! Implements functionality for the application while in filter mode.
 use super::{Initiation, LineNumber, Operation, Output, Pane};
-use crate::ptr::Mrc;
-use crate::ui::{ENTER, ESC};
+use crate::{ptr::Mrc, ui::{ENTER, ESC}};
 use lsp_types::{Position, Range};
-use rec::ChCls::{Any, Digit, End, Not, Sign};
-use rec::{opt, some, tkn, var, Element, Pattern};
-use std::cmp;
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::rc::Rc;
+use rec::{ChCls::{Any, Digit, End, Not, Sign}, opt, some, tkn, var, Element, Pattern};
+use std::{cmp, collections::HashMap, fmt::Debug, rc::Rc};
 use try_from::{TryFrom, TryFromIntError};
 
 /// The [`Processor`] of the filter mode.

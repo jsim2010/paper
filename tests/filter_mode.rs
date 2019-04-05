@@ -18,8 +18,8 @@ fn escape_returns_to_display() {
     assert_eq!(
         controller.borrow().apply_calls(),
         &vec![
-            mock::display_clear_edit(),
-            mock::display_row_edit(0, String::from("1 a")),
+            mock::clear_change(),
+            mock::row_change(0, String::from("1 a")),
         ]
     );
 }

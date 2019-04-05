@@ -2,7 +2,7 @@ use pancurses::Input;
 use paper::file;
 use paper::lsp::ProgressParams;
 use paper::mode::Operation;
-use paper::ui::{self, Address, Change, Edit, Index};
+use paper::ui::{self, Address, Change, Index, Span};
 use paper::{Explorer, Paper, UserInterface};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -70,8 +70,8 @@ impl UserInterface for MockUserInterface {
         Ok(())
     }
 
-    fn apply(&self, edit: Edit) -> ui::Effect {
-        self.controller.borrow_mut().add_apply_call(edit);
+    fn apply(&self, change: Change) -> ui::Effect {
+        self.controller.borrow_mut().add_apply_call(change);
         Ok(())
     }
 
@@ -92,7 +92,7 @@ impl UserInterface for MockUserInterface {
 pub struct Controller {
     file: String,
     input: Option<Input>,
-    apply_calls: Vec<Edit>,
+    apply_calls: Vec<Change>,
     grid_height: GridHeight,
 }
 
@@ -117,15 +117,15 @@ impl Controller {
         &self.input
     }
 
-    pub fn add_apply_call(&mut self, edit: Edit) {
-        self.apply_calls.push(edit);
+    pub fn add_apply_call(&mut self, change: Change) {
+        self.apply_calls.push(change);
     }
 
     pub fn reset_apply_calls(&mut self) {
         self.apply_calls.clear();
     }
 
-    pub fn apply_calls(&self) -> &Vec<Edit> {
+    pub fn apply_calls(&self) -> &Vec<Change> {
         &self.apply_calls
     }
 
@@ -181,16 +181,17 @@ impl Explorer for MockExplorer {
     }
 }
 
-pub fn display_row_edit(row: u32, line: String) -> Edit {
-    Edit::new(
-        Some(Address::new(
-            unsafe { Index::new_unchecked(row) },
-            Index::zero(),
-        )),
-        Change::Row(line),
+pub fn row_change(row: u32, line: String) -> Change {
+    let row_index = unsafe { Index::new_unchecked(row) };
+    Change::Text(
+        Span::new(
+            Address::new(row_index, Index::zero()),
+            Address::new(row_index, Index::max_value()),
+        ),
+        line,
     )
 }
 
-pub fn display_clear_edit() -> Edit {
-    Edit::new(None, Change::Clear)
+pub fn clear_change() -> Change {
+    Change::Clear
 }

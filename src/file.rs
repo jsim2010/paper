@@ -2,9 +2,11 @@
 pub(crate) mod local;
 
 use crate::lsp::{self, ProgressParams};
-use std::fmt::{self, Debug, Display, Formatter};
-use std::io;
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::{self, Debug, Display, Formatter},
+    io,
+    path::{Path, PathBuf},
+};
 
 /// Specifies the type returned by `Explorer` functions.
 pub type Effect<T> = Result<T, Error>;
