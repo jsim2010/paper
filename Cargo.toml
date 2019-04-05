@@ -12,11 +12,11 @@ edition = "2018"
 
 [dependencies]
 clap = "2.32.0"
-jsonrpc-core = "10.1.0"
+jsonrpc-core = "11.0.0"
 lsp-types = "0.56.0"
-rec = "0.3.0"
-regex = "1.1.2"
-serde = { version = "1.0.89", features = ["derive"] }
+rec = "0.4.0"
+regex = "1.1.5"
+serde = { version = "1.0.90", features = ["derive"] }
 serde_json = "1.0.39"
 spectral = "0.6.0"
 try_from = "0.3.2"
