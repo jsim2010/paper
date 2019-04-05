@@ -370,20 +370,16 @@ impl Pane {
         }
 
         for noise in noises {
-            match self.span_at(*noise) {
-                Some(span) => self
-                    .edits
-                    .push(Edit::new(None, Change::Format(span, Color::Blue))),
-                None => (),
+            if let Some(span) = self.span_at(*noise) {
+                self.edits
+                    .push(Edit::new(None, Change::Format(span, Color::Blue)));
             }
         }
 
         for signal in signals {
-            match self.span_at(*signal) {
-                Some(span) => self
-                    .edits
-                    .push(Edit::new(None, Change::Format(span, Color::Red))),
-                None => (),
+            if let Some(span) = self.span_at(*signal) {
+                self.edits
+                    .push(Edit::new(None, Change::Format(span, Color::Red)));
             }
         }
     }
@@ -415,10 +411,11 @@ impl Pane {
                 }
             } else {
                 range.start.character -= 1;
-                self.edits.push(Edit::new(
-                    None,
-                    Change::Text(self.span_at(range).unwrap(), new_text),
-                ));
+
+                if let Some(span) = self.span_at(range) {
+                    self.edits
+                        .push(Edit::new(None, Change::Text(span, new_text)));
+                }
             }
         } else {
             new_text.push(input);
@@ -426,11 +423,11 @@ impl Pane {
             if input == ENTER {
                 self.will_wipe = true;
                 self.refresh();
+            } else if let Some(span) = self.span_at(range) {
+                self.edits
+                    .push(Edit::new(None, Change::Text(span, new_text)));
             } else {
-                self.edits.push(Edit::new(
-                    None,
-                    Change::Text(self.span_at(range).unwrap(), new_text),
-                ));
+                // Do nothing.
             }
         }
 
@@ -503,6 +500,7 @@ impl Pane {
         })
     }
 
+    /// Returns the `Span` associated with the given `Range`.
     fn span_at(&self, range: Range) -> Option<Span> {
         self.address_at(range.start).and_then(|first| {
             self.address_at(range.end)

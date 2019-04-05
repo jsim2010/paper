@@ -2,7 +2,7 @@ use pancurses::Input;
 use paper::file;
 use paper::lsp::ProgressParams;
 use paper::mode::Operation;
-use paper::ui::{self, Address, Change, Edit, Index};
+use paper::ui::{self, Address, Change, Edit, Index, Span};
 use paper::{Explorer, Paper, UserInterface};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -182,12 +182,16 @@ impl Explorer for MockExplorer {
 }
 
 pub fn display_row_edit(row: u32, line: String) -> Edit {
+    let row_index = unsafe { Index::new_unchecked(row) };
     Edit::new(
-        Some(Address::new(
-            unsafe { Index::new_unchecked(row) },
-            Index::zero(),
-        )),
-        Change::Row(line),
+        None,
+        Change::Text(
+            Span::new(
+                Address::new(row_index, Index::zero()),
+                Address::new(row_index, Index::max_value()),
+            ),
+            line,
+        ),
     )
 }
 

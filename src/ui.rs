@@ -115,7 +115,8 @@ impl Address {
         Self { row, column }
     }
 
-    fn is_end_of_row(&self) -> bool {
+    /// Returns if `Address` represents the end of a row.
+    fn is_end_of_row(self) -> bool {
         self.column == Index::max_value()
     }
 
@@ -144,7 +145,9 @@ impl Display for Address {
 /// Signifies a sequence of `Address`es.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Span {
+    /// The first `Address` included in the `Span`.
     first: Address,
+    /// The first `Address` not included in the `Span`.
     last: Address,
 }
 
@@ -154,8 +157,11 @@ impl Span {
         Self { first, last }
     }
 
+    /// Returns the length of the `Span`.
+    ///
+    /// Assumes that the `Span` only covers 1 row.
     fn length(&self) -> i32 {
-        self.last.x() - self.first.x()
+        self.last.x().saturating_sub(self.first.x())
     }
 }
 
@@ -427,6 +433,8 @@ impl UserInterface for Terminal {
                     } else if span.last.is_end_of_row() {
                         self.add_str(text)?;
                         self.clear_to_row_end()?;
+                    } else {
+                        self.add_str(text)?;
                     }
 
                     Ok(())
