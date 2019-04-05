@@ -5,18 +5,21 @@ add_trait_child!(Processor, display, DisplayProcessor);
 add_trait_child!(Processor, edit, EditProcessor);
 add_trait_child!(Processor, filter, FilterProcessor);
 
-use crate::file::{self, Explorer};
-use crate::lsp::{self, ProgressParams};
-use crate::num::Length;
-use crate::ptr::Mrc;
-use crate::ui::{self, Address, Change, Color, Edit, Index, Span, BACKSPACE, ENTER};
+use crate::{
+    file::{self, Explorer},
+    lsp::{self, ProgressParams},
+    ptr::Mrc,
+    ui::{self, Address, Change, Color, Edit, Index, Span, BACKSPACE, ENTER},
+};
 use lsp_types::{Position, Range};
-use std::cmp;
-use std::fmt::{self, Debug, Display, Formatter};
-use std::iter;
-use std::ops::{Add, Deref, Sub};
-use std::path::PathBuf;
-use std::rc::Rc;
+use std::{
+    cmp,
+    fmt::{self, Debug, Display, Formatter},
+    iter,
+    ops::{Add, Deref, Sub},
+    path::PathBuf,
+    rc::Rc,
+};
 use try_from::{TryFrom, TryFromIntError};
 
 /// Defines the type that identifies a line.
@@ -116,7 +119,13 @@ impl ControlPanel {
         /// TODO: Could potentially improve to change only the chars that have been changed.
         vec![Edit::new(
             None,
-            Change::Text(Span::new(Address::new(row, Index::zero()), Address::new(row, Index::max_value())), self.string.clone()),
+            Change::Text(
+                Span::new(
+                    Address::new(row, Index::zero()),
+                    Address::new(row, Index::max_value()),
+                ),
+                self.string.clone(),
+            ),
         )]
     }
 
@@ -268,12 +277,18 @@ impl Pane {
                             if let Ok(line_number) = LineNumber::try_from(line_index) {
                                 self.edits.push(Edit::new(
                                     None,
-                                    Change::Text(Span::new(Address::new(row, Index::zero()), Address::new(row, Index::max_value())), format!(
-                                        "{: >width$} {}",
-                                        line_number,
-                                        line_data,
-                                        width = usize::from(self.margin_width)
-                                    )),
+                                    Change::Text(
+                                        Span::new(
+                                            Address::new(row, Index::zero()),
+                                            Address::new(row, Index::max_value()),
+                                        ),
+                                        format!(
+                                            "{: >width$} {}",
+                                            line_number,
+                                            line_data,
+                                            width = usize::from(self.margin_width)
+                                        ),
+                                    ),
                                 ));
                             } else {
                                 break;
@@ -305,7 +320,13 @@ impl Pane {
         if let Some(message) = notification.message {
             self.edits.push(Edit::new(
                 None,
-                Change::Text(Span::new(Address::new(Index::zero(), Index::zero()), Address::new(Index::zero(), Index::max_value())), message),
+                Change::Text(
+                    Span::new(
+                        Address::new(Index::zero(), Index::zero()),
+                        Address::new(Index::zero(), Index::max_value()),
+                    ),
+                    message,
+                ),
             ));
         }
     }
@@ -337,28 +358,32 @@ impl Pane {
     fn apply_filter(&mut self, noises: &[Range], signals: &[Range]) {
         for row in self.visible_rows() {
             self.edits.push(Edit::new(
-                Some(Address::new(row, Index::zero())),
-                Change::Format(Length::End, Color::Default),
+                None,
+                Change::Format(
+                    Span::new(
+                        Address::new(row, Index::zero()),
+                        Address::new(row, Index::max_value()),
+                    ),
+                    Color::Default,
+                ),
             ));
         }
 
         for noise in noises {
-            let address = self.address_at(noise.start);
-            let length = Length::from(noise.end.character.saturating_sub(noise.start.character));
-
-            if address.is_some() && !length.is_zero() {
-                self.edits
-                    .push(Edit::new(address, Change::Format(length, Color::Blue)));
+            match self.span_at(*noise) {
+                Some(span) => self
+                    .edits
+                    .push(Edit::new(None, Change::Format(span, Color::Blue))),
+                None => (),
             }
         }
 
         for signal in signals {
-            let address = self.address_at(signal.start);
-            let length = Length::from(signal.end.character.saturating_sub(signal.start.character));
-
-            if address.is_some() && !length.is_zero() {
-                self.edits
-                    .push(Edit::new(address, Change::Format(length, Color::Red)));
+            match self.span_at(*signal) {
+                Some(span) => self
+                    .edits
+                    .push(Edit::new(None, Change::Format(span, Color::Red))),
+                None => (),
             }
         }
     }
@@ -372,7 +397,11 @@ impl Pane {
     }
 
     /// Adds a character at a [`Position`].
-    pub(crate) fn add(&mut self, position: &mut Position, input: char) -> Result<(), TryFromIntError> {
+    pub(crate) fn add(
+        &mut self,
+        position: &mut Position,
+        input: char,
+    ) -> Result<(), TryFromIntError> {
         let mut new_text = String::new();
         let mut range = Range::new(*position, *position);
 
@@ -386,7 +415,10 @@ impl Pane {
                 }
             } else {
                 range.start.character -= 1;
-                self.edits.push(Edit::new(None, Change::Text(self.span_at(range).unwrap(), new_text)));
+                self.edits.push(Edit::new(
+                    None,
+                    Change::Text(self.span_at(range).unwrap(), new_text),
+                ));
             }
         } else {
             new_text.push(input);
@@ -395,11 +427,16 @@ impl Pane {
                 self.will_wipe = true;
                 self.refresh();
             } else {
-                self.edits.push(Edit::new(None, Change::Text(self.span_at(range).unwrap(), new_text)));
+                self.edits.push(Edit::new(
+                    None,
+                    Change::Text(self.span_at(range).unwrap(), new_text),
+                ));
             }
         }
 
-        let pointer = self.line_indices().nth(LineIndex::try_from(range.start.line)?);
+        let pointer = self
+            .line_indices()
+            .nth(LineIndex::try_from(range.start.line)?);
 
         if let Some(index) = pointer {
             let mut index = usize::try_from(index)? as u64;
@@ -467,7 +504,10 @@ impl Pane {
     }
 
     fn span_at(&self, range: Range) -> Option<Span> {
-        self.address_at(range.start).and_then(|first| self.address_at(range.end).map(|last| Span::new(first, last)))
+        self.address_at(range.start).and_then(|first| {
+            self.address_at(range.end)
+                .map(|last| Span::new(first, last))
+        })
     }
 
     /// An [`Iterator`] of all lines in the pane's data.

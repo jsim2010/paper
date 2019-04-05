@@ -84,8 +84,7 @@ pub mod mode;
 pub mod num;
 pub mod ui;
 
-pub use file::local::Explorer as LocalExplorer;
-pub use file::Explorer;
+pub use file::{local::Explorer as LocalExplorer, Explorer};
 pub use ui::UserInterface;
 
 use mode::{Flag, Operation, Output, Pane, Processor};

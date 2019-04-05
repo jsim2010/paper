@@ -1,9 +1,7 @@
 //! Implements functionality for the application while in command mode.
 use super::{Flag, Initiation, Operation, Output, Pane};
-use crate::ptr::Mrc;
-use crate::ui::{ENTER, ESC};
-use rec::ChCls::{Any, End, Whitespace};
-use rec::{lazy_some, some, tkn, var, Element, Pattern};
+use crate::{ptr::Mrc, ui::{ENTER, ESC}};
+use rec::{ChCls::{Any, End, Whitespace}, lazy_some, some, tkn, var, Element, Pattern};
 
 /// The [`Processor`] of the command mode.
 #[derive(Clone, Debug)]

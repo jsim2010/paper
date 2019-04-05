@@ -8,12 +8,14 @@ use lsp_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fmt::{self, Display, Formatter};
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::Path;
-use std::process::{self, Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::thread::{Builder, JoinHandle};
+use std::{
+    fmt::{self, Display, Formatter},
+    io::{self, BufRead, BufReader, Read, Write},
+    path::Path,
+    process::{self, Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Arc, Mutex},
+    thread::{Builder, JoinHandle},
+};
 
 /// The interface with the language server.
 #[derive(Debug)]

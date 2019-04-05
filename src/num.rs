@@ -1,16 +1,13 @@
 //! Defines helpful numerical functionality.
-use std::fmt::{self, Display, Formatter};
-use std::ops::{Add, Sub};
+use std::{
+    fmt::{self, Display, Formatter},
+    ops::{Add, Sub},
+};
 use try_from::{TryFrom, TryFromIntError};
-
-/// The internal value that represents a `Length::End`.
-///
-/// Value is specified by `pancurses`.
-const END: i32 = -1;
 
 /// Signifies an `i32` value that is not negative.
 ///
-/// Useful for cases where an interface requires an i32 but the number cannot be negative.
+/// Useful for cases where an interface requires an i32 but the number should not be negative.
 ///
 /// # Guarantees
 ///
@@ -39,6 +36,7 @@ impl NonNegativeI32 {
         Self(0)
     }
 
+    /// Returns the maximum value of `NonNegativeI32`.
     pub fn max_value() -> Self {
         Self(i32::max_value())
     }
@@ -125,62 +123,5 @@ impl TryFrom<NonNegativeI32> for usize {
     #[inline]
     fn try_from(value: NonNegativeI32) -> Result<Self, Self::Err> {
         Self::try_from(value.0)
-    }
-}
-
-/// Signifies a number of elements in a list.
-#[derive(Clone, Copy, Eq, Debug, Hash, Ord, PartialEq, PartialOrd)]
-pub enum Length {
-    /// The number of elements.
-    Value(NonNegativeI32),
-    /// Represents the value equal to all elements from the current one to the end.
-    End,
-}
-
-impl Length {
-    /// Returns if `Length` is equal to 0.
-    #[inline]
-    pub fn is_zero(self) -> bool {
-        match self {
-            Length::Value(NonNegativeI32(0)) => true,
-            _ => false,
-        }
-    }
-}
-
-impl Default for Length {
-    #[inline]
-    fn default() -> Self {
-        Length::Value(NonNegativeI32::default())
-    }
-}
-
-impl Display for Length {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Length::End => write!(f, "END"),
-            length => write!(f, "{}", length),
-        }
-    }
-}
-
-impl From<u64> for Length {
-    #[inline]
-    fn from(value: u64) -> Self {
-        match NonNegativeI32::try_from(value) {
-            Ok(length) => Length::Value(length),
-            Err(_) => Length::End,
-        }
-    }
-}
-
-impl From<Length> for i32 {
-    #[inline]
-    fn from(value: Length) -> Self {
-        match value {
-            Length::Value(x) => Self::from(x),
-            Length::End => END,
-        }
     }
 }

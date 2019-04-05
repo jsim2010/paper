@@ -1,16 +1,16 @@
 //! Implements how the user interfaces with the application.
+pub use crate::num::NonNegativeI32 as Index;
 
-use crate::num::{Length, NonNegativeI32};
 use crate::ptr::Mrc;
 use pancurses::Input;
-use std::cell::RefCell;
-use std::error;
-use std::fmt::{self, Debug, Display, Formatter};
-use std::rc::Rc;
+use std::{
+    cell::RefCell,
+    error,
+    fmt::{self, Debug, Display, Formatter},
+    rc::Rc,
+};
 use try_from::{TryFrom, TryFromIntError};
 
-/// The type of all grid index values.
-pub type Index = NonNegativeI32;
 /// The [`Result`] returned by functions of this module.
 pub type Effect = Result<(), Error>;
 
@@ -141,15 +141,21 @@ impl Display for Address {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Signifies a sequence of `Address`es.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Span {
     first: Address,
     last: Address,
 }
 
 impl Span {
+    /// Creates a new `Span`.
     pub fn new(first: Address, last: Address) -> Self {
         Self { first, last }
+    }
+
+    fn length(&self) -> i32 {
+        self.last.x() - self.first.x()
     }
 }
 
@@ -165,11 +171,12 @@ pub enum Change {
     /// Clears all cells.
     Clear,
     /// Sets the color of a given number of cells.
-    Format(Length, Color),
+    Format(Span, Color),
     /// Does nothing.
     Nothing,
     /// Flashes the display.
     Flash,
+    /// Sets the text for a given `Span` of `Addresses`.
     Text(Span, String),
 }
 
@@ -185,7 +192,7 @@ impl Display for Change {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Change::Clear => write!(f, "Clear"),
-            Change::Format(n, color) => write!(f, "Format {} cells to {}", n, color),
+            Change::Format(span, color) => write!(f, "Format {} to {}", span, color),
             Change::Nothing => write!(f, "Nothing"),
             Change::Flash => write!(f, "Flash"),
             Change::Text(span, text) => write!(f, "Set {} to {}", span, text),
@@ -296,11 +303,6 @@ impl Terminal {
         }
     }
 
-    /// Overwrites the block at cursor with a character.
-    fn add_char(&self, c: char) -> Effect {
-        Self::process(self.window.addch(c), Error::Waddch)
-    }
-
     /// Writes a string starting at the cursor.
     fn add_str(&self, s: String) -> Effect {
         Self::process(self.window.addstr(s), Error::Waddstr)
@@ -342,10 +344,9 @@ impl Terminal {
     }
 
     /// Sets the color of the next specified number of blocks from the cursor.
-    fn format(&self, length: Length, color: Color) -> Effect {
+    fn format(&self, length: i32, color: Color) -> Effect {
         Self::process(
-            self.window
-                .chgat(i32::from(length), pancurses::A_NORMAL, color.cp()),
+            self.window.chgat(length, pancurses::A_NORMAL, color.cp()),
             Error::Wchgat,
         )
     }
@@ -403,7 +404,10 @@ impl UserInterface for Terminal {
 
         match edit.change {
             Change::Clear => self.clear_all(),
-            Change::Format(n, color) => self.format(n, color),
+            Change::Format(span, color) => {
+                self.move_to(span.first)?;
+                self.format(span.length(), color)
+            }
             Change::Nothing => Ok(()),
             Change::Flash => self.flash(),
             Change::Text(span, text) => {

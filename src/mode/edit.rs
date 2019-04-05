@@ -1,7 +1,6 @@
 //! Implements functionality for the application while in edit mode.
 use super::{Initiation, Operation, Output, Pane, Position};
-use crate::ptr::Mrc;
-use crate::ui::{BACKSPACE, ESC};
+use crate::{ptr::Mrc, ui::ESC};
 
 /// The [`Processor`] of the edit mode.
 #[derive(Debug)]
