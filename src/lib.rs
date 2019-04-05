@@ -188,10 +188,10 @@ impl Paper {
                 .enter(operation.initiation())?;
         }
 
-        let edits = self.pane.borrow_mut().edits();
+        let changes = self.pane.borrow_mut().changes();
 
-        for edit in edits {
-            self.ui.borrow_mut().apply(edit)?;
+        for change in changes {
+            self.ui.borrow_mut().apply(change)?;
         }
 
         Ok(())

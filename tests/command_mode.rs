@@ -29,7 +29,7 @@ fn characters_are_displayed_as_sketch() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_row_edit(7, String::from("abc"))]
+        &vec![mock::row_change(7, String::from("abc"))]
     );
 }
 
@@ -59,7 +59,7 @@ fn backspace_removes_character_from_sketch() {
 
     assert_eq!(
         controller.borrow().apply_calls(),
-        &vec![mock::display_row_edit(7, String::from("ab"))]
+        &vec![mock::row_change(7, String::from("ab"))]
     );
 }
 
@@ -82,8 +82,8 @@ fn escape_returns_to_display_mode() {
     assert_eq!(
         controller.borrow().apply_calls(),
         &vec![
-            mock::display_clear_edit(),
-            mock::display_row_edit(0, String::from("1 a")),
+            mock::clear_change(),
+            mock::row_change(0, String::from("1 a")),
         ]
     );
 }

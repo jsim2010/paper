@@ -242,26 +242,6 @@ impl Display for Color {
     }
 }
 
-/// Signifies a [`Change`] to make to an [`Address`].
-///
-/// [`Change`]: enum.Change.html
-/// [`Address`]: struct.Address.html
-#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
-pub struct Edit {
-    /// The [`Change`] to be made.
-    change: Change,
-    /// The [`Address`] on which the [`Change`] is intended.
-    address: Option<Address>,
-}
-
-impl Edit {
-    /// Creates a new `Edit`.
-    #[inline]
-    pub fn new(address: Option<Address>, change: Change) -> Self {
-        Self { address, change }
-    }
-}
-
 /// The interface between the user and the application.
 ///
 /// All output is displayed in a grid of cells. Each cell contains one character and can change its
@@ -273,8 +253,8 @@ pub trait UserInterface: Debug {
     fn close(&self) -> Effect;
     /// Returns the number of cells that make up the height of the grid.
     fn grid_height(&self) -> Result<Index, TryFromIntError>;
-    /// Applies the edit to the output.
-    fn apply(&self, edit: Edit) -> Effect;
+    /// Applies the `Change` to the output.
+    fn apply(&self, change: Change) -> Effect;
     /// Flashes the output.
     fn flash(&self) -> Effect;
     /// Returns the input from the user.
@@ -403,12 +383,8 @@ impl UserInterface for Terminal {
     }
 
     #[inline]
-    fn apply(&self, edit: Edit) -> Effect {
-        if let Some(address) = edit.address {
-            self.move_to(address)?;
-        }
-
-        match edit.change {
+    fn apply(&self, change: Change) -> Effect {
+        match change {
             Change::Clear => self.clear_all(),
             Change::Format(span, color) => {
                 self.move_to(span.first)?;
