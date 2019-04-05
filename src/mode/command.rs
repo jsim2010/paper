@@ -19,7 +19,7 @@ impl Processor {
     pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
         Self {
             pane: Mrc::clone(pane),
-            command_pattern: Pattern::define(
+            command_pattern: Pattern::new(
                 tkn!(lazy_some(Any) => "command")
                     + (End | (some(Whitespace) + tkn!(var(Any) => "args"))),
             ),
