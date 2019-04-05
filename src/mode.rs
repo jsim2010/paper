@@ -463,25 +463,18 @@ impl Pane {
         position
             .line
             .checked_sub(self.first_line)
-            .and_then(|line| Index::try_from(line).ok())
+            .and_then(|line| Some(Index::from(line)))
     }
 
     /// Returns the column at which a [`Position`] is located.
-    ///
-    /// [`None`] indicates that the [`Position`] is not visible in the user interface.
-    fn column_at(&self, position: &Position) -> Option<Index> {
-        position
-            .character
-            .checked_add(self.origin_character())
-            .and_then(|character| Index::try_from(character).ok())
+    fn column_at(&self, position: &Position) -> Index {
+        Index::from(position.character.saturating_add(self.origin_character()))
     }
 
     /// Returns the [`Address`] associated with the given [`Position`].
     fn address_at(&self, position: Position) -> Option<Address> {
-        self.row_at(&position).and_then(|row| {
-            self.column_at(&position)
-                .map(|column| Address::new(row, column))
-        })
+        self.row_at(&position)
+            .and_then(|row| Some(Address::new(row, self.column_at(&position))))
     }
 
     /// Returns the `Span` associated with the given `Range`.

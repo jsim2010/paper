@@ -2,7 +2,7 @@ use pancurses::Input;
 use paper::file;
 use paper::lsp::ProgressParams;
 use paper::mode::Operation;
-use paper::ui::{self, Address, Change, Index, Span};
+use paper::ui::{self, Address, Change, Color, Index, Span};
 use paper::{Explorer, Paper, UserInterface};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -189,6 +189,18 @@ pub fn row_change(row: u32, line: String) -> Change {
             Address::new(row_index, Index::max_value()),
         ),
         line,
+    )
+}
+
+pub fn format_line_change(start_row: u32, start_column: u32, color: Color) -> Change {
+    let row_index = unsafe { Index::new_unchecked(start_row) };
+    let column_index = unsafe { Index::new_unchecked(start_column) };
+    Change::Format(
+        Span::new(
+            Address::new(row_index, column_index),
+            Address::new(row_index, Index::max_value()),
+        ),
+        color,
     )
 }
 

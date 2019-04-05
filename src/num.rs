@@ -83,13 +83,13 @@ impl TryFrom<i32> for NonNegativeI32 {
     }
 }
 
-impl TryFrom<u64> for NonNegativeI32 {
-    type Err = TryFromIntError;
-
+impl From<u64> for NonNegativeI32 {
     #[inline]
-    fn try_from(value: u64) -> Result<Self, Self::Err> {
-        // Converted value will be >= 0.
-        i32::try_from(value).map(Self)
+    fn from(value: u64) -> Self {
+        Self(match i32::try_from(value) {
+            Ok(i32_value) => i32_value,
+            Err(_) => i32::max_value(),
+        })
     }
 }
 

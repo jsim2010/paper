@@ -123,7 +123,7 @@ impl Default for LineFilter {
     fn default() -> Self {
         Self {
             pattern: Pattern::new(
-                "#" + ((tkn!(some(Digit) => "line") + End)
+                "#" + ((tkn!(some(Digit) => "line") + var(".") + End)
                     | (tkn!(some(Digit) => "start") + "." + tkn!(some(Digit) => "end"))
                     | (tkn!(some(Digit) => "origin") + tkn!(Sign + some(Digit) => "movement"))),
             ),
