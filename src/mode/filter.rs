@@ -35,7 +35,7 @@ impl Processor {
         Self {
             noises: Vec::new(),
             signals: Vec::new(),
-            first_feature_pattern: Pattern::define(tkn!(var(Not("&")) => "feature") + opt("&&")),
+            first_feature_pattern: Pattern::new(tkn!(var(Not("&")) => "feature") + opt("&&")),
             filters: [('#', line_filter), ('/', pattern_filter)]
                 .iter()
                 .cloned()
@@ -127,7 +127,7 @@ struct LineFilter {
 impl Default for LineFilter {
     fn default() -> Self {
         Self {
-            pattern: Pattern::define(
+            pattern: Pattern::new(
                 "#" + ((tkn!(some(Digit) => "line") + End)
                     | (tkn!(some(Digit) => "start") + "." + tkn!(some(Digit) => "end"))
                     | (tkn!(some(Digit) => "origin") + tkn!(Sign + some(Digit) => "movement"))),
@@ -190,7 +190,7 @@ struct PatternFilter {
 impl Default for PatternFilter {
     fn default() -> Self {
         Self {
-            pattern: Pattern::define("/" + tkn!(some(Any) => "pattern")),
+            pattern: Pattern::new("/" + tkn!(some(Any) => "pattern")),
         }
     }
 }
@@ -207,7 +207,7 @@ impl Filter for PatternFilter {
         pane: &Pane,
     ) -> Result<(), TryFromIntError> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
-            if let Ok(search_pattern) = Pattern::load(user_pattern) {
+            if let Ok(search_pattern) = user_pattern.parse::<Pattern>() {
                 let target_ranges = ranges.clone();
                 ranges.clear();
 
@@ -220,15 +220,10 @@ impl Filter for PatternFilter {
                         .map(|x| x.chars().skip(start_character).collect::<String>())
                     {
                         for location in search_pattern.locate_iter(&target) {
-                            let mut new_start = target_range.start;
-                            new_start.character += location.start() as u64;
-                            ranges.push(Range {
-                                start: new_start,
-                                end: Position::new(
-                                    target_range.start.line,
-                                    location.length() as u64,
-                                ),
-                            });
+                            let mut new_range = target_range;
+                            new_range.start.character += location.start() as u64;
+                            new_range.end.character += location.end() as u64;
+                            ranges.push(new_range);
                         }
                     }
                 }
