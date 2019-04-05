@@ -93,7 +93,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "jsonrpc-core"
-version = "10.1.0"
+version = "11.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "futures 0.1.25 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -252,7 +252,7 @@ name = "paper"
 version = "0.3.0"
 dependencies = [
  "clap 2.32.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "jsonrpc-core 10.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "jsonrpc-core 11.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lsp-types 0.56.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "pancurses 0.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "rec 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -617,7 +617,7 @@ dependencies = [
 "checksum idna 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "38f09e0f0b1fb55fdee1f17470ad800da77af5186a1a76c026b679358b7e844e"
 "checksum itertools 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)" = "5b8467d9c1cebe26feb08c640139247fac215782d35371ade9a2136ed6085358"
 "checksum itoa 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)" = "1306f3464951f30e30d12373d31c79fbd52d236e5e896fd92f96ec7babbbe60b"
-"checksum jsonrpc-core 10.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "dc15eef5f8b6bef5ac5f7440a957ff95d036e2f98706947741bfc93d1976db4c"
+"checksum jsonrpc-core 11.0.0 (registry+https://github.com/rust-lang/crates.io-index)" = "97b83fdc5e0218128d0d270f2f2e7a5ea716f3240c8518a58bc89e6716ba8581"
 "checksum lazy_static 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "ca488b89a5657b0a2ecd45b95609b3e848cf1755da332a0da46e2b2b1cb371a7"
 "checksum libc 0.2.44 (registry+https://github.com/rust-lang/crates.io-index)" = "10923947f84a519a45c8fefb7dd1b3e8c08747993381adee176d7a82b4195311"
 "checksum log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)" = "c84ec4b527950aa83a329754b01dbe3f58361d1c5efacd1f6d68c494d08a17c6"
