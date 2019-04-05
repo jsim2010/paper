@@ -87,14 +87,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "either 1.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
 name = "itoa"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -310,16 +302,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pulldown-cmark"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "bitflags 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "memchr 2.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "unicase 2.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
 name = "quote"
 version = "0.6.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -502,14 +484,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "toml"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "serde 1.0.89 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
 name = "try_from"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -591,21 +565,6 @@ dependencies = [
  "proc-macro2 0.4.27 (registry+https://github.com/rust-lang/crates.io-index)",
  "pulldown-cmark 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 1.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "semver-parser 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "syn 0.15.23 (registry+https://github.com/rust-lang/crates.io-index)",
- "toml 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "url 1.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "version-sync"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "itertools 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "proc-macro2 0.4.27 (registry+https://github.com/rust-lang/crates.io-index)",
- "pulldown-cmark 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "regex 1.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "semver-parser 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "syn 0.15.23 (registry+https://github.com/rust-lang/crates.io-index)",
  "toml 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
