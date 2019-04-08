@@ -11,7 +11,6 @@ use serde_json::Value;
 use std::{
     fmt::{self, Display, Formatter},
     io::{self, BufRead, BufReader, Read, Write},
-    path::Path,
     process::{self, Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex},
     thread::{Builder, JoinHandle},
@@ -120,21 +119,12 @@ impl LanguageClient {
         }
     }
 
-    /// Initializes the language server.
-    pub(crate) fn initialize(&mut self, root_dir: &Path) -> Result<(), Error> {
+    pub(crate) fn send_request(&mut self, request: RequestMethod) -> Result<(), Error> {
         self.request_id += 1;
-        self.send_message(Message::initialize_request(
-            self.request_id,
-            InitializeParams {
-                process_id: Some(u64::from(process::id())),
-                root_path: None,
-                root_uri: Some(Url::from_directory_path(root_dir).map_err(|_| Error::InvalidPath)?),
-                initialization_options: None,
-                capabilities: ClientCapabilities::default(),
-                trace: None,
-                workspace_folders: None,
-            },
-        ))
+        self.send_message(Message::Request(RequestMessage {
+            id: Id::Num(self.request_id),
+            method: request,
+        }))
     }
 
     /// Sends a message to the language server.
@@ -263,6 +253,20 @@ pub(crate) enum RequestMethod {
     RegisterCapability(RegistrationParams),
 }
 
+impl RequestMethod {
+    pub(crate) fn initialize(root_dir: &Url) -> Self {
+        RequestMethod::Initialize(Box::new(InitializeParams {
+            process_id: Some(u64::from(process::id())),
+            root_path: None,
+            root_uri: Some(root_dir.clone()),
+            initialization_options: None,
+            capabilities: ClientCapabilities::default(),
+            trace: None,
+            workspace_folders: None,
+        }))
+    }
+}
+
 /// Specifies the format of a response message.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -352,14 +356,6 @@ impl AbstractMessage {
 }
 
 impl Message {
-    /// Creates a new Initialize request `Message`.
-    fn initialize_request(id: u64, params: InitializeParams) -> Self {
-        Message::Request(RequestMessage {
-            id: Id::Num(id),
-            method: RequestMethod::Initialize(Box::new(params)),
-        })
-    }
-
     /// Creates a new RegisterCapability response `Message`.
     fn register_capability_response(id: Id) -> Self {
         Message::Response(ResponseMessage {

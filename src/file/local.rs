@@ -1,7 +1,7 @@
 //! Implements `Explorer` for local storage.
 use super::{Effect, ProgressParams};
 use crate::{
-    lsp::{LanguageClient, Message},
+    lsp::{LanguageClient, Message, RequestMethod},
     ptr::Mrc,
 };
 use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, Url};
@@ -11,6 +11,13 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
+
+const URL_CONVERSION_ERROR: &str = "Given path is not absolute or, on Windows, the prefix is not a disk prefix (e.g. `C:`) or a UNC prefix (`\\\\`).";
+
+fn current_dir_url() -> Effect<Url> {
+    Ok(Url::from_directory_path(env::current_dir()?.as_path())
+        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, URL_CONVERSION_ERROR))?)
+}
 
 /// Signifies an `Explorer` of the local storage.
 #[derive(Debug)]
@@ -38,9 +45,9 @@ impl Explorer {
 impl super::Explorer for Explorer {
     #[inline]
     fn start(&mut self) -> Effect<()> {
-        self.language_client_mut()
-            .initialize(env::current_dir()?.as_path())?;
-        Ok(())
+        Ok(self
+            .language_client_mut()
+            .send_request(RequestMethod::initialize(&current_dir_url()?))?)
     }
 
     #[inline]
