@@ -86,8 +86,9 @@ pub mod ui;
 
 pub use file::{local::Explorer as LocalExplorer, Explorer};
 pub use ui::UserInterface;
+pub use mode::Flag;
 
-use mode::{Flag, Operation, Output, Pane, Processor};
+use mode::{Operation, Output, Pane, Processor};
 use pancurses::Input;
 use ptr::Mrc;
 use std::collections::HashMap;

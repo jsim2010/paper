@@ -14,24 +14,26 @@ use std::{
 
 const URL_CONVERSION_ERROR: &str = "Given path is not absolute or, on Windows, the prefix is not a disk prefix (e.g. `C:`) or a UNC prefix (`\\\\`).";
 
-fn current_dir_url() -> Effect<Url> {
-    Ok(Url::from_directory_path(env::current_dir()?.as_path())
-        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, URL_CONVERSION_ERROR))?)
-}
-
 /// Signifies an `Explorer` of the local storage.
 #[derive(Debug)]
 pub struct Explorer {
     /// A local `LanguageClient`.
     language_client: Arc<Mutex<LanguageClient>>,
+    root_url: Url,
 }
 
 impl Explorer {
     /// Creates a new `Explorer`.
-    pub fn new() -> Mrc<Self> {
+    pub fn new(root_url: Url) -> Mrc<Self> {
         mrc!(Self {
             language_client: LanguageClient::new("rls"),
+            root_url,
         })
+    }
+
+    pub fn current_dir_url() -> Effect<Url> {
+        Ok(Url::from_directory_path(env::current_dir()?.as_path())
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, URL_CONVERSION_ERROR))?)
     }
 
     /// Returns a mutable reference to the `LanguageClient`.
@@ -45,9 +47,10 @@ impl Explorer {
 impl super::Explorer for Explorer {
     #[inline]
     fn start(&mut self) -> Effect<()> {
+        let root_url = self.root_url.clone();
         Ok(self
             .language_client_mut()
-            .send_request(RequestMethod::initialize(&current_dir_url()?))?)
+            .send_request(RequestMethod::initialize(&root_url))?)
     }
 
     #[inline]
