@@ -8,7 +8,6 @@ use lsp_types::{TextDocumentItem, Url};
 use std::{
     env, fs,
     io::{self, ErrorKind},
-    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -31,6 +30,7 @@ impl Explorer {
         })
     }
 
+    /// Returns the `Url` of the current directory.
     pub fn current_dir_url() -> Effect<Url> {
         Ok(Url::from_directory_path(env::current_dir()?.as_path())
             .map_err(|_| io::Error::new(ErrorKind::InvalidInput, URL_CONVERSION_ERROR))?)
@@ -54,34 +54,21 @@ impl super::Explorer for Explorer {
     }
 
     #[inline]
-    fn read(&mut self, path: &PathBuf) -> Effect<String> {
-        let absolute_path = if path.is_absolute() {
-            path.clone()
-        } else {
-            let mut new_path = env::current_dir()?;
-            new_path.push(path);
-            new_path
-        };
-
-        let text = fs::read_to_string(absolute_path.clone()).map(|data| data.replace('\r', ""))?;
-        self.language_client_mut().send_notification(NotificationMessage::did_open_text_document(TextDocumentItem::new(
-                        Url::from_file_path(absolute_path).map_err(|_| {
-                            io::Error::new(
-                                ErrorKind::InvalidInput,
-                                "Not absolute or invalid prefix",
-                            )
-                        })?,
-                        "rust".into(),
-                        0,
-                        text.clone(),
-                    ),
-            ))?;
-        Ok(text)
+    fn read(&mut self, path: &String) -> Effect<TextDocumentItem> {
+        let url = self.root_url.join(path).unwrap();
+        let doc = TextDocumentItem::new(
+            url.clone(),
+            "rust".to_string(),
+            0,
+            fs::read_to_string(url.to_file_path().unwrap())?.replace('\r', ""),
+        );
+        self.language_client_mut().send_notification(NotificationMessage::did_open_text_document(doc.clone()))?;
+        Ok(doc)
     }
 
     #[inline]
-    fn write(&self, path: &Path, text: &str) -> Effect<()> {
-        fs::write(path, text)?;
+    fn write(&self, doc: &TextDocumentItem) -> Effect<()> {
+        fs::write(doc.uri.to_file_path().unwrap(), &doc.text)?;
         Ok(())
     }
 

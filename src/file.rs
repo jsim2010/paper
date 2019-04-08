@@ -2,10 +2,10 @@
 pub(crate) mod local;
 
 use crate::lsp::{self, ProgressParams};
+use lsp_types::TextDocumentItem;
 use std::{
     fmt::{self, Debug, Display, Formatter},
     io,
-    path::{Path, PathBuf},
 };
 
 /// Specifies the type returned by `Explorer` functions.
@@ -16,9 +16,9 @@ pub trait Explorer: Debug {
     /// Initializes all functionality needed by the Explorer.
     fn start(&mut self) -> Effect<()>;
     /// Returns the text from a file.
-    fn read(&mut self, path: &PathBuf) -> Effect<String>;
+    fn read(&mut self, path: &String) -> Effect<TextDocumentItem>;
     /// Writes text to a file.
-    fn write(&self, path: &Path, text: &str) -> Effect<()>;
+    fn write(&self, doc: &TextDocumentItem) -> Effect<()>;
     /// Returns the oldest notification from `Explorer`.
     fn receive_notification(&mut self) -> Option<ProgressParams>;
 }

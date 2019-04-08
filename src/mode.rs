@@ -11,13 +11,13 @@ use crate::{
     ptr::Mrc,
     ui::{self, Address, Change, Color, Index, Span, BACKSPACE, ENTER},
 };
-use lsp_types::{Position, Range};
+use either::Either;
+use lsp_types::{TextDocumentItem, Position, Range};
 use std::{
     cmp,
     fmt::{self, Debug, Display, Formatter},
     iter,
     ops::{Add, Deref, Sub},
-    path::PathBuf,
     rc::Rc,
 };
 use try_from::{TryFrom, TryFromIntError};
@@ -82,8 +82,8 @@ pub(crate) trait Processor: Debug {
 /// implements [`StartFilter`].
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Initiation {
-    /// Sets the view.
-    SetView(PathBuf),
+    /// Opens the document specified by the given path relative to the root directory.
+    OpenDoc(String),
     /// Saves the current data of the view.
     Save,
     /// Starts a filter.
@@ -226,17 +226,13 @@ impl From<file::Error> for Flag {
 /// Signfifies the pane of the current file.
 #[derive(Clone, Debug)]
 pub(crate) struct Pane {
-    /// The path that makes up the pane.
-    path: PathBuf,
-    /// The data.
-    data: String,
     /// The first line that is displayed in the ui.
     first_line: Line,
     /// The number of columns needed to display the margin.
     margin_width: u8,
     /// The number of rows visible in the pane.
     height: Rc<Index>,
-    /// The number of lines in the data.
+    /// The number of lines in the document.
     line_count: Line,
     /// The control panel of the `Pane`.
     control_panel: ControlPanel,
@@ -245,6 +241,7 @@ pub(crate) struct Pane {
     /// If `Pane` will clear and redraw on next update.
     will_wipe: bool,
     explorer: Mrc<dyn Explorer>,
+    doc: Option<TextDocumentItem>,
 }
 
 impl Pane {
@@ -256,13 +253,12 @@ impl Pane {
             control_panel: ControlPanel::new(&height),
             explorer,
             height,
-            path: PathBuf::default(),
-            data: String::default(),
             first_line: Line::default(),
             margin_width: u8::default(),
             line_count: Line::default(),
             changes: Vec::default(),
             will_wipe: bool::default(),
+            doc: None,
         }
     }
 
@@ -385,15 +381,18 @@ impl Pane {
     }
 
     /// Changes the pane to a new path.
-    fn change(&mut self, path: &PathBuf) -> Output<()> {
-        self.data = self.explorer.borrow_mut().read(path)?;
-        self.path = path.clone();
+    fn change(&mut self, path: &String) -> Output<()> {
+        self.doc = Some(self.explorer.borrow_mut().read(path)?);
         self.refresh();
         Ok(())
     }
 
     fn save(&self) -> Output<()> {
-        Ok(self.explorer.borrow().write(&self.path, &self.data)?)
+        if let Some(doc) = &self.doc {
+            self.explorer.borrow().write(&doc)?;
+        }
+
+        Ok(())
     }
 
     /// Adds a character at a [`Position`].
@@ -437,21 +436,23 @@ impl Pane {
             .line_indices()
             .nth(LineIndex::try_from(range.start.line)?);
 
-        if let Some(index) = pointer {
-            let mut index = usize::try_from(index)? as u64;
-            index += range.start.character;
-            let data_index = usize::try_from(index)?;
+        if let Some(doc) = &mut self.doc {
+            if let Some(index) = pointer {
+                let mut index = usize::try_from(index)? as u64;
+                index += range.start.character;
+                let data_index = usize::try_from(index)?;
 
-            if input == BACKSPACE {
-                // TODO: For now, do not care to check what is removed. But this may become important for
-                // multi-byte characters.
-                match self.data.remove(data_index) {
-                    _ => {}
+                if input == BACKSPACE {
+                    // TODO: For now, do not care to check what is removed. But this may become important for
+                    // multi-byte characters.
+                    match doc.text.remove(data_index) {
+                        _ => {}
+                    }
+                    *position = range.start;
+                } else {
+                    doc.text.insert(data_index, input);
+                    position.character += 1;
                 }
-                *position = range.start;
-            } else {
-                self.data.insert(data_index, input);
-                position.character += 1;
             }
         }
 
@@ -460,12 +461,16 @@ impl Pane {
 
     /// Iterates through the indexes that indicate where each line starts.
     pub(crate) fn line_indices(&self) -> impl Iterator<Item = Index> + '_ {
-        iter::once(Index::zero()).chain(self.data.match_indices(ENTER).flat_map(|(index, _)| {
-            index
-                .checked_add(1)
-                .and_then(|value| Index::try_from(value).ok())
-                .into_iter()
-        }))
+        if let Some(doc) = &self.doc {
+            Either::Left(iter::once(Index::zero()).chain(doc.text.match_indices(ENTER).flat_map(|(index, _)| {
+                index
+                    .checked_add(1)
+                    .and_then(|value| Index::try_from(value).ok())
+                    .into_iter()
+            })))
+        } else {
+            Either::Right(iter::empty())
+        }
     }
 
     /// Returns the value signifying the first column at which pane data can be written.
@@ -505,7 +510,11 @@ impl Pane {
 
     /// An [`Iterator`] of all lines in the pane's data.
     fn lines(&self) -> std::str::Lines<'_> {
-        self.data.lines()
+        if let Some(doc) = &self.doc {
+            doc.text.lines()
+        } else {
+            "".lines()
+        }
     }
 
     /// The data stored at the given line.
@@ -643,7 +652,7 @@ impl Operation {
     pub fn display_file(path: &str) -> Self {
         Self {
             mode: Some(Name::Display),
-            initiation: Some(Initiation::SetView(PathBuf::from(path))),
+            initiation: Some(Initiation::OpenDoc(path.to_string())),
         }
     }
 

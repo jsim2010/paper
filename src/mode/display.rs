@@ -23,7 +23,7 @@ impl super::Processor for Processor {
         let mut pane = self.pane.borrow_mut();
 
         match initiation {
-            Some(Initiation::SetView(path)) => {
+            Some(Initiation::OpenDoc(path)) => {
                 pane.change(path)?;
             }
             Some(Initiation::Save) => {
