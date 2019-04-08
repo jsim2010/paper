@@ -1,22 +1,18 @@
 //! Implements functionality for the application while in display mode.
 use super::{Initiation, Operation, Output, Pane};
-use crate::{file::Explorer, ptr::Mrc};
-use std::cell::Ref;
+use crate::ptr::Mrc;
 
 /// The [`Processor`] of the display mode.
 #[derive(Clone, Debug)]
 pub(crate) struct Processor {
-    /// The [`Explorer`] of the application.
-    explorer: Mrc<dyn Explorer>,
     /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
 }
 
 impl Processor {
     /// Creates a new `Processor`.
-    pub(crate) fn new(pane: &Mrc<Pane>, explorer: &Mrc<dyn Explorer>) -> Self {
+    pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
         Self {
-            explorer: Mrc::clone(explorer),
             pane: Mrc::clone(pane),
         }
     }
@@ -28,11 +24,10 @@ impl super::Processor for Processor {
 
         match initiation {
             Some(Initiation::SetView(path)) => {
-                pane.change(&self.explorer, path)?;
+                pane.change(path)?;
             }
             Some(Initiation::Save) => {
-                let explorer: Ref<'_, (dyn Explorer)> = self.explorer.borrow();
-                explorer.write(&pane.path, &pane.data)?;
+                pane.save()?;
             }
             _ => (),
         }

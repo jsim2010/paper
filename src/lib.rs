@@ -99,8 +99,6 @@ pub struct Paper {
     ui: Mrc<dyn UserInterface>,
     /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
-    /// The [`Explorer`] of the application.
-    explorer: Mrc<dyn Explorer>,
     /// The current [`mode::Name`] of the application.
     mode: mode::Name,
     /// Maps modes to their respective [`Processor`].
@@ -111,14 +109,15 @@ impl Paper {
     /// Creates a new paper application.
     #[inline]
     pub fn new(ui: Mrc<dyn UserInterface>, explorer: Mrc<dyn Explorer>) -> Self {
-        explorer.borrow_mut().start().expect("Starting explorer");
         let pane = mrc!(Pane::new(
+            explorer,
             ui.borrow_mut()
                 .grid_height()
                 .expect("Accessing height of user interface")
         ));
+        pane.borrow_mut().install().expect("Installing `Pane`.");
         let display_mode_handler: Mrc<dyn Processor> =
-            mrc!(mode::DisplayProcessor::new(&pane, &explorer));
+            mrc!(mode::DisplayProcessor::new(&pane));
         let command_mode_handler: Mrc<dyn Processor> = mrc!(mode::CommandProcessor::new(&pane));
         let filter_mode_handler: Mrc<dyn Processor> = mrc!(mode::FilterProcessor::new(&pane));
         let action_mode_handler: Mrc<dyn Processor> = mrc!(mode::ActionProcessor::new());
@@ -127,7 +126,6 @@ impl Paper {
         Self {
             ui,
             pane,
-            explorer,
             mode: mode::Name::default(),
             processors: [
                 (mode::Name::Display, display_mode_handler),
@@ -171,10 +169,7 @@ impl Paper {
             Operation::maintain()
         };
 
-        if let Some(notification) = self.explorer.borrow_mut().receive_notification() {
-            self.pane.borrow_mut().add_notification(notification);
-        }
-
+        self.pane.borrow_mut().process_notifications();
         self.operate(&operation)
     }
 

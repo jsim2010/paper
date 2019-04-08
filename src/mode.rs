@@ -7,7 +7,7 @@ add_trait_child!(Processor, filter, FilterProcessor);
 
 use crate::{
     file::{self, Explorer},
-    lsp::{self, ProgressParams},
+    lsp,
     ptr::Mrc,
     ui::{self, Address, Change, Color, Index, Span, BACKSPACE, ENTER},
 };
@@ -224,7 +224,7 @@ impl From<file::Error> for Flag {
 }
 
 /// Signfifies the pane of the current file.
-#[derive(Clone, Debug, Default, Hash)]
+#[derive(Clone, Debug)]
 pub(crate) struct Pane {
     /// The path that makes up the pane.
     path: PathBuf,
@@ -244,18 +244,30 @@ pub(crate) struct Pane {
     changes: Vec<Change>,
     /// If `Pane` will clear and redraw on next update.
     will_wipe: bool,
+    explorer: Mrc<dyn Explorer>,
 }
 
 impl Pane {
     /// Creates a new Pane with a given height.
-    pub(crate) fn new(height: Index) -> Self {
+    pub(crate) fn new(explorer: Mrc<dyn Explorer>, height: Index) -> Self {
         let height = Rc::new(height);
 
         Self {
             control_panel: ControlPanel::new(&height),
+            explorer,
             height,
-            ..Self::default()
+            path: PathBuf::default(),
+            data: String::default(),
+            first_line: Line::default(),
+            margin_width: u8::default(),
+            line_count: Line::default(),
+            changes: Vec::default(),
+            will_wipe: bool::default(),
         }
+    }
+
+    pub(crate) fn install(&mut self) -> Output<()> {
+        Ok(self.explorer.borrow_mut().start()?)
     }
 
     /// Returns the `Change`s needed to update `Pane`.
@@ -310,15 +322,17 @@ impl Pane {
     }
 
     /// Adds the `Change`s to display a notification.
-    pub(crate) fn add_notification(&mut self, notification: ProgressParams) {
-        if let Some(message) = notification.message {
-            self.changes.push(Change::Text(
-                Span::new(
-                    Address::new(Index::zero(), Index::zero()),
-                    Address::new(Index::zero(), Index::max_value()),
-                ),
-                message,
-            ));
+    pub(crate) fn process_notifications(&mut self) {
+        if let Some(notification) = self.explorer.borrow_mut().receive_notification() {
+            if let Some(message) = notification.message {
+                self.changes.push(Change::Text(
+                    Span::new(
+                        Address::new(Index::zero(), Index::zero()),
+                        Address::new(Index::zero(), Index::max_value()),
+                    ),
+                    message,
+                ));
+            }
         }
     }
 
@@ -371,11 +385,15 @@ impl Pane {
     }
 
     /// Changes the pane to a new path.
-    fn change(&mut self, explorer: &Mrc<dyn Explorer>, path: &PathBuf) -> Output<()> {
-        self.data = explorer.borrow_mut().read(path)?;
+    fn change(&mut self, path: &PathBuf) -> Output<()> {
+        self.data = self.explorer.borrow_mut().read(path)?;
         self.path = path.clone();
         self.refresh();
         Ok(())
+    }
+
+    fn save(&self) -> Output<()> {
+        Ok(self.explorer.borrow().write(&self.path, &self.data)?)
     }
 
     /// Adds a character at a [`Position`].
