@@ -2,7 +2,7 @@
 use crate::mode::Flag;
 use jsonrpc_core::{self, Id, Version};
 use lsp_types::{
-    ClientCapabilities, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
+    TextDocumentItem, ClientCapabilities, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
     InitializedParams, PublishDiagnosticsParams, Registration, RegistrationParams,
     ServerCapabilities, Url,
 };
@@ -106,7 +106,7 @@ impl LanguageClient {
     fn process_response(&mut self, response: ResponseMessage) -> Result<(), Error> {
         if let Status::Result(ResultValue::Initialize(result)) = response.status {
             self.server_capabilities = result.capabilities;
-            return self.send_message(Message::initialized_notification());
+            return self.send_notification(NotificationMessage::initialized());
         }
 
         Ok(())
@@ -125,6 +125,10 @@ impl LanguageClient {
             id: Id::Num(self.request_id),
             method: request,
         }))
+    }
+
+    pub(crate) fn send_notification(&mut self, notification: NotificationMessage) -> Result<(), Error> {
+        self.send_message(Message::Notification(notification))
     }
 
     /// Sends a message to the language server.
@@ -332,6 +336,18 @@ pub(crate) enum NotificationMessage {
     PublishDiagnostics(PublishDiagnosticsParams),
 }
 
+impl NotificationMessage {
+    fn initialized() -> Self {
+        NotificationMessage::Initialized(InitializedParams {})
+    }
+
+    pub(crate) fn did_open_text_document(text_document: TextDocumentItem) -> Self {
+        NotificationMessage::DidOpenTextDocument(DidOpenTextDocumentParams {
+            text_document,
+        })
+    }
+}
+
 #[derive(Deserialize, Debug, Serialize)]
 /// `ProgressParams` defined by `VSCode`.
 pub struct ProgressParams {
@@ -362,16 +378,6 @@ impl Message {
             id,
             status: Status::Result(ResultValue::RegisterCapability),
         })
-    }
-
-    /// Creates a new Initialized notification `Message`.
-    fn initialized_notification() -> Self {
-        Message::Notification(NotificationMessage::Initialized(InitializedParams {}))
-    }
-
-    /// Creates a new DidOpenTextDocument notification `Message`.
-    pub(crate) fn did_open_text_document_notification(params: DidOpenTextDocumentParams) -> Self {
-        Message::Notification(NotificationMessage::DidOpenTextDocument(params))
     }
 }
 

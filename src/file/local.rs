@@ -1,10 +1,10 @@
 //! Implements `Explorer` for local storage.
 use super::{Effect, ProgressParams};
 use crate::{
-    lsp::{LanguageClient, Message, RequestMethod},
+    lsp::{NotificationMessage, LanguageClient, RequestMethod},
     ptr::Mrc,
 };
-use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, Url};
+use lsp_types::{TextDocumentItem, Url};
 use std::{
     env, fs,
     io::{self, ErrorKind},
@@ -61,10 +61,7 @@ impl super::Explorer for Explorer {
         };
 
         let text = fs::read_to_string(absolute_path.clone()).map(|data| data.replace('\r', ""))?;
-        self.language_client_mut()
-            .send_message(Message::did_open_text_document_notification(
-                DidOpenTextDocumentParams {
-                    text_document: TextDocumentItem::new(
+        self.language_client_mut().send_notification(NotificationMessage::did_open_text_document(TextDocumentItem::new(
                         Url::from_file_path(absolute_path).map_err(|_| {
                             io::Error::new(
                                 ErrorKind::InvalidInput,
@@ -75,7 +72,6 @@ impl super::Explorer for Explorer {
                         0,
                         text.clone(),
                     ),
-                },
             ))?;
         Ok(text)
     }
