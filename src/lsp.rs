@@ -2,16 +2,16 @@
 use crate::mode::Flag;
 use jsonrpc_core::{self, Id, Version};
 use lsp_types::{
-    ClientCapabilities, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
-    InitializedParams, PublishDiagnosticsParams, Registration, RegistrationParams,
-    ServerCapabilities, Url,
+    ClientCapabilities, DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
+    InitializeResult, InitializedParams, PublishDiagnosticsParams, Range, Registration,
+    RegistrationParams, ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentItem, Url,
+    VersionedTextDocumentIdentifier,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     fmt::{self, Display, Formatter},
     io::{self, BufRead, BufReader, Read, Write},
-    path::Path,
     process::{self, Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex},
     thread::{Builder, JoinHandle},
@@ -107,7 +107,7 @@ impl LanguageClient {
     fn process_response(&mut self, response: ResponseMessage) -> Result<(), Error> {
         if let Status::Result(ResultValue::Initialize(result)) = response.status {
             self.server_capabilities = result.capabilities;
-            return self.send_message(Message::initialized_notification());
+            return self.send_notification(NotificationMessage::initialized());
         }
 
         Ok(())
@@ -120,25 +120,27 @@ impl LanguageClient {
         }
     }
 
-    /// Initializes the language server.
-    pub(crate) fn initialize(&mut self, root_dir: &Path) -> Result<(), Error> {
+    /// Sends a request to the language server.
+    ///
+    /// Handles the management of the ID sent with the request.
+    pub(crate) fn send_request(&mut self, request: RequestMethod) -> Result<(), Error> {
         self.request_id += 1;
-        self.send_message(Message::initialize_request(
-            self.request_id,
-            InitializeParams {
-                process_id: Some(u64::from(process::id())),
-                root_path: None,
-                root_uri: Some(Url::from_directory_path(root_dir).map_err(|_| Error::InvalidPath)?),
-                initialization_options: None,
-                capabilities: ClientCapabilities::default(),
-                trace: None,
-                workspace_folders: None,
-            },
-        ))
+        self.send_message(Message::Request(RequestMessage {
+            id: Id::Num(self.request_id),
+            method: request,
+        }))
+    }
+
+    /// Sends a notification to the language server.
+    pub(crate) fn send_notification(
+        &mut self,
+        notification: NotificationMessage,
+    ) -> Result<(), Error> {
+        self.send_message(Message::Notification(notification))
     }
 
     /// Sends a message to the language server.
-    pub(crate) fn send_message(&mut self, message: Message) -> Result<(), Error> {
+    fn send_message(&mut self, message: Message) -> Result<(), Error> {
         let json_string = serde_json::to_string(&AbstractMessage::new(message))?;
 
         write!(
@@ -263,6 +265,21 @@ pub(crate) enum RequestMethod {
     RegisterCapability(RegistrationParams),
 }
 
+impl RequestMethod {
+    /// Creates a new `RequestMethod::Initialize`.
+    pub(crate) fn initialize(root_dir: &Url) -> Self {
+        RequestMethod::Initialize(Box::new(InitializeParams {
+            process_id: Some(u64::from(process::id())),
+            root_path: None,
+            root_uri: Some(root_dir.clone()),
+            initialization_options: None,
+            capabilities: ClientCapabilities::default(),
+            trace: None,
+            workspace_folders: None,
+        }))
+    }
+}
+
 /// Specifies the format of a response message.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -326,6 +343,38 @@ pub(crate) enum NotificationMessage {
     /// The publishDiagnostics notification.
     #[serde(rename = "textDocument/publishDiagnostics")]
     PublishDiagnostics(PublishDiagnosticsParams),
+    /// The textDocument/didChange notification.
+    #[serde(rename = "textDocument/didChange")]
+    DidChangeTextDocument(DidChangeTextDocumentParams),
+}
+
+impl NotificationMessage {
+    /// Creates a new `NotificationMessage::Initialized`.
+    fn initialized() -> Self {
+        NotificationMessage::Initialized(InitializedParams {})
+    }
+
+    /// Creates a new `NotificationMessage::DidOpenTextDocument`.
+    pub(crate) fn did_open_text_document(text_document: TextDocumentItem) -> Self {
+        NotificationMessage::DidOpenTextDocument(DidOpenTextDocumentParams { text_document })
+    }
+
+    /// Creates a new `NotificationMessage::DidChangeTextDocument`.
+    pub(crate) fn did_change_text_document(
+        doc: &mut TextDocumentItem,
+        range: &Range,
+        text: &str,
+    ) -> Self {
+        doc.version += 1;
+        NotificationMessage::DidChangeTextDocument(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier::new(doc.uri.clone(), doc.version),
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: Some(*range),
+                text: text.to_string(),
+                range_length: None,
+            }],
+        })
+    }
 }
 
 #[derive(Deserialize, Debug, Serialize)]
@@ -352,30 +401,12 @@ impl AbstractMessage {
 }
 
 impl Message {
-    /// Creates a new Initialize request `Message`.
-    fn initialize_request(id: u64, params: InitializeParams) -> Self {
-        Message::Request(RequestMessage {
-            id: Id::Num(id),
-            method: RequestMethod::Initialize(Box::new(params)),
-        })
-    }
-
     /// Creates a new RegisterCapability response `Message`.
     fn register_capability_response(id: Id) -> Self {
         Message::Response(ResponseMessage {
             id,
             status: Status::Result(ResultValue::RegisterCapability),
         })
-    }
-
-    /// Creates a new Initialized notification `Message`.
-    fn initialized_notification() -> Self {
-        Message::Notification(NotificationMessage::Initialized(InitializedParams {}))
-    }
-
-    /// Creates a new DidOpenTextDocument notification `Message`.
-    pub(crate) fn did_open_text_document_notification(params: DidOpenTextDocumentParams) -> Self {
-        Message::Notification(NotificationMessage::DidOpenTextDocument(params))
     }
 }
 

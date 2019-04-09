@@ -1,3 +1,4 @@
+use lsp_types::{Range, TextDocumentItem, Url};
 use pancurses::Input;
 use paper::file;
 use paper::lsp::ProgressParams;
@@ -168,11 +169,25 @@ impl Explorer for MockExplorer {
         Ok(())
     }
 
-    fn read(&mut self, _path: &PathBuf) -> file::Effect<String> {
-        Ok(self.controller.borrow().file().to_string())
+    fn read(&mut self, _path: &str) -> file::Effect<TextDocumentItem> {
+        Ok(TextDocumentItem::new(
+            Url::parse("file://")?,
+            "rust".to_string(),
+            0,
+            self.controller.borrow().file().to_string(),
+        ))
     }
 
-    fn write(&self, _path: &Path, _data: &str) -> file::Effect<()> {
+    fn write(&self, _doc: &TextDocumentItem) -> file::Effect<()> {
+        Ok(())
+    }
+
+    fn change(
+        &mut self,
+        _doc: &mut TextDocumentItem,
+        _range: &Range,
+        _text: &str,
+    ) -> file::Effect<()> {
         Ok(())
     }
 
