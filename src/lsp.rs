@@ -2,9 +2,10 @@
 use crate::mode::Flag;
 use jsonrpc_core::{self, Id, Version};
 use lsp_types::{
-    TextDocumentItem, ClientCapabilities, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
-    InitializedParams, PublishDiagnosticsParams, Registration, RegistrationParams,
-    ServerCapabilities, Url,
+    ClientCapabilities, DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
+    InitializeResult, InitializedParams, PublishDiagnosticsParams, Range, Registration,
+    RegistrationParams, ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentItem, Url,
+    VersionedTextDocumentIdentifier,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -119,6 +120,9 @@ impl LanguageClient {
         }
     }
 
+    /// Sends a request to the language server.
+    ///
+    /// Handles the management of the ID sent with the request.
     pub(crate) fn send_request(&mut self, request: RequestMethod) -> Result<(), Error> {
         self.request_id += 1;
         self.send_message(Message::Request(RequestMessage {
@@ -127,12 +131,16 @@ impl LanguageClient {
         }))
     }
 
-    pub(crate) fn send_notification(&mut self, notification: NotificationMessage) -> Result<(), Error> {
+    /// Sends a notification to the language server.
+    pub(crate) fn send_notification(
+        &mut self,
+        notification: NotificationMessage,
+    ) -> Result<(), Error> {
         self.send_message(Message::Notification(notification))
     }
 
     /// Sends a message to the language server.
-    pub(crate) fn send_message(&mut self, message: Message) -> Result<(), Error> {
+    fn send_message(&mut self, message: Message) -> Result<(), Error> {
         let json_string = serde_json::to_string(&AbstractMessage::new(message))?;
 
         write!(
@@ -258,6 +266,7 @@ pub(crate) enum RequestMethod {
 }
 
 impl RequestMethod {
+    /// Creates a new `RequestMethod::Initialize`.
     pub(crate) fn initialize(root_dir: &Url) -> Self {
         RequestMethod::Initialize(Box::new(InitializeParams {
             process_id: Some(u64::from(process::id())),
@@ -334,16 +343,36 @@ pub(crate) enum NotificationMessage {
     /// The publishDiagnostics notification.
     #[serde(rename = "textDocument/publishDiagnostics")]
     PublishDiagnostics(PublishDiagnosticsParams),
+    /// The textDocument/didChange notification.
+    #[serde(rename = "textDocument/didChange")]
+    DidChangeTextDocument(DidChangeTextDocumentParams),
 }
 
 impl NotificationMessage {
+    /// Creates a new `NotificationMessage::Initialized`.
     fn initialized() -> Self {
         NotificationMessage::Initialized(InitializedParams {})
     }
 
+    /// Creates a new `NotificationMessage::DidOpenTextDocument`.
     pub(crate) fn did_open_text_document(text_document: TextDocumentItem) -> Self {
-        NotificationMessage::DidOpenTextDocument(DidOpenTextDocumentParams {
-            text_document,
+        NotificationMessage::DidOpenTextDocument(DidOpenTextDocumentParams { text_document })
+    }
+
+    /// Creates a new `NotificationMessage::DidChangeTextDocument`.
+    pub(crate) fn did_change_text_document(
+        doc: &mut TextDocumentItem,
+        range: &Range,
+        text: &str,
+    ) -> Self {
+        doc.version += 1;
+        NotificationMessage::DidChangeTextDocument(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier::new(doc.uri.clone(), doc.version),
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: Some(*range),
+                text: text.to_string(),
+                range_length: None,
+            }],
         })
     }
 }

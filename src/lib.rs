@@ -85,8 +85,8 @@ pub mod num;
 pub mod ui;
 
 pub use file::{local::Explorer as LocalExplorer, Explorer};
-pub use ui::UserInterface;
 pub use mode::Flag;
+pub use ui::UserInterface;
 
 use mode::{Operation, Output, Pane, Processor};
 use pancurses::Input;
@@ -117,8 +117,7 @@ impl Paper {
                 .expect("Accessing height of user interface")
         ));
         pane.borrow_mut().install().expect("Installing `Pane`.");
-        let display_mode_handler: Mrc<dyn Processor> =
-            mrc!(mode::DisplayProcessor::new(&pane));
+        let display_mode_handler: Mrc<dyn Processor> = mrc!(mode::DisplayProcessor::new(&pane));
         let command_mode_handler: Mrc<dyn Processor> = mrc!(mode::CommandProcessor::new(&pane));
         let filter_mode_handler: Mrc<dyn Processor> = mrc!(mode::FilterProcessor::new(&pane));
         let action_mode_handler: Mrc<dyn Processor> = mrc!(mode::ActionProcessor::new());

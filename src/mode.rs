@@ -12,7 +12,7 @@ use crate::{
     ui::{self, Address, Change, Color, Index, Span, BACKSPACE, ENTER},
 };
 use either::Either;
-use lsp_types::{TextDocumentItem, Position, Range};
+use lsp_types::{Position, Range, TextDocumentItem};
 use std::{
     cmp,
     fmt::{self, Debug, Display, Formatter},
@@ -240,7 +240,9 @@ pub(crate) struct Pane {
     changes: Vec<Change>,
     /// If `Pane` will clear and redraw on next update.
     will_wipe: bool,
+    /// The `Explorer` used by `Pane`.
     explorer: Mrc<dyn Explorer>,
+    /// The document being represented by `Pane`.
     doc: Option<TextDocumentItem>,
 }
 
@@ -262,8 +264,10 @@ impl Pane {
         }
     }
 
+    /// Initializes the `Pane`.
     pub(crate) fn install(&mut self) -> Output<()> {
-        Ok(self.explorer.borrow_mut().start()?)
+        self.explorer.borrow_mut().start()?;
+        Ok(())
     }
 
     /// Returns the `Change`s needed to update `Pane`.
@@ -381,26 +385,23 @@ impl Pane {
     }
 
     /// Changes the pane to a new path.
-    fn change(&mut self, path: &String) -> Output<()> {
+    fn change(&mut self, path: &str) -> Output<()> {
         self.doc = Some(self.explorer.borrow_mut().read(path)?);
         self.refresh();
         Ok(())
     }
 
+    /// Saves the document of `Pane` to its file system.
     fn save(&self) -> Output<()> {
         if let Some(doc) = &self.doc {
-            self.explorer.borrow().write(&doc)?;
+            self.explorer.borrow().write(doc)?;
         }
 
         Ok(())
     }
 
     /// Adds a character at a [`Position`].
-    pub(crate) fn add(
-        &mut self,
-        position: &mut Position,
-        input: char,
-    ) -> Result<(), TryFromIntError> {
+    pub(crate) fn add(&mut self, position: &mut Position, input: char) -> Output<()> {
         let mut new_text = String::new();
         let mut range = Range::new(*position, *position);
 
@@ -416,7 +417,7 @@ impl Pane {
                 range.start.character -= 1;
 
                 if let Some(span) = self.span_at(range) {
-                    self.changes.push(Change::Text(span, new_text));
+                    self.changes.push(Change::Text(span, new_text.clone()));
                 }
             }
         } else {
@@ -426,7 +427,7 @@ impl Pane {
                 self.will_wipe = true;
                 self.refresh();
             } else if let Some(span) = self.span_at(range) {
-                self.changes.push(Change::Text(span, new_text));
+                self.changes.push(Change::Text(span, new_text.clone()));
             } else {
                 // Do nothing.
             }
@@ -454,6 +455,8 @@ impl Pane {
                     position.character += 1;
                 }
             }
+
+            self.explorer.borrow_mut().change(doc, &range, &new_text)?;
         }
 
         Ok(())
@@ -462,12 +465,16 @@ impl Pane {
     /// Iterates through the indexes that indicate where each line starts.
     pub(crate) fn line_indices(&self) -> impl Iterator<Item = Index> + '_ {
         if let Some(doc) = &self.doc {
-            Either::Left(iter::once(Index::zero()).chain(doc.text.match_indices(ENTER).flat_map(|(index, _)| {
-                index
-                    .checked_add(1)
-                    .and_then(|value| Index::try_from(value).ok())
-                    .into_iter()
-            })))
+            Either::Left(
+                iter::once(Index::zero()).chain(doc.text.match_indices(ENTER).flat_map(
+                    |(index, _)| {
+                        index
+                            .checked_add(1)
+                            .and_then(|value| Index::try_from(value).ok())
+                            .into_iter()
+                    },
+                )),
+            )
         } else {
             Either::Right(iter::empty())
         }
