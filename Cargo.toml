@@ -11,7 +11,7 @@ categories = ["command-line-utilities", "text-editors"]
 edition = "2018"
 
 [dependencies]
-clap = "2.32.0"
+clap = "2.33.0"
 either = "1.5.2"
 jsonrpc-core = "11.0.0"
 lsp-types = "0.56.0"
