@@ -111,7 +111,7 @@ pub struct Address {
 impl Address {
     /// Creates a new `Address` with a given row and column.
     #[inline]
-    pub fn new(row: Index, column: Index) -> Self {
+    pub const fn new(row: Index, column: Index) -> Self {
         Self { row, column }
     }
 
@@ -153,7 +153,7 @@ pub struct Span {
 
 impl Span {
     /// Creates a new `Span`.
-    pub fn new(first: Address, last: Address) -> Self {
+    pub const fn new(first: Address, last: Address) -> Self {
         Self { first, last }
     }
 
@@ -224,7 +224,7 @@ pub enum Color {
 
 impl Color {
     /// Converts `self` to a `color-pair` as specified in `pancurses`.
-    fn cp(self) -> i16 {
+    const fn cp(self) -> i16 {
         self as i16
     }
 }

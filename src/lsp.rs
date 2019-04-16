@@ -392,7 +392,7 @@ pub struct ProgressParams {
 
 impl AbstractMessage {
     /// Creates a new `AbstractMessage`.
-    fn new(message: Message) -> Self {
+    const fn new(message: Message) -> Self {
         Self {
             jsonrpc: Version::V2,
             message,

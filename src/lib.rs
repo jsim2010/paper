@@ -45,6 +45,7 @@
     missing_copy_implementations,
     missing_debug_implementations,
     missing_docs,
+    single_use_lifetimes,
     trivial_casts,
     trivial_numeric_casts,
     unreachable_pub,
@@ -52,6 +53,7 @@
     unused_lifetimes,
     unused_qualifications,
     unused_results,
+    clippy::cargo,
     clippy::nursery,
     clippy::pedantic,
     clippy::restriction
@@ -62,10 +64,10 @@
     clippy::fallible_impl_from
 )] // These lints are not always correct; issues should be detected by tests or other lints.
 #![allow(clippy::implicit_return)]
-// This goes against rust convention and would require return calls in places it is not helpful (i.e. closures).
-#![allow(clippy::missing_inline_in_public_items)] // Mistakenly marks derived traits.
+// This goes against rust convention and would require return calls in places it is not helpful (e.g. closures).
+#![allow(clippy::missing_inline_in_public_items, clippy::missing_const_for_fn)] // Mistakenly marks derived traits.
 
-// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences, single_use_lifetimes: issue rust-lang/rust#55057, box_pointers
+// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences, box_pointers
 
 macro_rules! add_trait_child {
     ($trait:ident, $child:ident, $name:ident) => {

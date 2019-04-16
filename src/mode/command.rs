@@ -51,7 +51,10 @@ impl super::Processor for Processor {
                     Some("end") => {
                         return Err(Flag::Quit);
                     }
-                    _ => (),
+                    Some(_) => {
+                        return Err(Flag::User);
+                    }
+                    None => (),
                 }
 
                 Ok(operation)

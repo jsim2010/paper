@@ -101,8 +101,6 @@ impl super::Processor for Processor {
 
 /// Used for modifying [`Range`]s to match a feature.
 trait Filter: Debug {
-    /// Returns the identifying character of the `Filter`.
-    fn id(&self) -> char;
     /// Modifies `sections` such that it matches the given feature.
     fn extract(
         &self,
@@ -132,10 +130,6 @@ impl Default for LineFilter {
 }
 
 impl Filter for LineFilter {
-    fn id(&self) -> char {
-        '#'
-    }
-
     fn extract(
         &self,
         feature: &str,
@@ -191,10 +185,6 @@ impl Default for PatternFilter {
 }
 
 impl Filter for PatternFilter {
-    fn id(&self) -> char {
-        '/'
-    }
-
     fn extract(
         &self,
         feature: &str,

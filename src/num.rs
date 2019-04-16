@@ -32,12 +32,12 @@ impl NonNegativeI32 {
     }
 
     /// Creates a new `NonNegativeI32` with a value of zero.
-    pub fn zero() -> Self {
+    pub const fn zero() -> Self {
         Self(0)
     }
 
     /// Returns the maximum value of `NonNegativeI32`.
-    pub fn max_value() -> Self {
+    pub const fn max_value() -> Self {
         Self(i32::max_value())
     }
 
