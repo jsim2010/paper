@@ -183,6 +183,8 @@ pub enum Flag {
     File(file::Error),
     /// An error with the Language Server Protocol.
     Lsp(lsp::Error),
+    /// An invalid input from the user.
+    User,
     /// Quits the application.
     ///
     /// This is not actually an error, just a way to kill the application.
@@ -197,6 +199,7 @@ impl Display for Flag {
             Flag::Conversion(error) => write!(f, "{}", error),
             Flag::File(error) => write!(f, "{}", error),
             Flag::Lsp(error) => write!(f, "{}", error),
+            Flag::User => write!(f, "User Error"),
             Flag::Quit => write!(f, "Quit"),
         }
     }
@@ -584,7 +587,7 @@ struct IndexIterator {
 
 impl IndexIterator {
     /// Creates a new `IndexIterator`.
-    fn new(start: Index, end: Index) -> Self {
+    const fn new(start: Index, end: Index) -> Self {
         Self {
             current: start,
             end,
@@ -619,12 +622,12 @@ pub struct Operation {
 
 impl Operation {
     /// Returns [`Name`] of `Operation`.
-    pub(crate) fn mode(&self) -> &Option<Name> {
+    pub(crate) const fn mode(&self) -> &Option<Name> {
         &self.mode
     }
 
     /// Returns [`Initiation`] of `Operation`.
-    pub(crate) fn initiation(&self) -> &Option<Initiation> {
+    pub(crate) const fn initiation(&self) -> &Option<Initiation> {
         &self.initiation
     }
 
@@ -645,7 +648,7 @@ impl Operation {
     }
 
     /// Creates a new `Operation` to continue execution with no special action.
-    pub(crate) fn maintain() -> Self {
+    pub(crate) const fn maintain() -> Self {
         Self {
             mode: None,
             initiation: None,
@@ -717,7 +720,7 @@ impl LineNumber {
 
     /// Converts `LineNumber` to its row index - assuming line number `1` as at row `0`.
     #[allow(clippy::integer_arithmetic)] // self.0 > 0
-    pub(crate) fn row(self) -> usize {
+    pub(crate) const fn row(self) -> usize {
         (self.0 - 1) as usize
     }
 }
