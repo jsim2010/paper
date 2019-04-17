@@ -4,25 +4,13 @@ use crate::{
     lsp::{LanguageClient, NotificationMessage, RequestMethod},
     ptr::Mrc,
 };
-use lsp_types::{Range, TextDocumentItem, Url};
 use std::{
     env, fs,
-    io::{self, ErrorKind},
-    path::PathBuf,
+    path::{Prefix, Component, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
 
-/// Describes the possible errors when converting a `Url` to a `PathBuf`.
-const FROM_URL_ERROR: &str = "Host of URL is neither empty nor `localhost` (except on Windows, where `file:` URLs may have non-local host).";
-/// Describes the possible errors when converting a `Path` to a `Url`.
-const TO_URL_ERROR: &str = "Given path is not absolute or, on Windows, the prefix is not a disk prefix (e.g. `C:`) or a UNC prefix (`\\\\`).";
-
-/// Converts a `Url` to a `PathBuf`.
-fn url_path(url: &Url) -> Effect<PathBuf> {
-    Ok(url
-        .to_file_path()
-        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, FROM_URL_ERROR))?)
-}
+use lsp_msg::{Range, TextDocumentItem};
 
 /// Signifies an `Explorer` of the local storage.
 #[derive(Debug)]
@@ -30,22 +18,55 @@ pub struct Explorer {
     /// A local `LanguageClient`.
     language_client: Arc<Mutex<LanguageClient>>,
     /// Root URL of the `Explorer`.
-    root_url: Url,
+    root_uri: String,
 }
 
 impl Explorer {
     /// Creates a new `Explorer`.
-    pub fn new(root_url: Url) -> Mrc<Self> {
+    pub fn new(root_uri: String) -> Mrc<Self> {
         mrc!(Self {
             language_client: LanguageClient::new("rls"),
-            root_url,
+            root_uri,
         })
     }
 
-    /// Returns the `Url` of the current directory.
-    pub fn current_dir_url() -> Effect<Url> {
-        Ok(Url::from_directory_path(env::current_dir()?.as_path())
-            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, TO_URL_ERROR))?)
+    /// Returns the URI of the current directory.
+    pub fn current_dir_uri() -> Effect<String> {
+        let path = env::current_dir()?;
+        let mut uri = String::from("file:");
+        
+        for component in path.components() {
+            if let Component::RootDir = component {
+                continue;
+            }
+
+            uri.push('/');
+
+            match component {
+                Component::Prefix(prefix) => {
+                    match prefix.kind() {
+                        Prefix::Disk(drive) => {
+                            uri.push(drive as char);
+                            uri.push(':');
+                        }
+                        _ => {
+                            panic!("Error generating URI from prefix");
+                        }
+                    }
+                }
+                Component::Normal(name) => {
+                    if let Some(valid_name) = name.to_str() {
+                        uri.push_str(valid_name);
+                    }
+                }
+                _ => {
+                    panic!("Error generating URI from component `{}`", component.as_os_str().to_string_lossy());
+                }
+            }
+        }
+
+        uri.push('/');
+        Ok(uri)
     }
 
     /// Returns a mutable reference to the `LanguageClient`.
@@ -59,21 +80,42 @@ impl Explorer {
 impl super::Explorer for Explorer {
     #[inline]
     fn start(&mut self) -> Effect<()> {
-        let root_url = self.root_url.clone();
+        let root_uri = self.root_uri.clone();
         self.language_client_mut()
-            .send_request(RequestMethod::initialize(&root_url))?;
+            .send_request(RequestMethod::initialize(&root_uri))?;
         Ok(())
     }
 
     #[inline]
     fn read(&mut self, path: &str) -> Effect<TextDocumentItem> {
-        let url = self.root_url.join(path)?;
-        let doc = TextDocumentItem::new(
-            url.clone(),
-            "rust".to_string(),
-            0,
-            fs::read_to_string(url_path(&url)?)?.replace('\r', ""),
-        );
+        let mut uri = self.root_uri.clone();
+        let relative_path = PathBuf::from(path);
+        let mut is_first = true;
+
+        for component in relative_path.components() {
+            if is_first {
+                is_first = false;
+            } else {
+                uri.push('/');
+            }
+
+            match component {
+                Component::Normal(name) => {
+                    if let Some(valid_name) = name.to_str() {
+                        uri.push_str(valid_name);
+                    }
+                }
+                _ => continue,
+            }
+        }
+
+        let absolute_path = uri.get(6..).unwrap().to_string();
+        let doc = TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "rust".to_string(),
+            version: 0,
+            text: fs::read_to_string(PathBuf::from(absolute_path))?.replace('\r', ""),
+        };
         self.language_client_mut()
             .send_notification(NotificationMessage::did_open_text_document(doc.clone()))?;
         Ok(doc)
@@ -81,7 +123,7 @@ impl super::Explorer for Explorer {
 
     #[inline]
     fn write(&self, doc: &TextDocumentItem) -> Effect<()> {
-        fs::write(url_path(&doc.uri)?, &doc.text)?;
+        fs::write(PathBuf::from(&doc.uri), &doc.text)?;
         Ok(())
     }
 

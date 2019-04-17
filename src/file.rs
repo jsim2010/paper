@@ -2,12 +2,13 @@
 pub(crate) mod local;
 
 use crate::lsp::{self, ProgressParams};
-use lsp_types::{Range, TextDocumentItem};
 use std::{
     fmt::{self, Debug, Display, Formatter},
     io,
 };
 use url;
+
+use lsp_msg::{Range, TextDocumentItem};
 
 /// Specifies the type returned by `Explorer` functions.
 pub type Effect<T> = Result<T, Error>;

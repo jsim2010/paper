@@ -1,10 +1,11 @@
 //! Implements functionality for the application while in filter mode.
 use super::{Initiation, LineNumber, Operation, Output, Pane};
 use crate::{ptr::Mrc, ui::{ENTER, ESC}};
-use lsp_types::{Position, Range};
 use rec::{ChCls::{Any, Digit, End, Not, Sign}, opt, some, tkn, var, Element, Pattern};
 use std::{cmp, collections::HashMap, fmt::Debug, rc::Rc};
 use try_from::{TryFrom, TryFromIntError};
+
+use lsp_msg::Range;
 
 /// The [`Processor`] of the filter mode.
 #[derive(Debug)]
@@ -54,10 +55,7 @@ impl super::Processor for Processor {
         self.noises.clear();
 
         for line in 0..pane.line_count {
-            self.noises.push(Range::new(
-                Position::new(line, 0),
-                Position::new(line, u64::max_value()),
-            ));
+            self.noises.push(Range::with_line(line));
         }
 
         Ok(())
@@ -67,7 +65,7 @@ impl super::Processor for Processor {
         let mut pane = self.pane.borrow_mut();
 
         match input {
-            ENTER => Ok(Operation::enter_action(self.signals.clone())),
+            ENTER => Ok(Operation::enter_action(self.signals.to_vec())),
             ESC => Ok(Operation::enter_display()),
             _ => {
                 if input == '\t' {
@@ -198,17 +196,13 @@ impl Filter for PatternFilter {
 
                 for target_range in target_ranges {
                     let start_character = usize::try_from(target_range.start.character)?;
-                    let line_index = usize::try_from(target_range.start.line)?;
 
                     if let Some(target) = pane
-                        .line_data(line_index)
+                        .line_data(usize::try_from(target_range.start.line)?)
                         .map(|x| x.chars().skip(start_character).collect::<String>())
                     {
                         for location in search_pattern.locate_iter(&target) {
-                            let mut new_range = target_range;
-                            new_range.start.character += location.start() as u64;
-                            new_range.end.character += location.end() as u64;
-                            ranges.push(new_range);
+                            ranges.push(Range::with_partial_line(target_range.start.line, location.start() as u64, location.end() as u64));
                         }
                     }
                 }
