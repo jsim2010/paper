@@ -1,7 +1,7 @@
 //! Implements functionality for the application while in action mode.
 use super::{Initiation, Operation, Output};
 use crate::ui::ESC;
-use lsp_types::Range;
+use lsp_msg::Range;
 
 /// The [`Processor`] of the action mode.
 #[derive(Debug)]
@@ -22,7 +22,7 @@ impl Processor {
 impl super::Processor for Processor {
     fn enter(&mut self, initiation: &Option<Initiation>) -> Output<()> {
         if let Some(Initiation::SetSignals(signals)) = initiation {
-            self.signals = signals.clone();
+            self.signals = signals.to_vec();
         }
 
         Ok(())

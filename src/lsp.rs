@@ -1,12 +1,6 @@
 //! Implements the client side of the language server protocol.
 use crate::mode::Flag;
 use jsonrpc_core::{self, Id, Version};
-use lsp_types::{
-    ClientCapabilities, DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
-    InitializeResult, InitializedParams, PublishDiagnosticsParams, Range, Registration,
-    RegistrationParams, ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentItem, Url,
-    VersionedTextDocumentIdentifier,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -15,6 +9,13 @@ use std::{
     process::{self, Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex},
     thread::{Builder, JoinHandle},
+};
+
+use lsp_msg::{
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
+    InitializedParams, PublishDiagnosticsParams, Range, Registration, RegistrationParams,
+    ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentItem,
+    VersionedTextDocumentIdentifier,
 };
 
 /// The interface with the language server.
@@ -267,15 +268,11 @@ pub(crate) enum RequestMethod {
 
 impl RequestMethod {
     /// Creates a new `RequestMethod::Initialize`.
-    pub(crate) fn initialize(root_dir: &Url) -> Self {
+    pub(crate) fn initialize(root_dir: &str) -> Self {
         RequestMethod::Initialize(Box::new(InitializeParams {
             process_id: Some(u64::from(process::id())),
-            root_path: None,
-            root_uri: Some(root_dir.clone()),
-            initialization_options: None,
-            capabilities: ClientCapabilities::default(),
-            trace: None,
-            workspace_folders: None,
+            root_uri: Some(String::from(root_dir)),
+            ..InitializeParams::default()
         }))
     }
 }
@@ -356,7 +353,7 @@ impl NotificationMessage {
 
     /// Creates a new `NotificationMessage::DidOpenTextDocument`.
     pub(crate) fn did_open_text_document(text_document: TextDocumentItem) -> Self {
-        NotificationMessage::DidOpenTextDocument(DidOpenTextDocumentParams { text_document })
+        NotificationMessage::DidOpenTextDocument(DidOpenTextDocumentParams::from(text_document))
     }
 
     /// Creates a new `NotificationMessage::DidChangeTextDocument`.
@@ -365,15 +362,14 @@ impl NotificationMessage {
         range: &Range,
         text: &str,
     ) -> Self {
-        doc.version += 1;
-        NotificationMessage::DidChangeTextDocument(DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier::new(doc.uri.clone(), doc.version),
-            content_changes: vec![TextDocumentContentChangeEvent {
-                range: Some(*range),
-                text: text.to_string(),
-                range_length: None,
-            }],
-        })
+        doc.increment_version();
+        NotificationMessage::DidChangeTextDocument(DidChangeTextDocumentParams::new(
+            VersionedTextDocumentIdentifier::from(doc.clone()),
+            vec![TextDocumentContentChangeEvent::new(
+                *range,
+                text.to_string(),
+            )],
+        ))
     }
 }
 

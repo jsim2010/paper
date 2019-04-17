@@ -6,7 +6,7 @@ fn main() {
         .version(crate_version!())
         .author(crate_authors!())
         .get_matches();
-    let error = match LocalExplorer::current_dir_url() {
+    let error = match LocalExplorer::current_dir_uri() {
         Ok(current_dir) => Paper::new(Terminal::new(), LocalExplorer::new(current_dir))
             .run()
             .err(),

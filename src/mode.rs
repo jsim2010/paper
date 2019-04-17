@@ -12,7 +12,6 @@ use crate::{
     ui::{self, Address, Change, Color, Index, Span, BACKSPACE, ENTER},
 };
 use either::Either;
-use lsp_types::{Position, Range, TextDocumentItem};
 use std::{
     cmp,
     fmt::{self, Debug, Display, Formatter},
@@ -21,6 +20,8 @@ use std::{
     rc::Rc,
 };
 use try_from::{TryFrom, TryFromIntError};
+
+use lsp_msg::{Position, Range, TextDocumentItem};
 
 /// Defines the type that identifies a line.
 ///
@@ -375,13 +376,13 @@ impl Pane {
         }
 
         for noise in noises {
-            if let Some(span) = self.span_at(*noise) {
+            if let Some(span) = self.span_at(noise) {
                 self.changes.push(Change::Format(span, Color::Blue));
             }
         }
 
         for signal in signals {
-            if let Some(span) = self.span_at(*signal) {
+            if let Some(span) = self.span_at(signal) {
                 self.changes.push(Change::Format(span, Color::Red));
             }
         }
@@ -406,20 +407,20 @@ impl Pane {
     /// Adds a character at a [`Position`].
     pub(crate) fn add(&mut self, position: &mut Position, input: char) -> Output<()> {
         let mut new_text = String::new();
-        let mut range = Range::new(*position, *position);
+        let mut range = Range::from(*position);
 
         if input == BACKSPACE {
-            if position.character == 0 {
-                if position.line != 0 {
-                    range.start.line -= 1;
-                    range.start.character = u64::max_value();
+            if range.start.is_first_character() {
+                if !range.start.is_first_line() {
+                    range.start.move_up();
+                    range.start.move_to_end_of_line();
                     self.will_wipe = true;
                     self.refresh();
                 }
             } else {
-                range.start.character -= 1;
+                range.start.move_left();
 
-                if let Some(span) = self.span_at(range) {
+                if let Some(span) = self.span_at(&range) {
                     self.changes.push(Change::Text(span, new_text.clone()));
                 }
             }
@@ -429,7 +430,7 @@ impl Pane {
             if input == ENTER {
                 self.will_wipe = true;
                 self.refresh();
-            } else if let Some(span) = self.span_at(range) {
+            } else if let Some(span) = self.span_at(&range) {
                 self.changes.push(Change::Text(span, new_text.clone()));
             } else {
                 // Do nothing.
@@ -455,7 +456,7 @@ impl Pane {
                     *position = range.start;
                 } else {
                     doc.text.insert(data_index, input);
-                    position.character += 1;
+                    position.move_right();
                 }
             }
 
@@ -511,7 +512,7 @@ impl Pane {
     }
 
     /// Returns the `Span` associated with the given `Range`.
-    fn span_at(&self, range: Range) -> Option<Span> {
+    fn span_at(&self, range: &Range) -> Option<Span> {
         self.address_at(range.start).and_then(|first| {
             self.address_at(range.end)
                 .map(|last| Span::new(first, last))
