@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     env, fs,
-    path::{Prefix, Component, PathBuf},
+    path::{Component, PathBuf, Prefix},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -34,7 +34,7 @@ impl Explorer {
     pub fn current_dir_uri() -> Effect<String> {
         let path = env::current_dir()?;
         let mut uri = String::from("file:");
-        
+
         for component in path.components() {
             if let Component::RootDir = component {
                 continue;
@@ -42,16 +42,12 @@ impl Explorer {
 
             uri.push('/');
 
+            #[allow(clippy::wildcard_enum_match_arm)] // We should error if component is unknown.
             match component {
                 Component::Prefix(prefix) => {
-                    match prefix.kind() {
-                        Prefix::Disk(drive) => {
-                            uri.push(drive as char);
-                            uri.push(':');
-                        }
-                        _ => {
-                            panic!("Error generating URI from prefix");
-                        }
+                    if let Prefix::Disk(drive) = prefix.kind() {
+                        uri.push(drive as char);
+                        uri.push(':');
                     }
                 }
                 Component::Normal(name) => {
@@ -60,7 +56,10 @@ impl Explorer {
                     }
                 }
                 _ => {
-                    panic!("Error generating URI from component `{}`", component.as_os_str().to_string_lossy());
+                    panic!(
+                        "Error generating URI from component `{}`",
+                        component.as_os_str().to_string_lossy()
+                    );
                 }
             }
         }
@@ -99,19 +98,16 @@ impl super::Explorer for Explorer {
                 uri.push('/');
             }
 
-            match component {
-                Component::Normal(name) => {
-                    if let Some(valid_name) = name.to_str() {
-                        uri.push_str(valid_name);
-                    }
+            if let Component::Normal(name) = component {
+                if let Some(valid_name) = name.to_str() {
+                    uri.push_str(valid_name);
                 }
-                _ => continue,
             }
         }
 
         let absolute_path = uri.get(6..).unwrap().to_string();
         let doc = TextDocumentItem {
-            uri: uri.clone(),
+            uri,
             language_id: "rust".to_string(),
             version: 0,
             text: fs::read_to_string(PathBuf::from(absolute_path))?.replace('\r', ""),

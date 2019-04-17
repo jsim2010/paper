@@ -11,8 +11,12 @@ use std::{
     thread::{Builder, JoinHandle},
 };
 
-use lsp_msg::{Registration,
-    RegistrationParams, PublishDiagnosticsParams, InitializedParams, InitializeResult, InitializeParams, DidOpenTextDocumentParams, VersionedTextDocumentIdentifier, TextDocumentContentChangeEvent, DidChangeTextDocumentParams, Range, ServerCapabilities, TextDocumentItem};
+use lsp_msg::{
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
+    InitializedParams, PublishDiagnosticsParams, Range, Registration, RegistrationParams,
+    ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentItem,
+    VersionedTextDocumentIdentifier,
+};
 
 /// The interface with the language server.
 #[derive(Debug)]
@@ -264,11 +268,11 @@ pub(crate) enum RequestMethod {
 
 impl RequestMethod {
     /// Creates a new `RequestMethod::Initialize`.
-    pub(crate) fn initialize(root_dir: &String) -> Self {
+    pub(crate) fn initialize(root_dir: &str) -> Self {
         RequestMethod::Initialize(Box::new(InitializeParams {
             process_id: Some(u64::from(process::id())),
-            root_uri: Some(root_dir.clone()),
-            ..Default::default()
+            root_uri: Some(String::from(root_dir)),
+            ..InitializeParams::default()
         }))
     }
 }
@@ -359,8 +363,13 @@ impl NotificationMessage {
         text: &str,
     ) -> Self {
         doc.increment_version();
-        NotificationMessage::DidChangeTextDocument(DidChangeTextDocumentParams::new(VersionedTextDocumentIdentifier::from(doc.clone()), vec![TextDocumentContentChangeEvent::new(*range, text.to_string())]),
-        )
+        NotificationMessage::DidChangeTextDocument(DidChangeTextDocumentParams::new(
+            VersionedTextDocumentIdentifier::from(doc.clone()),
+            vec![TextDocumentContentChangeEvent::new(
+                *range,
+                text.to_string(),
+            )],
+        ))
     }
 }
 

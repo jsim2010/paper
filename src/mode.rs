@@ -21,7 +21,7 @@ use std::{
 };
 use try_from::{TryFrom, TryFromIntError};
 
-use lsp_msg::{TextDocumentItem, Range, Position};
+use lsp_msg::{Position, Range, TextDocumentItem};
 
 /// Defines the type that identifies a line.
 ///
