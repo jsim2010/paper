@@ -13,7 +13,7 @@ edition = "2018"
 [dependencies]
 clap = "2.33.0"
 either = "1.5.2"
-jsonrpc-core = "11.0.0"
+jsonrpc-core = "13.0.0"
 lsp_msg = "0.1.0"
 pancurses = { version = "0.16", features = ["win32"] }
 rec = "0.4.0"
