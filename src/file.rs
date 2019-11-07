@@ -1,11 +1,13 @@
 //! Defines the interaction with files.
-use crate::{Flag, Output, lsp::{self, RequestMethod, LanguageClient, NotificationMessage, ProgressParams}};
+use crate::{
+    lsp::{self, LanguageClient, NotificationMessage, ProgressParams, RequestMethod},
+    Flag, Output,
+};
 use std::{
     env,
-    fs, 
     fmt::{self, Debug, Display, Formatter},
-    io,
-    path::PathBuf, 
+    fs, io,
+    path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
 };
 use url::Url;
@@ -30,11 +32,9 @@ impl Explorer {
         env::current_dir()
             .map_err(|_| Flag::User)
             .and_then(|path| Url::from_directory_path(path).map_err(|_| Flag::User))
-            .map(|root_uri| {
-                Self {
-                    language_client: LanguageClient::new("rls"),
-                    root_uri,
-                }
+            .map(|root_uri| Self {
+                language_client: LanguageClient::new("rls"),
+                root_uri,
             })
     }
 
@@ -61,7 +61,10 @@ impl Explorer {
             uri: uri.clone().into_string(),
             language_id: "rust".to_string(),
             version: 0,
-            text: fs::read_to_string(PathBuf::from(uri.path()))?.replace('\r', ""),
+            text: fs::read_to_string(PathBuf::from(
+                uri.to_file_path().map_err(|_| Error::InvalidUrl)?,
+            ))?
+            .replace('\r', ""),
         };
         self.language_client_mut()
             .send_notification(NotificationMessage::did_open_text_document(doc.clone()))?;
@@ -97,6 +100,8 @@ pub enum Error {
     Lsp(lsp::Error),
     /// Error caused while parsing a URL.
     Url(url::ParseError),
+    /// Error caused by invalid URL.
+    InvalidUrl,
 }
 
 impl Display for Error {
@@ -105,6 +110,7 @@ impl Display for Error {
             Self::Io(e) => write!(f, "I/O Error caused by {}", e),
             Self::Lsp(e) => write!(f, "Lsp Error {}", e),
             Self::Url(e) => write!(f, "URL Parsing error {}", e),
+            Self::InvalidUrl => write!(f, "Invalid URL"),
         }
     }
 }
