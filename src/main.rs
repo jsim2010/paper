@@ -1,19 +1,14 @@
-use clap::{crate_authors, crate_version, App};
-use paper::{ui::Terminal, Flag, LocalExplorer, Paper};
+// `app_from_crate` requires using all the macros that it calls.
+use clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version};
+use paper::{ui::Terminal, Explorer, Paper};
+use std::env;
 
 fn main() {
-    let _matches = App::new("paper")
-        .version(crate_version!())
-        .author(crate_authors!())
-        .get_matches();
-    let error = match LocalExplorer::current_dir_uri() {
-        Ok(current_dir) => Paper::new(Terminal::new(), LocalExplorer::new(current_dir))
-            .run()
-            .err(),
-        Err(e) => Some(Flag::from(e)),
-    };
+    let _ = app_from_crate!().get_matches();
 
-    if let Some(e) = error {
-        eprintln!("{}", e);
+    if let Err(error) = Explorer::new()
+        .and_then(|local_explorer| Paper::new(Terminal::new(), local_explorer).run())
+    {
+        eprintln!("{}", error);
     }
 }

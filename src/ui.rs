@@ -67,22 +67,22 @@ impl Error {
     /// Returns the function that caused the current `Error`.
     fn get_function(&self) -> &str {
         match self {
-            Error::Endwin => "endwin",
-            Error::Flash => "flash",
-            Error::InitPair => "init_pair",
-            Error::Noecho => "noecho",
-            Error::StartColor => "start_color",
-            Error::UseDefaultColors => "use_default_colors",
-            Error::Waddch => "waddch",
-            Error::Waddstr => "waddstr",
-            Error::Wchgat => "wchgat",
-            Error::Wclear => "wclear",
-            Error::Wcleartoeol => "wcleartoeol",
-            Error::Wdelch => "wdelch",
-            Error::Winsch => "winsch",
-            Error::Wmove => "wmove",
-            Error::Nodelay => "nodelay",
-            Error::NoUi => "",
+            Self::Endwin => "endwin",
+            Self::Flash => "flash",
+            Self::InitPair => "init_pair",
+            Self::Noecho => "noecho",
+            Self::StartColor => "start_color",
+            Self::UseDefaultColors => "use_default_colors",
+            Self::Waddch => "waddch",
+            Self::Waddstr => "waddstr",
+            Self::Wchgat => "wchgat",
+            Self::Wclear => "wclear",
+            Self::Wcleartoeol => "wcleartoeol",
+            Self::Wdelch => "wdelch",
+            Self::Winsch => "winsch",
+            Self::Wmove => "wmove",
+            Self::Nodelay => "nodelay",
+            Self::NoUi => "",
         }
     }
 }
@@ -91,7 +91,7 @@ impl Display for Error {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NoUi => write!(f, "No UserInterface was created."),
+            Self::NoUi => write!(f, "No UserInterface was created."),
             _ => write!(f, "Failed while calling {}().", self.get_function()),
         }
     }
@@ -189,7 +189,7 @@ pub enum Change {
 impl Default for Change {
     #[inline]
     fn default() -> Self {
-        Change::Nothing
+        Self::Nothing
     }
 }
 
@@ -197,11 +197,11 @@ impl Display for Change {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Change::Clear => write!(f, "Clear"),
-            Change::Format(span, color) => write!(f, "Format {} to {}", span, color),
-            Change::Nothing => write!(f, "Nothing"),
-            Change::Flash => write!(f, "Flash"),
-            Change::Text(span, text) => write!(f, "Set {} to {}", span, text),
+            Self::Clear => write!(f, "Clear"),
+            Self::Format(span, color) => write!(f, "Format {} to {}", span, color),
+            Self::Nothing => write!(f, "Nothing"),
+            Self::Flash => write!(f, "Flash"),
+            Self::Text(span, text) => write!(f, "Set {} to {}", span, text),
         }
     }
 }
@@ -233,11 +233,11 @@ impl Display for Color {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Color::Default => write!(f, "Default"),
-            Color::Red => write!(f, "Red"),
-            Color::Green => write!(f, "Green"),
-            Color::Yellow => write!(f, "Yellow"),
-            Color::Blue => write!(f, "Blue"),
+            Self::Default => write!(f, "Default"),
+            Self::Red => write!(f, "Red"),
+            Self::Green => write!(f, "Green"),
+            Self::Yellow => write!(f, "Yellow"),
+            Self::Blue => write!(f, "Blue"),
         }
     }
 }

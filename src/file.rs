@@ -1,12 +1,14 @@
 //! Defines the interaction with files.
-pub(crate) mod local;
-
-use crate::lsp::{self, ProgressParams};
+use crate::{Flag, Output, lsp::{self, RequestMethod, LanguageClient, NotificationMessage, ProgressParams}};
 use std::{
+    env,
+    fs, 
     fmt::{self, Debug, Display, Formatter},
     io,
+    path::PathBuf, 
+    sync::{Arc, Mutex, MutexGuard},
 };
-use url;
+use url::Url;
 
 use lsp_msg::{Range, TextDocumentItem};
 
@@ -14,17 +16,76 @@ use lsp_msg::{Range, TextDocumentItem};
 pub type Effect<T> = Result<T, Error>;
 
 /// Defines the interface between the application and documents.
-pub trait Explorer: Debug {
+#[derive(Clone, Debug)]
+pub struct Explorer {
+    /// A `LanguageClient`.
+    language_client: Arc<Mutex<LanguageClient>>,
+    /// Root URI.
+    root_uri: Url,
+}
+
+impl Explorer {
+    /// Creates a new `Explorer`.
+    pub fn new() -> Output<Self> {
+        env::current_dir()
+            .map_err(|_| Flag::User)
+            .and_then(|path| Url::from_directory_path(path).map_err(|_| Flag::User))
+            .map(|root_uri| {
+                Self {
+                    language_client: LanguageClient::new("rls"),
+                    root_uri,
+                }
+            })
+    }
+
+    /// Returns a mutable reference to the `LanguageClient`.
+    fn language_client_mut(&mut self) -> MutexGuard<'_, LanguageClient> {
+        self.language_client
+            .lock()
+            .expect("Locking `LanguageClient` of `Explorer`.")
+    }
+
     /// Initializes all functionality needed by the Explorer.
-    fn start(&mut self) -> Effect<()>;
+    pub fn start(&mut self) -> Effect<()> {
+        let uri = self.root_uri.clone();
+        self.language_client_mut()
+            .send_request(RequestMethod::initialize(uri.as_str()))?;
+        Ok(())
+    }
+
     /// Returns the text from a file.
-    fn read(&mut self, path: &str) -> Effect<TextDocumentItem>;
+    pub fn read(&mut self, path: &str) -> Effect<TextDocumentItem> {
+        let uri = self.root_uri.join(path)?;
+
+        let doc = TextDocumentItem {
+            uri: uri.clone().into_string(),
+            language_id: "rust".to_string(),
+            version: 0,
+            text: fs::read_to_string(PathBuf::from(uri.path()))?.replace('\r', ""),
+        };
+        self.language_client_mut()
+            .send_notification(NotificationMessage::did_open_text_document(doc.clone()))?;
+        Ok(doc)
+    }
+
     /// Writes text to a file.
-    fn write(&self, doc: &TextDocumentItem) -> Effect<()>;
+    pub fn write(&self, doc: &TextDocumentItem) -> Effect<()> {
+        fs::write(PathBuf::from(&doc.uri), &doc.text)?;
+        Ok(())
+    }
+
     /// Inform server of change to the working copy of a file.
-    fn change(&mut self, doc: &mut TextDocumentItem, range: &Range, text: &str) -> Effect<()>;
+    pub fn change(&mut self, doc: &mut TextDocumentItem, range: &Range, text: &str) -> Effect<()> {
+        self.language_client_mut().send_notification(
+            NotificationMessage::did_change_text_document(doc, range, text),
+        )?;
+        Ok(())
+    }
+
     /// Returns the oldest notification from `Explorer`.
-    fn receive_notification(&mut self) -> Option<ProgressParams>;
+    pub fn receive_notification(&mut self) -> Option<ProgressParams> {
+        self.language_client_mut().receive_notification()
+    }
 }
 
 /// Specifies an error within the `Explorer`.
@@ -41,27 +102,27 @@ pub enum Error {
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Io(e) => write!(f, "I/O Error caused by {}", e),
-            Error::Lsp(e) => write!(f, "Lsp Error {}", e),
-            Error::Url(e) => write!(f, "URL Parsing error {}", e),
+            Self::Io(e) => write!(f, "I/O Error caused by {}", e),
+            Self::Lsp(e) => write!(f, "Lsp Error {}", e),
+            Self::Url(e) => write!(f, "URL Parsing error {}", e),
         }
     }
 }
 
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
-        Error::Io(error)
+        Self::Io(error)
     }
 }
 
 impl From<lsp::Error> for Error {
     fn from(error: lsp::Error) -> Self {
-        Error::Lsp(error)
+        Self::Lsp(error)
     }
 }
 
 impl From<url::ParseError> for Error {
     fn from(error: url::ParseError) -> Self {
-        Error::Url(error)
+        Self::Url(error)
     }
 }

@@ -8,7 +8,6 @@ add_trait_child!(Processor, filter, FilterProcessor);
 use crate::{
     file::{self, Explorer},
     lsp,
-    ptr::Mrc,
     ui::{self, Address, Change, Color, Index, Span, BACKSPACE, ENTER},
 };
 use either::Either;
@@ -53,11 +52,11 @@ impl Display for Name {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Name::Display => write!(f, "Display"),
-            Name::Command => write!(f, "Command"),
-            Name::Filter => write!(f, "Filter"),
-            Name::Action => write!(f, "Action"),
-            Name::Edit => write!(f, "Edit"),
+            Self::Display => write!(f, "Display"),
+            Self::Command => write!(f, "Command"),
+            Self::Filter => write!(f, "Filter"),
+            Self::Action => write!(f, "Action"),
+            Self::Edit => write!(f, "Edit"),
         }
     }
 }
@@ -65,7 +64,7 @@ impl Display for Name {
 impl Default for Name {
     #[inline]
     fn default() -> Self {
-        Name::Display
+        Self::Display
     }
 }
 
@@ -117,7 +116,7 @@ impl ControlPanel {
     fn changes(&self) -> Vec<Change> {
         let row = self.height.sub_one();
 
-        /// TODO: Could potentially improve to change only the chars that have been changed.
+        // TODO: Could potentially improve to change only the chars that have been changed.
         vec![Change::Text(
             Span::new(
                 Address::new(row, Index::zero()),
@@ -196,12 +195,12 @@ impl Display for Flag {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Flag::Ui(error) => write!(f, "{}", error),
-            Flag::Conversion(error) => write!(f, "{}", error),
-            Flag::File(error) => write!(f, "{}", error),
-            Flag::Lsp(error) => write!(f, "{}", error),
-            Flag::User => write!(f, "User Error"),
-            Flag::Quit => write!(f, "Quit"),
+            Self::Ui(error) => write!(f, "{}", error),
+            Self::Conversion(error) => write!(f, "{}", error),
+            Self::File(error) => write!(f, "{}", error),
+            Self::Lsp(error) => write!(f, "{}", error),
+            Self::User => write!(f, "User Error"),
+            Self::Quit => write!(f, "Quit"),
         }
     }
 }
@@ -209,21 +208,21 @@ impl Display for Flag {
 impl From<TryFromIntError> for Flag {
     #[inline]
     fn from(error: TryFromIntError) -> Self {
-        Flag::Conversion(error)
+        Self::Conversion(error)
     }
 }
 
 impl From<ui::Error> for Flag {
     #[inline]
     fn from(error: ui::Error) -> Self {
-        Flag::Ui(error)
+        Self::Ui(error)
     }
 }
 
 impl From<file::Error> for Flag {
     #[inline]
     fn from(error: file::Error) -> Self {
-        Flag::File(error)
+        Self::File(error)
     }
 }
 
@@ -245,14 +244,14 @@ pub(crate) struct Pane {
     /// If `Pane` will clear and redraw on next update.
     will_wipe: bool,
     /// The `Explorer` used by `Pane`.
-    explorer: Mrc<dyn Explorer>,
+    explorer: Explorer,
     /// The document being represented by `Pane`.
     doc: Option<TextDocumentItem>,
 }
 
 impl Pane {
     /// Creates a new Pane with a given height.
-    pub(crate) fn new(explorer: Mrc<dyn Explorer>, height: Index) -> Self {
+    pub(crate) fn new(explorer: Explorer, height: Index) -> Self {
         let height = Rc::new(height);
 
         Self {
@@ -270,7 +269,7 @@ impl Pane {
 
     /// Initializes the `Pane`.
     pub(crate) fn install(&mut self) -> Output<()> {
-        self.explorer.borrow_mut().start()?;
+        self.explorer.start()?;
         Ok(())
     }
 
@@ -286,7 +285,7 @@ impl Pane {
                         .ok()
                         .and_then(|row_index| start_line_index.checked_add(row_index))
                     {
-                        if let Some(line_data) = self.line_data(line_index) {
+                        if let Some(line_data) = self.clone().line_data(line_index) {
                             if let Ok(line_number) = LineNumber::try_from(line_index) {
                                 self.changes.push(Change::Text(
                                     Span::new(
@@ -327,7 +326,7 @@ impl Pane {
 
     /// Adds the `Change`s to display a notification.
     pub(crate) fn process_notifications(&mut self) {
-        if let Some(notification) = self.explorer.borrow_mut().receive_notification() {
+        if let Some(notification) = self.explorer.receive_notification() {
             if let Some(message) = notification.message {
                 self.changes.push(Change::Text(
                     Span::new(
@@ -390,7 +389,7 @@ impl Pane {
 
     /// Changes the pane to a new path.
     fn change(&mut self, path: &str) -> Output<()> {
-        self.doc = Some(self.explorer.borrow_mut().read(path)?);
+        self.doc = Some(self.explorer.read(path)?);
         self.refresh();
         Ok(())
     }
@@ -398,7 +397,7 @@ impl Pane {
     /// Saves the document of `Pane` to its file system.
     fn save(&self) -> Output<()> {
         if let Some(doc) = &self.doc {
-            self.explorer.borrow().write(doc)?;
+            self.explorer.write(doc)?;
         }
 
         Ok(())
@@ -460,7 +459,7 @@ impl Pane {
                 }
             }
 
-            self.explorer.borrow_mut().change(doc, &range, &new_text)?;
+            self.explorer.change(doc, &range, &new_text)?;
         }
 
         Ok(())
@@ -818,8 +817,8 @@ pub(crate) enum ParseLineNumberError {
 impl std::error::Error for ParseLineNumberError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self {
-            ParseLineNumberError::InvalidValue => None,
-            ParseLineNumberError::ParseInt(ref err) => Some(err),
+            Self::InvalidValue => None,
+            Self::ParseInt(ref err) => Some(err),
         }
     }
 }
@@ -827,20 +826,20 @@ impl std::error::Error for ParseLineNumberError {
 impl Display for ParseLineNumberError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match *self {
-            ParseLineNumberError::InvalidValue => write!(f, "Invalid line number provided."),
-            ParseLineNumberError::ParseInt(ref err) => write!(f, "{}", err),
+            Self::InvalidValue => write!(f, "Invalid line number provided."),
+            Self::ParseInt(ref err) => write!(f, "{}", err),
         }
     }
 }
 
 impl From<std::num::ParseIntError> for ParseLineNumberError {
     fn from(error: std::num::ParseIntError) -> Self {
-        ParseLineNumberError::ParseInt(error)
+        Self::ParseInt(error)
     }
 }
 
 impl From<TryFromIntError> for ParseLineNumberError {
     fn from(_error: TryFromIntError) -> Self {
-        ParseLineNumberError::InvalidValue
+        Self::InvalidValue
     }
 }

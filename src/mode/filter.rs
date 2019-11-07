@@ -161,6 +161,7 @@ impl Filter for LineFilter {
                 let row = x.start.line;
                 row >= top.row() as u64 && row <= bottom.row() as u64
             })
+        } else {
         }
 
         Ok(())

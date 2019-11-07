@@ -66,6 +66,7 @@
 #![allow(clippy::implicit_return)]
 // This goes against rust convention and would require return calls in places it is not helpful (e.g. closures).
 #![allow(clippy::missing_inline_in_public_items, clippy::missing_const_for_fn)] // Mistakenly marks derived traits.
+#![allow(clippy::multiple_crate_versions)]
 
 // Lint checks currently not defined: missing_doc_code_examples, variant_size_differences, box_pointers
 
@@ -86,7 +87,7 @@ pub mod mode;
 pub mod num;
 pub mod ui;
 
-pub use file::{local::Explorer as LocalExplorer, Explorer};
+pub use file::Explorer;
 pub use mode::Flag;
 pub use ui::UserInterface;
 
@@ -111,7 +112,7 @@ pub struct Paper {
 impl Paper {
     /// Creates a new paper application.
     #[inline]
-    pub fn new(ui: Mrc<dyn UserInterface>, explorer: Mrc<dyn Explorer>) -> Self {
+    pub fn new(ui: Mrc<dyn UserInterface>, explorer: Explorer) -> Self {
         let pane = mrc!(Pane::new(
             explorer,
             ui.borrow_mut()

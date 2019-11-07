@@ -192,31 +192,31 @@ pub enum Error {
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Error::InvalidPath => write!(f, "Invalid path for language client"),
-            Error::Serialization(e) => {
+            Self::InvalidPath => write!(f, "Invalid path for language client"),
+            Self::Serialization(e) => {
                 write!(f, "Error with serialization of LSP message caused by {}", e)
             }
-            Error::Io(e) => write!(f, "Io error in language client caused by {}", e),
-            Error::Parse => write!(f, "Error while parsing LSP message"),
+            Self::Io(e) => write!(f, "Io error in language client caused by {}", e),
+            Self::Parse => write!(f, "Error while parsing LSP message"),
         }
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(error: serde_json::Error) -> Self {
-        Error::Serialization(error)
+        Self::Serialization(error)
     }
 }
 
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
-        Error::Io(error)
+        Self::Io(error)
     }
 }
 
 impl From<Error> for Flag {
     fn from(error: Error) -> Self {
-        Flag::Lsp(error)
+        Self::Lsp(error)
     }
 }
 
@@ -269,7 +269,7 @@ pub(crate) enum RequestMethod {
 impl RequestMethod {
     /// Creates a new `RequestMethod::Initialize`.
     pub(crate) fn initialize(root_dir: &str) -> Self {
-        RequestMethod::Initialize(Box::new(InitializeParams {
+        Self::Initialize(Box::new(InitializeParams {
             process_id: Some(u64::from(process::id())),
             root_uri: Some(String::from(root_dir)),
             ..InitializeParams::default()
@@ -348,12 +348,12 @@ pub(crate) enum NotificationMessage {
 impl NotificationMessage {
     /// Creates a new `NotificationMessage::Initialized`.
     fn initialized() -> Self {
-        NotificationMessage::Initialized(InitializedParams {})
+        Self::Initialized(InitializedParams {})
     }
 
     /// Creates a new `NotificationMessage::DidOpenTextDocument`.
     pub(crate) fn did_open_text_document(text_document: TextDocumentItem) -> Self {
-        NotificationMessage::DidOpenTextDocument(DidOpenTextDocumentParams::from(text_document))
+        Self::DidOpenTextDocument(DidOpenTextDocumentParams::from(text_document))
     }
 
     /// Creates a new `NotificationMessage::DidChangeTextDocument`.
@@ -363,7 +363,7 @@ impl NotificationMessage {
         text: &str,
     ) -> Self {
         doc.increment_version();
-        NotificationMessage::DidChangeTextDocument(DidChangeTextDocumentParams::new(
+        Self::DidChangeTextDocument(DidChangeTextDocumentParams::new(
             VersionedTextDocumentIdentifier::from(doc.clone()),
             vec![TextDocumentContentChangeEvent::new(
                 *range,
@@ -399,7 +399,7 @@ impl AbstractMessage {
 impl Message {
     /// Creates a new RegisterCapability response `Message`.
     fn register_capability_response(id: Id) -> Self {
-        Message::Response(ResponseMessage {
+        Self::Response(ResponseMessage {
             id,
             status: Status::Result(ResultValue::RegisterCapability),
         })
