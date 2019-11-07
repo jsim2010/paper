@@ -251,12 +251,12 @@ pub(crate) struct Pane {
 
 impl Pane {
     /// Creates a new Pane with a given height.
-    pub(crate) fn new(explorer: Explorer, height: Index) -> Self {
+    pub(crate) fn new(height: Index) -> Output<Self> {
         let height = Rc::new(height);
 
-        Self {
+        Ok(Self {
             control_panel: ControlPanel::new(&height),
-            explorer,
+            explorer: Explorer::new()?,
             height,
             first_line: Line::default(),
             margin_width: u8::default(),
@@ -264,7 +264,7 @@ impl Pane {
             changes: Vec::default(),
             will_wipe: bool::default(),
             doc: None,
-        }
+        })
     }
 
     /// Initializes the `Pane`.

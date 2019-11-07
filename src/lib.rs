@@ -112,13 +112,12 @@ pub struct Paper {
 impl Paper {
     /// Creates a new paper application.
     #[inline]
-    pub fn new(ui: Mrc<dyn UserInterface>, explorer: Explorer) -> Self {
+    pub fn new(ui: Mrc<dyn UserInterface>) -> Output<Self> {
         let pane = mrc!(Pane::new(
-            explorer,
             ui.borrow_mut()
                 .grid_height()
                 .expect("Accessing height of user interface")
-        ));
+        )?);
         pane.borrow_mut().install().expect("Installing `Pane`.");
         let display_mode_handler: Mrc<dyn Processor> = mrc!(mode::DisplayProcessor::new(&pane));
         let command_mode_handler: Mrc<dyn Processor> = mrc!(mode::CommandProcessor::new(&pane));
@@ -126,7 +125,7 @@ impl Paper {
         let action_mode_handler: Mrc<dyn Processor> = mrc!(mode::ActionProcessor::new());
         let edit_mode_handler: Mrc<dyn Processor> = mrc!(mode::EditProcessor::new(&pane));
 
-        Self {
+        Ok(Self {
             ui,
             pane,
             mode: mode::Name::default(),
@@ -140,7 +139,7 @@ impl Paper {
             .iter()
             .cloned()
             .collect(),
-        }
+        })
     }
 
     /// Runs the application.

@@ -61,10 +61,8 @@ impl Explorer {
             uri: uri.clone().into_string(),
             language_id: "rust".to_string(),
             version: 0,
-            text: fs::read_to_string(PathBuf::from(
-                uri.to_file_path().map_err(|_| Error::InvalidUrl)?,
-            ))?
-            .replace('\r', ""),
+            text: fs::read_to_string(uri.to_file_path().map_err(|_| Error::InvalidUrl)?)?
+                .replace('\r', ""),
         };
         self.language_client_mut()
             .send_notification(NotificationMessage::did_open_text_document(doc.clone()))?;
