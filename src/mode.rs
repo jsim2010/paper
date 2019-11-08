@@ -10,15 +10,18 @@ use crate::{
     lsp,
     ui::{self, Address, Change, Color, Index, Span, BACKSPACE, ENTER},
 };
+use core::{
+    convert::TryFrom,
+    num::{NonZeroUsize, TryFromIntError},
+};
 use either::Either;
 use std::{
     cmp,
     fmt::{self, Debug, Display, Formatter},
     iter,
-    ops::{Add, Deref, Sub},
+    ops::Deref,
     rc::Rc,
 };
-use try_from::{TryFrom, TryFromIntError};
 
 use lsp_msg::{Position, Range, TextDocumentItem};
 
@@ -279,29 +282,25 @@ impl Pane {
             self.changes.clear();
             self.changes.push(Change::Clear);
 
-            if let Ok(start_line_index) = LineIndex::try_from(self.first_line) {
+            if let Ok(start_line_number) = LineNumber::try_from(self.first_line) {
                 for row in self.visible_rows() {
-                    if let Some(line_index) = LineIndex::try_from(row)
+                    if let Some(line_number) = LineNumber::try_from(row)
                         .ok()
-                        .and_then(|row_index| start_line_index.checked_add(row_index))
+                        .and_then(|addend| start_line_number.checked_add(addend))
                     {
-                        if let Some(line_data) = self.clone().line_data(line_index) {
-                            if let Ok(line_number) = LineNumber::try_from(line_index) {
-                                self.changes.push(Change::Text(
-                                    Span::new(
-                                        Address::new(row, Index::zero()),
-                                        Address::new(row, Index::max_value()),
-                                    ),
-                                    format!(
-                                        "{: >width$} {}",
-                                        line_number,
-                                        line_data,
-                                        width = usize::from(self.margin_width)
-                                    ),
-                                ));
-                            } else {
-                                break;
-                            }
+                        if let Some(line_data) = self.clone().line_data(line_number) {
+                            self.changes.push(Change::Text(
+                                Span::new(
+                                    Address::new(row, Index::zero()),
+                                    Address::new(row, Index::max_value()),
+                                ),
+                                format!(
+                                    "{: >width$} {}",
+                                    line_number,
+                                    line_data,
+                                    width = usize::from(self.margin_width)
+                                ),
+                            ));
                         } else {
                             break;
                         }
@@ -494,12 +493,15 @@ impl Pane {
     ///
     /// [`None`] indicates that the [`Position`] is not visible in the user interface.
     fn row_at(&self, position: &Position) -> Option<Index> {
-        position.line.checked_sub(self.first_line).map(Index::from)
+        position
+            .line
+            .checked_sub(self.first_line)
+            .map(Index::saturating_from_u64)
     }
 
     /// Returns the column at which a [`Position`] is located.
     fn column_at(&self, position: &Position) -> Index {
-        Index::from(position.character.saturating_add(self.origin_character()))
+        Index::saturating_from_u64(position.character.saturating_add(self.origin_character()))
     }
 
     /// Returns the [`Address`] associated with the given [`Position`].
@@ -526,8 +528,8 @@ impl Pane {
     }
 
     /// The data stored at the given line.
-    fn line_data(&self, line_index: LineIndex) -> Option<&str> {
-        self.lines().nth(line_index)
+    fn line_data(&self, line: LineNumber) -> Option<&str> {
+        self.lines().nth(line.row())
     }
 
     /// Updates the pane's metadata.
@@ -699,60 +701,37 @@ impl Operation {
     }
 }
 
-/// The type of the value stored in [`LineNumber`].
-type LineNumberType = u32;
-
 /// Signifies a line number.
 #[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Debug)]
-pub(crate) struct LineNumber(LineNumberType);
+pub(crate) struct LineNumber(NonZeroUsize);
 
 impl LineNumber {
-    /// Creates a new `LineNumber`.
-    pub(crate) fn new(value: usize) -> Result<Self, TryFromIntError> {
-        if value == 0 {
-            Err(TryFromIntError::Underflow)
-        } else {
-            LineNumberType::try_from(value).map(Self)
-        }
-    }
-
     /// Converts `LineNumber` to its row index - assuming line number `1` as at row `0`.
     #[allow(clippy::integer_arithmetic)] // self.0 > 0
     pub(crate) const fn row(self) -> usize {
-        (self.0 - 1) as usize
+        self.0.get() - 1
     }
-}
 
-impl Add<i128> for LineNumber {
-    type Output = Self;
-
-    fn add(self, other: i128) -> Self::Output {
-        #[allow(clippy::integer_arithmetic)] // i64::min_value() <= u32 + i32 <= i64::max_value()
-        match usize::try_from(i128::from(self.0) + other) {
-            Ok(sum) => Self::new(sum).unwrap_or_default(),
-            Err(TryFromIntError::Underflow) => Self::default(),
-            Err(TryFromIntError::Overflow) => Self(LineNumberType::max_value()),
-        }
+    /// Adds `rhs` to `self`.
+    // Follows precedent of [`usize::checked_add`].
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.0
+            .get()
+            .checked_add(rhs.0.get())
+            .map(|sum| Self(unsafe { NonZeroUsize::new_unchecked(sum) }))
     }
-}
 
-impl TryFrom<LineIndex> for LineNumber {
-    type Err = TryFromIntError;
-
-    fn try_from(value: LineIndex) -> Result<Self, Self::Err> {
-        value
-            .checked_add(1)
-            .ok_or(TryFromIntError::Overflow)
-            .and_then(Self::new)
-    }
-}
-
-impl Sub for LineNumber {
-    type Output = i64;
-
-    #[allow(clippy::integer_arithmetic)] // self.0 and other.0 <= u32::MAX
-    fn sub(self, other: Self) -> Self::Output {
-        i64::from(self.0) - i64::from(other.0)
+    /// Returns `LineNumber` that is `self` moved by `other` lines.
+    fn move_by(self, other: isize) -> Result<Self, ()> {
+        let addend = match usize::try_from(other) {
+            Ok(v) => v,
+            Err(_) => usize::try_from(other.abs()).expect("converting `isize::abs()` to `usize`"),
+        };
+        self.0
+            .get()
+            .checked_add(addend)
+            .ok_or(())
+            .map(|sum| Self(unsafe { NonZeroUsize::new_unchecked(sum) }))
     }
 }
 
@@ -766,7 +745,7 @@ impl Display for LineNumber {
 impl Default for LineNumber {
     #[inline]
     fn default() -> Self {
-        Self(1)
+        Self(unsafe { NonZeroUsize::new_unchecked(1) })
     }
 }
 
@@ -774,7 +753,9 @@ impl std::str::FromStr for LineNumber {
     type Err = ParseLineNumberError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::new(s.parse::<usize>()?)?)
+        Ok(Self(unsafe {
+            NonZeroUsize::new_unchecked(s.parse::<usize>()?)
+        }))
     }
 }
 
@@ -783,23 +764,49 @@ impl IntoIterator for LineNumber {
     type IntoIter = LineNumberIterator;
 
     fn into_iter(self) -> Self::IntoIter {
-        LineNumberIterator { current: self }
+        LineNumberIterator {
+            current: Some(self),
+        }
+    }
+}
+
+impl TryFrom<u64> for LineNumber {
+    type Error = TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        usize::try_from(value).map(|v| Self(unsafe { NonZeroUsize::new_unchecked(v) }))
+    }
+}
+
+impl TryFrom<Index> for LineNumber {
+    type Error = <Index as TryFrom<usize>>::Error;
+
+    fn try_from(value: Index) -> Result<Self, Self::Error> {
+        usize::try_from(value).map(|v| Self(unsafe { NonZeroUsize::new_unchecked(v) }))
     }
 }
 
 /// Signifies an [`Iterator`] of [`LineNumber`]s that steps by 1.
 pub(crate) struct LineNumberIterator {
     /// The current [`LineNumber`].
-    current: LineNumber,
+    current: Option<LineNumber>,
 }
 
 impl Iterator for LineNumberIterator {
     type Item = LineNumber;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let line_number = LineNumber(self.current.0);
-        self.current.0 += 1;
-        Some(line_number)
+        let item = self.current;
+
+        if let Some(line) = item {
+            self.current = line
+                .0
+                .get()
+                .checked_add(1)
+                .map(|sum| LineNumber(unsafe { NonZeroUsize::new_unchecked(sum) }));
+        }
+
+        item
     }
 }
 

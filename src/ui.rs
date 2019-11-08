@@ -1,13 +1,13 @@
 //! Implements how the user interfaces with the application.
-pub use crate::num::NonNegativeI32 as Index;
+pub use crate::num::NonNegI32 as Index;
 
+use core::{convert::TryFrom, num::TryFromIntError};
 use displaydoc::Display as DisplayDoc;
 use pancurses::Input;
 use std::{
     error,
     fmt::{self, Debug, Display, Formatter},
 };
-use try_from::{TryFrom, TryFromIntError};
 
 /// The [`Result`] returned by functions of this module.
 pub type Effect = Result<(), Error>;

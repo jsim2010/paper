@@ -1,9 +1,9 @@
 //! Implements functionality for the application while in filter mode.
-use super::{Initiation, LineNumber, Operation, Output, Pane};
+use super::{Flag, Initiation, LineNumber, Operation, Output, Pane};
+use core::{convert::TryFrom, num::TryFromIntError};
 use crate::{ptr::Mrc, ui::{ENTER, ESC}};
 use rec::{ChCls::{Any, Digit, End, Not, Sign}, opt, some, tkn, var, Element, Pattern};
 use std::{cmp, collections::HashMap, fmt::Debug, rc::Rc};
-use try_from::{TryFrom, TryFromIntError};
 
 use lsp_msg::Range;
 
@@ -105,7 +105,7 @@ trait Filter: Debug {
         feature: &str,
         sections: &mut Vec<Range>,
         pane: &Pane,
-    ) -> Result<(), TryFromIntError>;
+    ) -> Result<(), Error>;
 }
 
 /// The [`Filter`] used to match a line.
@@ -133,7 +133,7 @@ impl Filter for LineFilter {
         feature: &str,
         sections: &mut Vec<Range>,
         _view: &Pane,
-    ) -> Result<(), TryFromIntError> {
+    ) -> Result<(), Error> {
         let tokens = self.pattern.tokenize(feature);
 
         if let Ok(line) = tokens.parse::<LineNumber>("line") {
@@ -151,9 +151,9 @@ impl Filter for LineFilter {
             })
         } else if let (Ok(origin), Ok(movement)) = (
             tokens.parse::<LineNumber>("origin"),
-            tokens.parse::<i128>("movement"),
+            tokens.parse::<isize>("movement"),
         ) {
-            let end = origin + movement;
+            let end = origin.move_by(movement)?;
             let top = cmp::min(origin, end);
             let bottom = cmp::max(origin, end);
 
@@ -189,7 +189,7 @@ impl Filter for PatternFilter {
         feature: &str,
         ranges: &mut Vec<Range>,
         pane: &Pane,
-    ) -> Result<(), TryFromIntError> {
+    ) -> Result<(), Error> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
             if let Ok(search_pattern) = user_pattern.parse::<Pattern>() {
                 let target_ranges = ranges.clone();
@@ -199,7 +199,7 @@ impl Filter for PatternFilter {
                     let start_character = usize::try_from(target_range.start.character)?;
 
                     if let Some(target) = pane
-                        .line_data(usize::try_from(target_range.start.line)?)
+                        .line_data(LineNumber::try_from(target_range.start.line)?)
                         .map(|x| x.chars().skip(start_character).collect::<String>())
                     {
                         for location in search_pattern.locate_iter(&target) {
@@ -211,5 +211,26 @@ impl Filter for PatternFilter {
         }
 
         Ok(())
+    }
+}
+
+/// Error for [`Filter::extract`].
+struct Error;
+
+impl From<Error> for Flag {
+    fn from(_: Error) -> Self {
+        Self::User
+    }
+}
+
+impl From<()> for Error {
+    fn from(_: ()) -> Self {
+        Self{}
+    }
+}
+
+impl From<TryFromIntError> for Error {
+    fn from(_: TryFromIntError) -> Self {
+        Self{}
     }
 }
