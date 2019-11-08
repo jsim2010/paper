@@ -7,6 +7,7 @@
 //! - Extensive but relatively simple filter grammar that allows user to select any text.
 //!
 //! Future items on the Roadmap:
+//! - Utilize external tools for filters.
 //! - Add more filter grammar.
 //! - Implement suggestions for commands to improve user experience.
 //! - Support Language Server Protocol.
