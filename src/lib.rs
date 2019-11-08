@@ -90,7 +90,7 @@ pub mod ui;
 
 pub use file::Explorer;
 pub use mode::Flag;
-pub use ui::UserInterface;
+pub use ui::Terminal;
 
 use mode::{Operation, Output, Pane, Processor};
 use pancurses::Input;
@@ -101,7 +101,7 @@ use std::collections::HashMap;
 #[derive(Debug)]
 pub struct Paper {
     /// User interface of the application.
-    ui: Mrc<dyn UserInterface>,
+    ui: Terminal,
     /// The [`Pane`] of the application.
     pane: Mrc<Pane>,
     /// The current [`mode::Name`] of the application.
@@ -113,10 +113,10 @@ pub struct Paper {
 impl Paper {
     /// Creates a new paper application.
     #[inline]
-    pub fn new(ui: Mrc<dyn UserInterface>) -> Output<Self> {
+    pub fn new() -> Output<Self> {
+        let ui = Terminal::new();
         let pane = mrc!(Pane::new(
-            ui.borrow_mut()
-                .grid_height()
+            ui.grid_height()
                 .expect("Accessing height of user interface")
         )?);
         pane.borrow_mut().install().expect("Installing `Pane`.");
@@ -146,7 +146,7 @@ impl Paper {
     /// Runs the application.
     #[inline]
     pub fn run(&mut self) -> Output<()> {
-        self.ui.borrow_mut().init()?;
+        self.ui.init()?;
 
         loop {
             if let Err(Flag::Quit) = self.step() {
@@ -154,13 +154,13 @@ impl Paper {
             }
         }
 
-        self.ui.borrow_mut().close()?;
+        self.ui.close()?;
         Ok(())
     }
 
     /// Returns the input from the `UserInterface`.
     fn get_input(&mut self) -> Option<Input> {
-        self.ui.borrow_mut().receive_input()
+        self.ui.receive_input()
     }
 
     /// Processes 1 input from the user.
@@ -189,7 +189,7 @@ impl Paper {
         let changes = self.pane.borrow_mut().changes();
 
         for change in changes {
-            self.ui.borrow_mut().apply(change)?;
+            self.ui.apply(change)?;
         }
 
         Ok(())

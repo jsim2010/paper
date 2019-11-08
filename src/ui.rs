@@ -1,13 +1,10 @@
 //! Implements how the user interfaces with the application.
 pub use crate::num::NonNegativeI32 as Index;
 
-use crate::ptr::Mrc;
 use pancurses::Input;
 use std::{
-    cell::RefCell,
     error,
     fmt::{self, Debug, Display, Formatter},
-    rc::Rc,
 };
 use try_from::{TryFrom, TryFromIntError};
 
@@ -242,28 +239,10 @@ impl Display for Color {
     }
 }
 
-/// The interface between the user and the application.
+/// The user interface provided by a terminal.
 ///
 /// All output is displayed in a grid of cells. Each cell contains one character and can change its
 /// background color.
-pub trait UserInterface: Debug {
-    /// Sets up the user interface for use.
-    fn init(&self) -> Effect;
-    /// Closes the user interface.
-    fn close(&self) -> Effect;
-    /// Returns the number of cells that make up the height of the grid.
-    fn grid_height(&self) -> Result<Index, TryFromIntError>;
-    /// Applies the `Change` to the output.
-    fn apply(&self, change: Change) -> Effect;
-    /// Flashes the output.
-    fn flash(&self) -> Effect;
-    /// Returns the input from the user.
-    ///
-    /// Returns [`None`] if no character input is provided.
-    fn receive_input(&self) -> Option<Input>;
-}
-
-/// The user interface provided by a terminal.
 #[derive(Debug)]
 pub struct Terminal {
     /// The window that interfaces with the application.
@@ -272,12 +251,8 @@ pub struct Terminal {
 
 impl Terminal {
     /// Creates a new `Terminal`.
-    #[inline]
-    pub fn new() -> Mrc<Self> {
-        Rc::new(RefCell::new(Self {
-            // Must call initscr() first.
-            window: pancurses::initscr(),
-        }))
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Converts the given result of a `Terminal` function to a [`Effect`].
@@ -358,11 +333,9 @@ impl Terminal {
     fn use_default_colors(&self) -> Effect {
         Self::process(pancurses::use_default_colors(), Error::UseDefaultColors)
     }
-}
 
-impl UserInterface for Terminal {
-    #[inline]
-    fn init(&self) -> Effect {
+    /// Sets up the user interface for use.
+    pub fn init(&self) -> Effect {
         self.start_color()?;
         self.use_default_colors()?;
         self.disable_echo()?;
@@ -372,18 +345,18 @@ impl UserInterface for Terminal {
         Ok(())
     }
 
-    #[inline]
-    fn close(&self) -> Effect {
+    /// Closes the user interface.
+    pub fn close(&self) -> Effect {
         Self::process(pancurses::endwin(), Error::Endwin)
     }
 
-    #[inline]
+    /// Flashes the output.
     fn flash(&self) -> Effect {
         Self::process(pancurses::flash(), Error::Flash)
     }
 
-    #[inline]
-    fn apply(&self, change: Change) -> Effect {
+    /// Applies the `Change` to the output.
+    pub fn apply(&self, change: Change) -> Effect {
         match change {
             Change::Clear => self.clear_all(),
             Change::Format(span, color) => {
@@ -419,14 +392,25 @@ impl UserInterface for Terminal {
         }
     }
 
+    /// Returns the number of cells that make up the height of the grid.
     // TODO: Store this value and update when size is changed.
-    #[inline]
-    fn grid_height(&self) -> Result<Index, TryFromIntError> {
+    pub fn grid_height(&self) -> Result<Index, TryFromIntError> {
         Index::try_from(self.window.get_max_y())
     }
 
-    #[inline]
-    fn receive_input(&self) -> Option<Input> {
+    /// Returns the input from the user.
+    ///
+    /// Returns [`None`] if no character input is provided.
+    pub fn receive_input(&self) -> Option<Input> {
         self.window.getch()
+    }
+}
+
+impl Default for Terminal {
+    fn default() -> Self {
+        Self {
+            // Must call initscr() first.
+            window: pancurses::initscr(),
+        }
     }
 }
