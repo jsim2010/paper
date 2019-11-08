@@ -12,6 +12,7 @@ edition = "2018"
 
 [dependencies]
 clap = "2.33.0"
+displaydoc = "0.1.4"
 either = "1.5.2"
 jsonrpc-core = "11.0.0"
 lsp_msg = "0.1.0"

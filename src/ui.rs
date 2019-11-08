@@ -1,6 +1,7 @@
 //! Implements how the user interfaces with the application.
 pub use crate::num::NonNegativeI32 as Index;
 
+use displaydoc::Display as DisplayDoc;
 use pancurses::Input;
 use std::{
     error,
@@ -24,74 +25,38 @@ pub const ESC: char = '';
 const DEFAULT_COLOR: i16 = -1;
 
 /// Describes possible errors during ui functions.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, DisplayDoc)]
 pub enum Error {
-    /// Describes an error due to no user interface being created.
-    NoUi,
-    /// Describes a possible error during call to `endwin()`.
+    /// error during call to `endwin()`
     Endwin,
-    /// Describes a possible error during call to `flash()`.
+    /// error during call to `flash()`
     Flash,
-    /// Describes a possible error during call to `init_pair()`.
+    /// error during call to `init_pair()`
     InitPair,
-    /// Describes a possible error during call to `noecho()`.
+    /// error during call to `noecho()`
     Noecho,
-    /// Describes a possible error during call to `start_color()`.
+    /// error during call to `start_color()`
     StartColor,
-    /// Describes a possible error during call to `use_default_colors()`.
+    /// error during call to `use_default_colors()`
     UseDefaultColors,
-    /// Describes a possible error during call to `waddch()`.
+    /// error during call to `waddch()`
     Waddch,
-    /// Describes a possible error during call to `waddstr()`.
+    /// error during call to `waddstr()`
     Waddstr,
-    /// Describes a possible error during call to `wchgat()`.
+    /// error during call to `wchgat()`
     Wchgat,
-    /// Describes a possible error during call to `wclear()`.
+    /// error during call to `wclear()`
     Wclear,
-    /// Describes a possible error during call to `wcleartoeol()`.
+    /// error during call to `wcleartoeol()`
     Wcleartoeol,
-    /// Describes a possible error during call to `wdelch()`.
+    /// error during call to `wdelch()`
     Wdelch,
-    /// Describes a possible error during call to `winsch()`.
+    /// error during call to `winsch()`
     Winsch,
-    /// Describes a possible error during call to `wmove()`.
+    /// error during call to `wmove()`
     Wmove,
-    /// Describes a possible error during call to `nodelay()`.
+    /// error during call to `nodelay()`
     Nodelay,
-}
-
-impl Error {
-    /// Returns the function that caused the current `Error`.
-    fn get_function(&self) -> &str {
-        match self {
-            Self::Endwin => "endwin",
-            Self::Flash => "flash",
-            Self::InitPair => "init_pair",
-            Self::Noecho => "noecho",
-            Self::StartColor => "start_color",
-            Self::UseDefaultColors => "use_default_colors",
-            Self::Waddch => "waddch",
-            Self::Waddstr => "waddstr",
-            Self::Wchgat => "wchgat",
-            Self::Wclear => "wclear",
-            Self::Wcleartoeol => "wcleartoeol",
-            Self::Wdelch => "wdelch",
-            Self::Winsch => "winsch",
-            Self::Wmove => "wmove",
-            Self::Nodelay => "nodelay",
-            Self::NoUi => "",
-        }
-    }
-}
-
-impl Display for Error {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoUi => write!(f, "No UserInterface was created."),
-            _ => write!(f, "Failed while calling {}().", self.get_function()),
-        }
-    }
 }
 
 impl error::Error for Error {}
@@ -169,17 +134,17 @@ impl Display for Span {
 }
 
 /// Signifies a modification to the grid.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, DisplayDoc, Eq, Hash, PartialEq)]
 pub enum Change {
     /// Clears all cells.
     Clear,
-    /// Sets the color of a given number of cells.
+    /// Formats `{0}` to `{1}`.
     Format(Span, Color),
     /// Does nothing.
     Nothing,
     /// Flashes the display.
     Flash,
-    /// Sets the text for a given `Span` of `Addresses`.
+    /// Sets `{0}` to display `{1}`.
     Text(Span, String),
 }
 
@@ -190,32 +155,19 @@ impl Default for Change {
     }
 }
 
-impl Display for Change {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Clear => write!(f, "Clear"),
-            Self::Format(span, color) => write!(f, "Format {} to {}", span, color),
-            Self::Nothing => write!(f, "Nothing"),
-            Self::Flash => write!(f, "Flash"),
-            Self::Text(span, text) => write!(f, "Set {} to {}", span, text),
-        }
-    }
-}
-
 /// Signifies a color.
 // Order must be kept as defined to match pancurses.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, DisplayDoc, Eq, Hash, PartialEq)]
 pub enum Color {
-    /// The default foreground on the default background.
+    /// default foreground on default background
     Default,
-    /// The default foreground on a red background.
+    /// default foreground on red background
     Red,
-    /// The default foreground on a green background.
+    /// default foreground on green background
     Green,
-    /// The default foreground on a yellow background.
+    /// default foreground on yellow background
     Yellow,
-    /// The default foreground on a blue background.
+    /// default foreground on blue background
     Blue,
 }
 
@@ -223,19 +175,6 @@ impl Color {
     /// Converts `self` to a `color-pair` as specified in `pancurses`.
     const fn cp(self) -> i16 {
         self as i16
-    }
-}
-
-impl Display for Color {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Default => write!(f, "Default"),
-            Self::Red => write!(f, "Red"),
-            Self::Green => write!(f, "Green"),
-            Self::Yellow => write!(f, "Yellow"),
-            Self::Blue => write!(f, "Blue"),
-        }
     }
 }
 
