@@ -326,17 +326,18 @@ impl Pane {
 
     /// Adds the `Change`s to display a notification.
     pub(crate) fn process_notifications(&mut self) {
-        if let Some(notification) = self.explorer.receive_notification() {
-            if let Some(message) = notification.message {
-                self.changes.push(Change::Text(
-                    Span::new(
-                        Address::new(Index::zero(), Index::zero()),
-                        Address::new(Index::zero(), Index::max_value()),
-                    ),
-                    message,
-                ));
-            }
-        }
+        // For now, we don't have a good way for notifications to be displayed.
+        //if let Some(notification) = self.explorer.receive_notification() {
+        //    if let Some(message) = notification.message {
+        //        self.changes.push(Change::Text(
+        //            Span::new(
+        //                Address::new(Index::zero(), Index::zero()),
+        //                Address::new(Index::zero(), Index::max_value()),
+        //            ),
+        //            message,
+        //        ));
+        //    }
+        //}
     }
 
     /// Resets the [`ControlPanel`].
@@ -493,10 +494,7 @@ impl Pane {
     ///
     /// [`None`] indicates that the [`Position`] is not visible in the user interface.
     fn row_at(&self, position: &Position) -> Option<Index> {
-        position
-            .line
-            .checked_sub(self.first_line)
-            .and_then(|line| Some(Index::from(line)))
+        position.line.checked_sub(self.first_line).map(Index::from)
     }
 
     /// Returns the column at which a [`Position`] is located.
@@ -507,7 +505,7 @@ impl Pane {
     /// Returns the [`Address`] associated with the given [`Position`].
     fn address_at(&self, position: Position) -> Option<Address> {
         self.row_at(&position)
-            .and_then(|row| Some(Address::new(row, self.column_at(&position))))
+            .map(|row| Address::new(row, self.column_at(&position)))
     }
 
     /// Returns the `Span` associated with the given `Range`.
