@@ -1,7 +1,7 @@
 //! Defines the interaction with files.
 use crate::{
     lsp::{self, LanguageClient, NotificationMessage, ProgressParams, RequestMethod},
-    Flag, Output,
+    Alert, Outcome,
 };
 use std::{
     env,
@@ -28,10 +28,13 @@ pub struct Explorer {
 
 impl Explorer {
     /// Creates a new `Explorer`.
-    pub fn new() -> Output<Self> {
+    pub fn new() -> Outcome<Self> {
         env::current_dir()
-            .map_err(|_| Flag::User)
-            .and_then(|path| Url::from_directory_path(path).map_err(|_| Flag::User))
+            .map_err(Alert::from)
+            .and_then(|path| {
+                Url::from_directory_path(path)
+                    .map_err(|_| Alert::Custom("unable to convert current directory to `Url`"))
+            })
             .map(|root_uri| Self {
                 language_client: LanguageClient::new("rls"),
                 root_uri,
@@ -86,6 +89,12 @@ impl Explorer {
     /// Returns the oldest notification from `Explorer`.
     pub fn receive_notification(&mut self) -> Option<ProgressParams> {
         self.language_client_mut().receive_notification()
+    }
+}
+
+impl From<io::Error> for Alert {
+    fn from(value: io::Error) -> Self {
+        Self::Explorer(Error::from(value))
     }
 }
 

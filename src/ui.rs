@@ -1,4 +1,4 @@
-//! Implements how the user interfaces with the application.
+//! Implements the interface between the user and the application.
 pub use crate::num::NonNegI32 as Index;
 
 use core::{convert::TryFrom, num::TryFromIntError};

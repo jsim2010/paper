@@ -90,12 +90,13 @@ pub mod ui;
 
 pub use file::Explorer;
 pub use mode::Flag;
-pub use ui::Terminal;
 
+use displaydoc::Display as DisplayDoc;
 use mode::{Operation, Output, Pane, Processor};
 use pancurses::Input;
 use ptr::Mrc;
 use std::collections::HashMap;
+use ui::Terminal;
 
 /// The paper application.
 #[derive(Debug)]
@@ -113,7 +114,7 @@ pub struct Paper {
 impl Paper {
     /// Creates a new paper application.
     #[inline]
-    pub fn new() -> Output<Self> {
+    pub fn new() -> Outcome<Self> {
         let ui = Terminal::new();
         let pane = mrc!(Pane::new(
             ui.grid_height()
@@ -145,7 +146,7 @@ impl Paper {
 
     /// Runs the application.
     #[inline]
-    pub fn run(&mut self) -> Output<()> {
+    pub fn run(&mut self) -> Outcome<()> {
         self.ui.init()?;
 
         loop {
@@ -200,3 +201,37 @@ impl Paper {
         self.processors.get_mut(&self.mode).unwrap()
     }
 }
+
+/// Signifies an alert that the application needs to process.
+#[derive(Debug, DisplayDoc)]
+pub enum Alert {
+    /// user interface error: `{0}`
+    Ui(ui::Error),
+    /// file explorer error: `{0}`
+    Explorer(file::Error),
+    /// language server protocol: `{0}`
+    Lsp(lsp::Error),
+    /// `{0}`
+    Custom(&'static str),
+    /// invalid input from user
+    User,
+    /// quit the application
+    ///
+    /// This does not necessarily mean that an error occurred, ex: the user commands the application to quit.
+    Quit,
+}
+
+impl From<ui::Error> for Alert {
+    fn from(value: ui::Error) -> Self {
+        Self::Ui(value)
+    }
+}
+
+impl From<file::Error> for Alert {
+    fn from(value: file::Error) -> Self {
+        Self::Explorer(value)
+    }
+}
+
+/// Signifies a [`Result`] with [`Alert`] as its Error.
+type Outcome<T> = Result<T, Alert>;

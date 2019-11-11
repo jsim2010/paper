@@ -9,6 +9,7 @@ use crate::{
     file::{self, Explorer},
     lsp,
     ui::{self, Address, Change, Color, Index, Span, BACKSPACE, ENTER},
+    Outcome,
 };
 use core::{
     convert::TryFrom,
@@ -122,7 +123,7 @@ impl ControlPanel {
         // TODO: Could potentially improve to change only the chars that have been changed.
         vec![Change::Text(
             Span::new(
-                Address::new(row, Index::zero()),
+                Address::new(row, Index::min_value()),
                 Address::new(row, Index::max_value()),
             ),
             self.string.clone(),
@@ -254,7 +255,7 @@ pub(crate) struct Pane {
 
 impl Pane {
     /// Creates a new Pane with a given height.
-    pub(crate) fn new(height: Index) -> Output<Self> {
+    pub(crate) fn new(height: Index) -> Outcome<Self> {
         let height = Rc::new(height);
 
         Ok(Self {
@@ -291,7 +292,7 @@ impl Pane {
                         if let Some(line_data) = self.clone().line_data(line_number) {
                             self.changes.push(Change::Text(
                                 Span::new(
-                                    Address::new(row, Index::zero()),
+                                    Address::new(row, Index::min_value()),
                                     Address::new(row, Index::max_value()),
                                 ),
                                 format!(
@@ -330,8 +331,8 @@ impl Pane {
         //    if let Some(message) = notification.message {
         //        self.changes.push(Change::Text(
         //            Span::new(
-        //                Address::new(Index::zero(), Index::zero()),
-        //                Address::new(Index::zero(), Index::max_value()),
+        //                Address::new(Index::min_value(), Index::min_value()),
+        //                Address::new(Index::min_value(), Index::max_value()),
         //            ),
         //            message,
         //        ));
@@ -359,7 +360,7 @@ impl Pane {
 
     /// Returns an [`IndexIterator`] of the all visible rows.
     fn visible_rows(&self) -> IndexIterator {
-        IndexIterator::new(Index::zero(), *self.height.deref())
+        IndexIterator::new(Index::min_value(), *self.height.deref())
     }
 
     /// Applies filter highlighting to the given [`Range`]s.
@@ -367,7 +368,7 @@ impl Pane {
         for row in self.visible_rows() {
             self.changes.push(Change::Format(
                 Span::new(
-                    Address::new(row, Index::zero()),
+                    Address::new(row, Index::min_value()),
                     Address::new(row, Index::max_value()),
                 ),
                 Color::Default,
@@ -468,16 +469,14 @@ impl Pane {
     /// Iterates through the indexes that indicate where each line starts.
     pub(crate) fn line_indices(&self) -> impl Iterator<Item = Index> + '_ {
         if let Some(doc) = &self.doc {
-            Either::Left(
-                iter::once(Index::zero()).chain(doc.text.match_indices(ENTER).flat_map(
-                    |(index, _)| {
-                        index
-                            .checked_add(1)
-                            .and_then(|value| Index::try_from(value).ok())
-                            .into_iter()
-                    },
-                )),
-            )
+            Either::Left(iter::once(Index::min_value()).chain(
+                doc.text.match_indices(ENTER).flat_map(|(index, _)| {
+                    index
+                        .checked_add(1)
+                        .and_then(|value| Index::try_from(value).ok())
+                        .into_iter()
+                }),
+            ))
         } else {
             Either::Right(iter::empty())
         }
@@ -551,7 +550,7 @@ impl Pane {
         u64::from(
             self.height
                 .checked_div(unsafe { Index::new_unchecked(4) })
-                .unwrap_or_else(Index::zero),
+                .unwrap_or_else(Index::min_value),
         )
     }
 
