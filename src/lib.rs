@@ -93,10 +93,9 @@ pub use mode::Flag;
 
 use displaydoc::Display as DisplayDoc;
 use mode::{Operation, Output, Pane, Processor};
-use pancurses::Input;
 use ptr::Mrc;
 use std::collections::HashMap;
-use ui::Terminal;
+use ui::{Input, Terminal};
 
 /// The paper application.
 #[derive(Debug)]
@@ -167,7 +166,7 @@ impl Paper {
     /// Processes 1 input from the user.
     #[inline]
     pub fn step(&mut self) -> Output<()> {
-        let operation = if let Some(Input::Character(input)) = self.get_input() {
+        let operation = if let Some(Input::Key(input)) = self.get_input() {
             self.current_processor_mut().borrow_mut().decode(input)?
         } else {
             Operation::maintain()

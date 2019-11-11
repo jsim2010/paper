@@ -1,16 +1,17 @@
 //! Implements the interface between the user and the application.
 pub use crate::num::NonNegI32 as Index;
 
-use core::{convert::TryFrom, num::TryFromIntError};
-use displaydoc::Display as DisplayDoc;
-use pancurses::Input;
-use std::{
-    error,
+use core::{
+    convert::TryFrom,
     fmt::{self, Debug, Display, Formatter},
+    num::TryFromIntError,
 };
+use displaydoc::Display as DisplayDoc;
+use pancurses::Input as TerminalInput;
+use std::error;
 
 /// The [`Result`] returned by functions of this module.
-pub type Effect = Result<(), Error>;
+pub type Outcome = Result<(), Error>;
 
 /// The character that represents the `Backspace` key.
 pub const BACKSPACE: char = '\u{08}';
@@ -60,6 +61,13 @@ pub enum Error {
 }
 
 impl error::Error for Error {}
+
+/// Signifies input provided by the user.
+#[derive(Clone, Copy, Debug)]
+pub enum Input {
+    /// A key pressed by the user.
+    Key(char),
+}
 
 /// Signifies a specific cell in the grid.
 #[derive(Clone, Copy, Eq, Debug, Default, Hash, Ord, PartialEq, PartialOrd)]
@@ -194,8 +202,8 @@ impl Terminal {
         Self::default()
     }
 
-    /// Converts the given result of a `Terminal` function to a [`Effect`].
-    fn process(result: i32, error: Error) -> Effect {
+    /// Converts the given result of a `Terminal` function to a [`Outcome`].
+    fn process(result: i32, error: Error) -> Outcome {
         if result == pancurses::OK {
             Ok(())
         } else {
@@ -204,22 +212,22 @@ impl Terminal {
     }
 
     /// Writes a string starting at the cursor.
-    fn add_str(&self, s: String) -> Effect {
+    fn add_str(&self, s: String) -> Outcome {
         Self::process(self.window.addstr(s), Error::Waddstr)
     }
 
     /// Clears the entire window.
-    fn clear_all(&self) -> Effect {
+    fn clear_all(&self) -> Outcome {
         Self::process(self.window.clear(), Error::Wclear)
     }
 
     /// Clears all blocks from the cursor to the end of the row.
-    fn clear_to_row_end(&self) -> Effect {
+    fn clear_to_row_end(&self) -> Outcome {
         Self::process(self.window.clrtoeol(), Error::Wcleartoeol)
     }
 
     /// Defines [`Color`] as having a background color.
-    fn define_color(&self, color: Color, background: i16) -> Effect {
+    fn define_color(&self, color: Color, background: i16) -> Outcome {
         Self::process(
             pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
             Error::InitPair,
@@ -229,22 +237,22 @@ impl Terminal {
     /// Deletes the character at the cursor.
     ///
     /// All subseqent characters are shifted to the left and a blank block is added at the end.
-    fn delete_char(&self) -> Effect {
+    fn delete_char(&self) -> Outcome {
         Self::process(self.window.delch(), Error::Wdelch)
     }
 
     /// Disables echoing received characters on the screen.
-    fn disable_echo(&self) -> Effect {
+    fn disable_echo(&self) -> Outcome {
         Self::process(pancurses::noecho(), Error::Noecho)
     }
 
     /// Sets user interface to not wait for an input.
-    fn enable_nodelay(&self) -> Effect {
+    fn enable_nodelay(&self) -> Outcome {
         Self::process(self.window.nodelay(true), Error::Nodelay)
     }
 
     /// Sets the color of the next specified number of blocks from the cursor.
-    fn format(&self, length: i32, color: Color) -> Effect {
+    fn format(&self, length: i32, color: Color) -> Outcome {
         Self::process(
             self.window.chgat(length, pancurses::A_NORMAL, color.cp()),
             Error::Wchgat,
@@ -252,29 +260,29 @@ impl Terminal {
     }
 
     /// Inserts a character at the cursor, shifting all subsequent blocks to the right.
-    fn insert_char(&self, c: char) -> Effect {
+    fn insert_char(&self, c: char) -> Outcome {
         Self::process(self.window.insch(c), Error::Winsch)
     }
 
     /// Moves the cursor to an [`Address`].
-    fn move_to(&self, address: Address) -> Effect {
+    fn move_to(&self, address: Address) -> Outcome {
         Self::process(self.window.mv(address.y(), address.x()), Error::Wmove)
     }
 
     /// Initializes color processing.
     ///
     /// Must be called before any other color manipulation routine is called.
-    fn start_color(&self) -> Effect {
+    fn start_color(&self) -> Outcome {
         Self::process(pancurses::start_color(), Error::StartColor)
     }
 
     /// Initializes the default colors.
-    fn use_default_colors(&self) -> Effect {
+    fn use_default_colors(&self) -> Outcome {
         Self::process(pancurses::use_default_colors(), Error::UseDefaultColors)
     }
 
     /// Sets up the user interface for use.
-    pub fn init(&self) -> Effect {
+    pub fn init(&self) -> Outcome {
         self.start_color()?;
         self.use_default_colors()?;
         self.disable_echo()?;
@@ -285,17 +293,17 @@ impl Terminal {
     }
 
     /// Closes the user interface.
-    pub fn close(&self) -> Effect {
+    pub fn close(&self) -> Outcome {
         Self::process(pancurses::endwin(), Error::Endwin)
     }
 
     /// Flashes the output.
-    fn flash(&self) -> Effect {
+    fn flash(&self) -> Outcome {
         Self::process(pancurses::flash(), Error::Flash)
     }
 
     /// Applies the `Change` to the output.
-    pub fn apply(&self, change: Change) -> Effect {
+    pub fn apply(&self, change: Change) -> Outcome {
         match change {
             Change::Clear => self.clear_all(),
             Change::Format(span, color) => {
@@ -332,7 +340,6 @@ impl Terminal {
     }
 
     /// Returns the number of cells that make up the height of the grid.
-    // TODO: Store this value and update when size is changed.
     pub fn grid_height(&self) -> Result<Index, TryFromIntError> {
         Index::try_from(self.window.get_max_y())
     }
@@ -341,7 +348,13 @@ impl Terminal {
     ///
     /// Returns [`None`] if no character input is provided.
     pub fn receive_input(&self) -> Option<Input> {
-        self.window.getch()
+        self.window.getch().and_then(|input| {
+            if let TerminalInput::Character(c) = input {
+                Some(Input::Key(c))
+            } else {
+                None
+            }
+        })
     }
 }
 
