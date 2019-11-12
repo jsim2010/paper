@@ -1,9 +1,9 @@
 //! Implements functionality for the application while in filter mode.
-use super::{Flag, Initiation, LineNumber, Operation, Output, Pane};
+use super::{Mode, LineNumber, Operation, Output, Sheet};
 use core::{convert::TryFrom, num::TryFromIntError};
-use crate::{ptr::Mrc, ui::{ENTER, ESC}};
-use rec::{ChCls::{Any, Digit, End, Not, Sign}, opt, some, tkn, var, Element, Pattern};
-use std::{cmp, collections::HashMap, fmt::Debug, rc::Rc};
+use crate::{Alert, ui::{Input, ENTER, ESC}};
+use rec::{ChCls::{Any, Digit, End, /*Not,*/ Sign}, /*opt,*/ some, tkn, var, Element, Pattern};
+use std::{cmp, /*collections::HashMap,*/ fmt::Debug, /*rc::Rc*/};
 
 use lsp_msg::Range;
 
@@ -14,86 +14,65 @@ pub(crate) struct Processor {
     noises: Vec<Range>,
     /// All [`Range`]s that match the current filter.
     signals: Vec<Range>,
-    /// Matches the first feature of a filter.
-    first_feature_pattern: Pattern,
-    /// Filters supported by the application
-    filters: HashMap<char, Rc<dyn Filter>>,
-    /// The [`Pane`] of the application.
-    pane: Mrc<Pane>,
+    ///// Matches the first feature of a filter.
+    //first_feature_pattern: Pattern,
+    ///// Filters supported by the application
+    //filters: HashMap<char, Rc<dyn Filter>>,
 }
 
 impl Processor {
     /// Creates a new `Processor` for the filter mode.
-    pub(crate) fn new(pane: &Mrc<Pane>) -> Self {
-        let line_filter: Rc<dyn Filter> = Rc::new(LineFilter::default());
-        let pattern_filter: Rc<dyn Filter> = Rc::new(PatternFilter::default());
+    pub(crate) const fn new() -> Self {
+        //let line_filter: Rc<dyn Filter> = Rc::new(LineFilter::default());
+        //let pattern_filter: Rc<dyn Filter> = Rc::new(PatternFilter::default());
 
         Self {
             noises: Vec::new(),
             signals: Vec::new(),
-            first_feature_pattern: Pattern::new(tkn!(var(Not("&")) => "feature") + opt("&&")),
-            filters: [('#', line_filter), ('/', pattern_filter)]
-                .iter()
-                .cloned()
-                .collect(),
-            pane: Mrc::clone(pane),
+            //first_feature_pattern: Pattern::new(tkn!(var(Not("&")) => "feature") + opt("&&")),
+            //filters: [('#', line_filter), ('/', pattern_filter)]
+            //    .iter()
+            //    .cloned()
+            //    .collect(),
         }
     }
 }
 
 impl super::Processor for Processor {
-    fn enter(&mut self, initiation: &Option<Initiation>) -> Output<()> {
-        let mut pane = self.pane.borrow_mut();
-
-        let id = if let Some(Initiation::StartFilter(c)) = *initiation {
-            Some(c)
+    fn decode(&self, _sheet: &Sheet, input: Input) -> Output<Vec<Operation>> {
+        if let Input::Key(key) = input {
+            Ok(vec![match key {
+                ENTER => Operation::EnterMode(Mode::Action),
+                ESC => Operation::EnterMode(Mode::Display),
+                _ => Operation::AddToControlPanel(key),
+            }])
         } else {
-            None
-        };
-        pane.reset_control_panel(id);
-
-        self.noises.clear();
-
-        for line in 0..pane.line_count {
-            self.noises.push(Range::with_line(line));
+            Ok(vec![])
         }
+                //if input == '\t' {
+                //    pane.control_panel.add_non_bs('&');
+                //    pane.control_panel.add_non_bs('&');
+                //} else {
+                //    pane.input_to_control_panel(input);
+                //}
 
-        Ok(())
-    }
+                //if let Some(last_feature) = self
+                //    .first_feature_pattern
+                //    .tokenize_iter(&pane.control_panel)
+                //    .last()
+                //    .and_then(|tokens| tokens.get("feature"))
+                //{
+                //    self.signals = self.noises.clone();
 
-    fn decode(&mut self, input: char) -> Output<Operation> {
-        let mut pane = self.pane.borrow_mut();
+                //    if let Some(id) = last_feature.chars().nth(0) {
+                //        if let Some(filter) = self.filters.get(&id) {
+                //            filter.extract(last_feature, &mut self.signals, &pane)?;
+                //        }
+                //    }
+                //}
 
-        match input {
-            ENTER => Ok(Operation::enter_action(self.signals.to_vec())),
-            ESC => Ok(Operation::enter_display()),
-            _ => {
-                if input == '\t' {
-                    pane.control_panel.add_non_bs('&');
-                    pane.control_panel.add_non_bs('&');
-                } else {
-                    pane.input_to_control_panel(input);
-                }
-
-                if let Some(last_feature) = self
-                    .first_feature_pattern
-                    .tokenize_iter(&pane.control_panel)
-                    .last()
-                    .and_then(|tokens| tokens.get("feature"))
-                {
-                    self.signals = self.noises.clone();
-
-                    if let Some(id) = last_feature.chars().nth(0) {
-                        if let Some(filter) = self.filters.get(&id) {
-                            filter.extract(last_feature, &mut self.signals, &pane)?;
-                        }
-                    }
-                }
-
-                pane.apply_filter(&self.noises, &self.signals);
-                Ok(Operation::maintain())
-            }
-        }
+                //pane.apply_filter(&self.noises, &self.signals);
+                //OldOperation::maintain()
     }
 }
 
@@ -104,7 +83,7 @@ trait Filter: Debug {
         &self,
         feature: &str,
         sections: &mut Vec<Range>,
-        pane: &Pane,
+        pane: &Sheet,
     ) -> Result<(), Error>;
 }
 
@@ -132,7 +111,7 @@ impl Filter for LineFilter {
         &self,
         feature: &str,
         sections: &mut Vec<Range>,
-        _view: &Pane,
+        _view: &Sheet,
     ) -> Result<(), Error> {
         let tokens = self.pattern.tokenize(feature);
 
@@ -188,7 +167,7 @@ impl Filter for PatternFilter {
         &self,
         feature: &str,
         ranges: &mut Vec<Range>,
-        pane: &Pane,
+        pane: &Sheet,
     ) -> Result<(), Error> {
         if let Some(user_pattern) = self.pattern.tokenize(feature).get("pattern") {
             if let Ok(search_pattern) = user_pattern.parse::<Pattern>() {
@@ -217,7 +196,7 @@ impl Filter for PatternFilter {
 /// Error for [`Filter::extract`].
 struct Error;
 
-impl From<Error> for Flag {
+impl From<Error> for Alert {
     fn from(_: Error) -> Self {
         Self::User
     }

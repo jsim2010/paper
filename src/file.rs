@@ -15,11 +15,11 @@ use url::Url;
 use lsp_msg::{Range, TextDocumentItem};
 
 /// Specifies the type returned by `Explorer` functions.
-pub type Effect<T> = Result<T, Error>;
+pub(crate) type Effect<T> = Result<T, Error>;
 
 /// Defines the interface between the application and documents.
 #[derive(Clone, Debug)]
-pub struct Explorer {
+pub(crate) struct Explorer {
     /// A `LanguageClient`.
     language_client: Arc<Mutex<LanguageClient>>,
     /// Root URI.
@@ -28,7 +28,7 @@ pub struct Explorer {
 
 impl Explorer {
     /// Creates a new `Explorer`.
-    pub fn new() -> Outcome<Self> {
+    pub(crate) fn new() -> Outcome<Self> {
         env::current_dir()
             .map_err(Alert::from)
             .and_then(|path| {
@@ -49,7 +49,7 @@ impl Explorer {
     }
 
     /// Initializes all functionality needed by the Explorer.
-    pub fn start(&mut self) -> Effect<()> {
+    pub(crate) fn start(&mut self) -> Effect<()> {
         let uri = self.root_uri.clone();
         self.language_client_mut()
             .send_request(RequestMethod::initialize(uri.as_str()))?;
@@ -57,8 +57,8 @@ impl Explorer {
     }
 
     /// Returns the text from a file.
-    pub fn read(&mut self, path: &str) -> Effect<TextDocumentItem> {
-        let uri = self.root_uri.join(path)?;
+    pub(crate) fn read(&mut self, path: &PathBuf) -> Effect<TextDocumentItem> {
+        let uri = self.root_uri.join(path.as_path().to_str().unwrap())?;
 
         let doc = TextDocumentItem {
             uri: uri.clone().into_string(),
@@ -73,13 +73,13 @@ impl Explorer {
     }
 
     /// Writes text to a file.
-    pub fn write(&self, doc: &TextDocumentItem) -> Effect<()> {
+    pub(crate) fn write(&self, doc: &TextDocumentItem) -> Effect<()> {
         fs::write(PathBuf::from(&doc.uri), &doc.text)?;
         Ok(())
     }
 
     /// Inform server of change to the working copy of a file.
-    pub fn change(&mut self, doc: &mut TextDocumentItem, range: &Range, text: &str) -> Effect<()> {
+    pub(crate) fn change(&mut self, doc: &mut TextDocumentItem, range: &Range, text: &str) -> Effect<()> {
         self.language_client_mut().send_notification(
             NotificationMessage::did_change_text_document(doc, range, text),
         )?;
@@ -87,7 +87,7 @@ impl Explorer {
     }
 
     /// Returns the oldest notification from `Explorer`.
-    pub fn receive_notification(&mut self) -> Option<ProgressParams> {
+    pub(crate) fn receive_notification(&mut self) -> Option<ProgressParams> {
         self.language_client_mut().receive_notification()
     }
 }

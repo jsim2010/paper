@@ -4,13 +4,13 @@
 //!
 //! Its features include:
 //! - Modal editing (keys implement different functionality depending on the current mode).
+//! - Adding support for Language Server Protocol.
 //! - Extensive but relatively simple filter grammar that allows user to select any text.
 //!
 //! Future items on the Roadmap:
 //! - Utilize external tools for filters.
 //! - Add more filter grammar.
 //! - Implement suggestions for commands to improve user experience.
-//! - Support Language Server Protocol.
 //!
 //! ## Development
 //!
@@ -37,105 +37,136 @@
 //! - Evaluate all checks, lints and tests: `cargo make eval`
 //! - Fix stale README and formatting: `cargo make fix`
 
-#![doc(html_root_url = "https://docs.rs/paper/0.3.0")]
 #![warn(
-    rust_2018_idioms,
-    future_incompatible,
-    unused,
+    absolute_paths_not_starting_with_crate,
+    anonymous_parameters,
+    bare_trait_objects,
+    deprecated_in_future,
+    elided_lifetimes_in_paths,
+    ellipsis_inclusive_range_patterns,
+    explicit_outlives_requirements,
+    keyword_idents,
     macro_use_extern_crate,
     missing_copy_implementations,
     missing_debug_implementations,
     missing_docs,
-    single_use_lifetimes,
+    missing_doc_code_examples,
+    private_doc_tests,
     trivial_casts,
     trivial_numeric_casts,
     unreachable_pub,
+    unsafe_code,
+    unstable_features,
+    unused_extern_crates,
     unused_import_braces,
+    unused_labels,
     unused_lifetimes,
     unused_qualifications,
     unused_results,
+    variant_size_differences,
     clippy::cargo,
     clippy::nursery,
     clippy::pedantic,
     clippy::restriction
 )]
+// Rustc lints that are not warned:
+// box_pointers: Boxes are generally okay.
+// single_use_lifetimes: Flags methods in derived traits.
 #![allow(
-    clippy::suspicious_op_assign_impl,
-    clippy::suspicious_arithmetic_impl,
-    clippy::fallible_impl_from
-)] // These lints are not always correct; issues should be detected by tests or other lints.
-#![allow(clippy::implicit_return)]
-// This goes against rust convention and would require return calls in places it is not helpful (e.g. closures).
-#![allow(clippy::missing_inline_in_public_items, clippy::missing_const_for_fn)] // Mistakenly marks derived traits.
-#![allow(clippy::multiple_crate_versions)]
+    clippy::fallible_impl_from, // Not always valid; issues should be detected by tests or other lints.
+    clippy::implicit_return, // Goes against rust convention and requires return calls in places it is not helpful (e.g. closures).
+    clippy::missing_const_for_fn, // Flags methods in derived traits.
+    clippy::missing_inline_in_public_items, // Flags methods in derived traits.
+    clippy::suspicious_arithmetic_impl, // Not always valid; issues should be detected by tests or other lints.
+    clippy::suspicious_op_assign_impl, // Not always valid; issues should be detected by tests or other lints.
+)]
+//#![allow(clippy::multiple_crate_versions)]
 
-// Lint checks currently not defined: missing_doc_code_examples, variant_size_differences, box_pointers
+mod app;
+mod file;
+mod lsp;
+mod num;
+mod translate;
+mod ui;
 
-macro_rules! add_trait_child {
-    ($trait:ident, $child:ident, $name:ident) => {
-        mod $child;
-        pub(crate) use $child::$trait as $name;
-    };
+use app::{Direction, Operation, Output, Sheet};
+use displaydoc::Display as DisplayDoc;
+use lsp_msg::Position;
+use parse_display::Display as ParseDisplay;
+use std::{borrow::Borrow, collections::HashMap};
+use translate::{Interpreter, DisplayInterpreter, CommandInterpreter, FilterInterpreter, ActionInterpreter, EditInterpreter};
+use ui::Terminal;
+
+/// Signifies a [`Result`] with [`Alert`] as its Error.
+type Outcome<T> = Result<T, Alert>;
+
+/// The [`Interpreter`] when mode is [`Mode::Display`].
+static DISPLAY_INTERPRETER: DisplayInterpreter = DisplayInterpreter::new();
+/// The [`Interpreter`] when mode is [`Mode::Command`].
+static COMMAND_INTERPRETER: CommandInterpreter = CommandInterpreter::new();
+/// The [`Interpreter`] when mode is [`Mode::Filter`].
+static FILTER_INTERPRETER: FilterInterpreter = FilterInterpreter::new();
+/// The [`Interpreter`] when mode is [`Mode::Action`].
+static ACTION_INTERPRETER: ActionInterpreter = ActionInterpreter::new();
+/// The [`Interpreter`] when mode is [`Mode::Edit`].
+static EDIT_INTERPRETER: EditInterpreter = EditInterpreter::new();
+
+/// Signifies the mode of the application.
+#[derive(Copy, Clone, Eq, ParseDisplay, PartialEq, Hash, Debug)]
+#[display(style = "CamelCase")]
+pub enum Mode {
+    /// Displays the current view.
+    Display,
+    /// Displays the current command.
+    Command,
+    /// Displays the current filter expression and highlights the characters that match the filter.
+    Filter,
+    /// Displays the highlighting that has been selected.
+    Action,
+    /// Displays the current view along with the current edits.
+    Edit,
 }
 
-#[macro_use]
-mod ptr;
+impl Default for Mode {
+    #[inline]
+    fn default() -> Self {
+        Self::Display
+    }
+}
 
-// file uses a macro from ptr and thus must be loaded after ptr.
-pub mod file;
-pub mod lsp;
-pub mod mode;
-pub mod num;
-pub mod ui;
-
-pub use file::Explorer;
-pub use mode::Flag;
-
-use displaydoc::Display as DisplayDoc;
-use mode::{Operation, Output, Pane, Processor};
-use ptr::Mrc;
-use std::collections::HashMap;
-use ui::{Input, Terminal};
-
-/// The paper application.
+/// Describes the paper application.
 #[derive(Debug)]
 pub struct Paper {
+    /// The current [`Mode`] of the application.
+    mode: Mode,
+    /// Maps [`Mode`]s to their respective [`Interpreter`].
+    interpreters: HashMap<Mode, &'static dyn Interpreter>,
     /// User interface of the application.
     ui: Terminal,
-    /// The [`Pane`] of the application.
-    pane: Mrc<Pane>,
-    /// The current [`mode::Name`] of the application.
-    mode: mode::Name,
-    /// Maps modes to their respective [`Processor`].
-    processors: HashMap<mode::Name, Mrc<dyn Processor>>,
+    /// The [`Sheet`] of the application.
+    sheet: Sheet,
 }
 
 impl Paper {
     /// Creates a new paper application.
-    #[inline]
     pub fn new() -> Outcome<Self> {
+        // Must first create ui to pass info to Sheet.
         let ui = Terminal::new();
-        let pane = mrc!(Pane::new(
-            ui.grid_height()
-                .expect("Accessing height of user interface")
-        )?);
-        pane.borrow_mut().install().expect("Installing `Pane`.");
-        let display_mode_handler: Mrc<dyn Processor> = mrc!(mode::DisplayProcessor::new(&pane));
-        let command_mode_handler: Mrc<dyn Processor> = mrc!(mode::CommandProcessor::new(&pane));
-        let filter_mode_handler: Mrc<dyn Processor> = mrc!(mode::FilterProcessor::new(&pane));
-        let action_mode_handler: Mrc<dyn Processor> = mrc!(mode::ActionProcessor::new());
-        let edit_mode_handler: Mrc<dyn Processor> = mrc!(mode::EditProcessor::new(&pane));
+
+        // Must use local variable to annotate that DISPLAY_INTERPRETER has type &dyn
+        // Interpreter. The compiler infers all subsequent pointers.
+        let display_interpreter: &dyn Interpreter = &DISPLAY_INTERPRETER;
 
         Ok(Self {
+            sheet: Sheet::new(ui.grid_height()?)?,
             ui,
-            pane,
-            mode: mode::Name::default(),
-            processors: [
-                (mode::Name::Display, display_mode_handler),
-                (mode::Name::Command, command_mode_handler),
-                (mode::Name::Filter, filter_mode_handler),
-                (mode::Name::Action, action_mode_handler),
-                (mode::Name::Edit, edit_mode_handler),
+            mode: Mode::default(),
+            interpreters: [
+                (Mode::Display, display_interpreter),
+                (Mode::Command, &COMMAND_INTERPRETER),
+                (Mode::Filter, &FILTER_INTERPRETER),
+                (Mode::Action, &ACTION_INTERPRETER),
+                (Mode::Edit, &EDIT_INTERPRETER),
             ]
             .iter()
             .cloned()
@@ -147,9 +178,10 @@ impl Paper {
     #[inline]
     pub fn run(&mut self) -> Outcome<()> {
         self.ui.init()?;
+        self.sheet.init()?;
 
         loop {
-            if let Err(Flag::Quit) = self.step() {
+            if let Err(Alert::Quit) = self.step() {
                 break;
             }
         }
@@ -158,46 +190,73 @@ impl Paper {
         Ok(())
     }
 
-    /// Returns the input from the `UserInterface`.
-    fn get_input(&mut self) -> Option<Input> {
-        self.ui.receive_input()
-    }
-
     /// Processes 1 input from the user.
     #[inline]
-    pub fn step(&mut self) -> Output<()> {
-        let operation = if let Some(Input::Key(input)) = self.get_input() {
-            self.current_processor_mut().borrow_mut().decode(input)?
-        } else {
-            Operation::maintain()
-        };
-
-        self.pane.borrow_mut().process_notifications();
-        self.operate(&operation)
-    }
-
-    /// Executes an [`Operation`].
-    #[inline]
-    pub fn operate(&mut self, operation: &Operation) -> Output<()> {
-        if let Some(new_mode) = operation.mode() {
-            self.mode = *new_mode;
-            self.current_processor_mut()
-                .borrow_mut()
-                .enter(operation.initiation())?;
+    fn step(&mut self) -> Output<()> {
+        if let Some(input) = self.ui.input() {
+            for operation in self
+                .interpreters
+                .get(&self.mode)
+                .ok_or(Alert::UnknownMode(self.mode))?
+                .decode(input, &self.sheet)?
+            {
+                self.operate(operation)?;
+            }
         }
 
-        let changes = self.pane.borrow_mut().changes();
+        self.sheet.process_notifications();
 
-        for change in changes {
+        for change in self.sheet.changes() {
             self.ui.apply(change)?;
         }
 
         Ok(())
     }
 
-    /// Return a mutable reference to the processor of the current mode.
-    fn current_processor_mut(&mut self) -> &mut Mrc<dyn Processor> {
-        self.processors.get_mut(&self.mode).unwrap()
+    /// Executes an [`Operation`].
+    #[inline]
+    pub fn operate(&mut self, operation: Operation) -> Output<()> {
+        match operation {
+            Operation::Scroll(direction) => match direction {
+                Direction::Up => self.sheet.scroll_up(),
+                Direction::Down => self.sheet.scroll_down(),
+            },
+            Operation::EnterMode(mode) => {
+                self.mode = mode;
+
+                match mode {
+                    Mode::Display => {
+                        self.sheet.wipe();
+                    }
+                    Mode::Command => {
+                        self.sheet.reset_control_panel(None);
+                    }
+                    Mode::Action | Mode::Edit | Mode::Filter => {}
+                }
+            }
+            Operation::ResetControlPanel(c) => self.sheet.reset_control_panel(c),
+            Operation::DisplayFile(path) => {
+                self.sheet.change(path.borrow())?;
+            }
+            Operation::Save => {
+                self.sheet.save()?;
+            }
+            Operation::AddToControlPanel(c) => {
+                self.sheet.input_to_control_panel(c);
+            }
+            Operation::Add(c) => {
+                // TODO: Need to determine position.
+                self.sheet.add(
+                    &mut Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    c,
+                )?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -212,6 +271,8 @@ pub enum Alert {
     Lsp(lsp::Error),
     /// `{0}`
     Custom(&'static str),
+    /// mode `{0}` is unknown
+    UnknownMode(Mode),
     /// invalid input from user
     User,
     /// quit the application
@@ -231,6 +292,3 @@ impl From<file::Error> for Alert {
         Self::Explorer(value)
     }
 }
-
-/// Signifies a [`Result`] with [`Alert`] as its Error.
-type Outcome<T> = Result<T, Alert>;

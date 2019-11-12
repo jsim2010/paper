@@ -1,15 +1,8 @@
 //! Implements the modality of the application.
-add_trait_child!(Processor, action, ActionProcessor);
-add_trait_child!(Processor, command, CommandProcessor);
-add_trait_child!(Processor, display, DisplayProcessor);
-add_trait_child!(Processor, edit, EditProcessor);
-add_trait_child!(Processor, filter, FilterProcessor);
-
 use crate::{
-    file::{self, Explorer},
-    lsp,
-    ui::{self, Address, Change, Color, Index, Span, BACKSPACE, ENTER},
-    Outcome,
+    file::Explorer,
+    ui::{Address, Change, Color, Index, Input, Span, BACKSPACE, ENTER},
+    Alert, Mode, Outcome,
 };
 use core::{
     convert::TryFrom,
@@ -21,6 +14,7 @@ use std::{
     fmt::{self, Debug, Display, Formatter},
     iter,
     ops::Deref,
+    path::PathBuf,
     rc::Rc,
 };
 
@@ -34,58 +28,15 @@ type Line = u64;
 ///
 /// The value of a `LineIndex` is equal to its respective [`Line`].
 type LineIndex = usize;
-/// Defines a [`Result`] with [`Flag`] as its Error.
-pub type Output<T> = Result<T, Flag>;
-
-/// Signifies the name of an application mode.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub enum Name {
-    /// Displays the current view.
-    Display,
-    /// Displays the current command.
-    Command,
-    /// Displays the current filter expression and highlights the characters that match the filter.
-    Filter,
-    /// Displays the highlighting that has been selected.
-    Action,
-    /// Displays the current view along with the current edits.
-    Edit,
-}
-
-impl Display for Name {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Display => write!(f, "Display"),
-            Self::Command => write!(f, "Command"),
-            Self::Filter => write!(f, "Filter"),
-            Self::Action => write!(f, "Action"),
-            Self::Edit => write!(f, "Edit"),
-        }
-    }
-}
-
-impl Default for Name {
-    #[inline]
-    fn default() -> Self {
-        Self::Display
-    }
-}
-
-/// Defines the functionality of a processor of a mode.
-pub(crate) trait Processor: Debug {
-    /// Enters the application into its mode.
-    fn enter(&mut self, initiation: &Option<Initiation>) -> Output<()>;
-    /// Generates an [`Operation`] from the given input.
-    fn decode(&mut self, input: char) -> Output<Operation>;
-}
+/// Defines a [`Result`] with [`Alert`] as its Error.
+pub(crate) type Output<T> = Result<T, Alert>;
 
 /// Signifies a function to be performed when the application enters a mode.
 ///
 /// In general, only certain modes can implement certain Initiations; for example: only Filter
 /// implements [`StartFilter`].
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub enum Initiation {
+pub(crate) enum Initiation {
     /// Opens the document specified by the given path relative to the root directory.
     OpenDoc(String),
     /// Saves the current data of the view.
@@ -98,12 +49,12 @@ pub enum Initiation {
     Mark(Vec<Position>),
 }
 
-/// The control panel of a [`Pane`].
+/// The control panel of a [`Sheet`].
 #[derive(Clone, Debug, Default, Hash)]
-struct ControlPanel {
+pub(crate) struct ControlPanel {
     /// The [`String`] to be edited.
     string: String,
-    /// The height of the `Pane`.
+    /// The height of the `Sheet`.
     height: Rc<Index>,
 }
 
@@ -176,63 +127,9 @@ impl Deref for ControlPanel {
     }
 }
 
-/// Signifies an alert to stop the application.
-#[derive(Debug)]
-pub enum Flag {
-    /// An error with the user interface.
-    Ui(ui::Error),
-    /// An error with an attempt to convert values.
-    Conversion(TryFromIntError),
-    /// An error with the file interaction.
-    File(file::Error),
-    /// An error with the Language Server Protocol.
-    Lsp(lsp::Error),
-    /// An invalid input from the user.
-    User,
-    /// Quits the application.
-    ///
-    /// This is not actually an error, just a way to kill the application.
-    Quit,
-}
-
-impl Display for Flag {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Ui(error) => write!(f, "{}", error),
-            Self::Conversion(error) => write!(f, "{}", error),
-            Self::File(error) => write!(f, "{}", error),
-            Self::Lsp(error) => write!(f, "{}", error),
-            Self::User => write!(f, "User Error"),
-            Self::Quit => write!(f, "Quit"),
-        }
-    }
-}
-
-impl From<TryFromIntError> for Flag {
-    #[inline]
-    fn from(error: TryFromIntError) -> Self {
-        Self::Conversion(error)
-    }
-}
-
-impl From<ui::Error> for Flag {
-    #[inline]
-    fn from(error: ui::Error) -> Self {
-        Self::Ui(error)
-    }
-}
-
-impl From<file::Error> for Flag {
-    #[inline]
-    fn from(error: file::Error) -> Self {
-        Self::File(error)
-    }
-}
-
 /// Signfifies the pane of the current file.
 #[derive(Clone, Debug)]
-pub(crate) struct Pane {
+pub(crate) struct Sheet {
     /// The first line that is displayed in the ui.
     first_line: Line,
     /// The number of columns needed to display the margin.
@@ -241,20 +138,20 @@ pub(crate) struct Pane {
     height: Rc<Index>,
     /// The number of lines in the document.
     line_count: Line,
-    /// The control panel of the `Pane`.
+    /// The control panel of the `Sheet`.
     control_panel: ControlPanel,
-    /// The `Change`s `Pane` needs to make to update the [`UserInterface`].
+    /// The `Change`s `Sheet` needs to make to update the [`UserInterface`].
     changes: Vec<Change>,
-    /// If `Pane` will clear and redraw on next update.
+    /// If `Sheet` will clear and redraw on next update.
     will_wipe: bool,
-    /// The `Explorer` used by `Pane`.
+    /// The `Explorer` used by `Sheet`.
     explorer: Explorer,
-    /// The document being represented by `Pane`.
+    /// The document being represented by `Sheet`.
     doc: Option<TextDocumentItem>,
 }
 
-impl Pane {
-    /// Creates a new Pane with a given height.
+impl Sheet {
+    /// Creates a new Sheet with a given height.
     pub(crate) fn new(height: Index) -> Outcome<Self> {
         let height = Rc::new(height);
 
@@ -271,13 +168,17 @@ impl Pane {
         })
     }
 
-    /// Initializes the `Pane`.
-    pub(crate) fn install(&mut self) -> Output<()> {
+    pub(crate) fn control_panel(&self) -> &ControlPanel {
+        &self.control_panel
+    }
+
+    /// Initializes the `Sheet`.
+    pub(crate) fn init(&mut self) -> Output<()> {
         self.explorer.start()?;
         Ok(())
     }
 
-    /// Returns the `Change`s needed to update `Pane`.
+    /// Returns the `Change`s needed to update `Sheet`.
     pub(crate) fn changes(&mut self) -> Vec<Change> {
         if self.will_wipe {
             self.changes.clear();
@@ -319,8 +220,8 @@ impl Pane {
         changes
     }
 
-    /// Sets [`Pane`] to be wiped on the next call to `changes`().
-    fn wipe(&mut self) {
+    /// Sets [`Sheet`] to be wiped on the next call to `changes`().
+    pub(crate) fn wipe(&mut self) {
         self.will_wipe = true;
     }
 
@@ -341,7 +242,7 @@ impl Pane {
     }
 
     /// Resets the [`ControlPanel`].
-    fn reset_control_panel(&mut self, id: Option<char>) {
+    pub(crate) fn reset_control_panel(&mut self, id: Option<char>) {
         self.control_panel.clear();
 
         if let Some(filter_id) = id {
@@ -353,7 +254,7 @@ impl Pane {
     }
 
     /// Adds an input to the control panel.
-    fn input_to_control_panel(&mut self, input: char) {
+    pub(crate) fn input_to_control_panel(&mut self, input: char) {
         self.changes
             .append(&mut self.control_panel.changes_after_add(input));
     }
@@ -389,14 +290,14 @@ impl Pane {
     }
 
     /// Changes the pane to a new path.
-    fn change(&mut self, path: &str) -> Output<()> {
+    pub(crate) fn change(&mut self, path: &PathBuf) -> Output<()> {
         self.doc = Some(self.explorer.read(path)?);
         self.refresh();
         Ok(())
     }
 
-    /// Saves the document of `Pane` to its file system.
-    fn save(&self) -> Output<()> {
+    /// Saves the document of `Sheet` to its file system.
+    pub(crate) fn save(&self) -> Output<()> {
         if let Some(doc) = &self.doc {
             self.explorer.write(doc)?;
         }
@@ -439,13 +340,15 @@ impl Pane {
 
         let pointer = self
             .line_indices()
-            .nth(LineIndex::try_from(range.start.line)?);
+            .nth(LineIndex::try_from(range.start.line).map_err(|_| Alert::Custom("invalid line"))?);
 
         if let Some(doc) = &mut self.doc {
             if let Some(index) = pointer {
-                let mut index = usize::try_from(index)? as u64;
+                let mut index =
+                    u64::try_from(index).map_err(|_| Alert::Custom("invalid line index"))?;
                 index += range.start.character;
-                let data_index = usize::try_from(index)?;
+                let data_index =
+                    usize::try_from(index).map_err(|_| Alert::Custom("invalid line index"))?;
 
                 if input == BACKSPACE {
                     // TODO: For now, do not care to check what is removed. But this may become important for
@@ -554,13 +457,13 @@ impl Pane {
         )
     }
 
-    /// Scrolls the data of `Pane` up.
-    fn scroll_up(&mut self) {
+    /// Scrolls the data of `Sheet` up.
+    pub(crate) fn scroll_up(&mut self) {
         self.set_first_line(self.first_line.saturating_sub(self.scroll_delta()));
     }
 
-    /// Scrolls the data of `Pane` down.
-    fn scroll_down(&mut self) {
+    /// Scrolls the data of `Sheet` down.
+    pub(crate) fn scroll_down(&mut self) {
         self.set_first_line(cmp::min(
             self.first_line.saturating_add(self.scroll_delta()),
             Line::try_from(self.line_count.saturating_sub(1)).unwrap_or(Line::max_value()),
@@ -608,96 +511,21 @@ impl Iterator for IndexIterator {
     }
 }
 
-/// Defines operation to be performed by [`Processor`].
 #[derive(Debug)]
-pub struct Operation {
-    /// The [`Name`] of the desired mode.
-    ///
-    /// [`None`] indicates the application should keep the current mode.
-    mode: Option<Name>,
-    /// The [`Initiation`] to be run if changing modes.
-    initiation: Option<Initiation>,
+pub enum Operation {
+    EnterMode(Mode),
+    ResetControlPanel(Option<char>),
+    Scroll(Direction),
+    DisplayFile(Box<PathBuf>),
+    AddToControlPanel(char),
+    Save,
+    Add(char),
 }
 
-impl Operation {
-    /// Returns [`Name`] of `Operation`.
-    pub(crate) const fn mode(&self) -> &Option<Name> {
-        &self.mode
-    }
-
-    /// Returns [`Initiation`] of `Operation`.
-    pub(crate) const fn initiation(&self) -> &Option<Initiation> {
-        &self.initiation
-    }
-
-    /// Creates a new `Operation` to enter Command mode.
-    fn enter_command() -> Self {
-        Self {
-            mode: Some(Name::Command),
-            initiation: None,
-        }
-    }
-
-    /// Creates a new `Operation` to enter Action mode.
-    fn enter_filter(id: char) -> Self {
-        Self {
-            mode: Some(Name::Filter),
-            initiation: Some(Initiation::StartFilter(id)),
-        }
-    }
-
-    /// Creates a new `Operation` to continue execution with no special action.
-    pub(crate) const fn maintain() -> Self {
-        Self {
-            mode: None,
-            initiation: None,
-        }
-    }
-
-    /// Creates a new `Operation` to display a new file.
-    ///
-    /// The application enters Display mode as a consequence of this `Operation`.
-    #[inline]
-    pub fn display_file(path: &str) -> Self {
-        Self {
-            mode: Some(Name::Display),
-            initiation: Some(Initiation::OpenDoc(path.to_string())),
-        }
-    }
-
-    /// Creates a new `Operation` to save current file.
-    ///
-    /// The application enters Display mode as a consequence of this `Operation`.
-    fn save_file() -> Self {
-        Self {
-            mode: Some(Name::Display),
-            initiation: Some(Initiation::Save),
-        }
-    }
-
-    /// Creates a new `Operation` to enter Edit mode.
-    fn enter_display() -> Self {
-        Self {
-            mode: Some(Name::Display),
-            initiation: None,
-        }
-    }
-
-    /// Creates a new `Operation` to enter Action mode.
-    fn enter_action(signals: Vec<Range>) -> Self {
-        Self {
-            mode: Some(Name::Action),
-            initiation: Some(Initiation::SetSignals(signals)),
-        }
-    }
-
-    /// Creates a new `Operation` to enter Edit mode.
-    fn enter_edit(positions: Vec<Position>) -> Self {
-        Self {
-            mode: Some(Name::Edit),
-            initiation: Some(Initiation::Mark(positions)),
-        }
-    }
+#[derive(Clone, Copy, Debug)]
+pub enum Direction {
+    Up,
+    Down,
 }
 
 /// Signifies a line number.

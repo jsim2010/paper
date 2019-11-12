@@ -1,26 +1,27 @@
 //! Implements the interface between the user and the application.
-pub use crate::num::NonNegI32 as Index;
+pub(crate) use crate::num::NonNegI32 as Index;
 
 use core::{
     convert::TryFrom,
     fmt::{self, Debug, Display, Formatter},
-    num::TryFromIntError,
 };
 use displaydoc::Display as DisplayDoc;
 use pancurses::Input as TerminalInput;
 use std::error;
 
 /// The [`Result`] returned by functions of this module.
-pub type Outcome = Result<(), Error>;
+pub(crate) type Outcome<T> = Result<T, Error>;
+/// The [`Result`] returned by functions that do not return a value.
+pub(crate) type EmptyOutcome = Outcome<()>;
 
 /// The character that represents the `Backspace` key.
-pub const BACKSPACE: char = '\u{08}';
+pub(crate) const BACKSPACE: char = '\u{08}';
 /// The character that represents the `Enter` key.
 pub(crate) const ENTER: char = '\n';
 /// The character that represents the `Esc` key.
 // Currently ESC is set to Ctrl-C to allow manual testing within vim terminal where ESC is already
 // mapped.
-pub const ESC: char = '';
+pub(crate) const ESC: char = '';
 
 /// Represents the default color.
 const DEFAULT_COLOR: i16 = -1;
@@ -58,20 +59,26 @@ pub enum Error {
     Wmove,
     /// error during call to `nodelay()`
     Nodelay,
+    /// error during call to `getmaxyx()`
+    Getmaxyx,
 }
 
 impl error::Error for Error {}
 
 /// Signifies input provided by the user.
 #[derive(Clone, Copy, Debug)]
-pub enum Input {
-    /// A key pressed by the user.
-    Key(char),
+pub(crate) enum Input {
+    /// A key that is representable by a [`char`].
+    Char(char),
+    /// The `Enter` key
+    Enter,
+    /// The `Esc` key.
+    Escape,
 }
 
 /// Signifies a specific cell in the grid.
 #[derive(Clone, Copy, Eq, Debug, Default, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Address {
+pub(crate) struct Address {
     /// The index of the row that contains the cell (starts at 0).
     row: Index,
     /// The index of the column that contains the cell (starts at 0).
@@ -81,7 +88,7 @@ pub struct Address {
 impl Address {
     /// Creates a new `Address` with a given row and column.
     #[inline]
-    pub const fn new(row: Index, column: Index) -> Self {
+    pub(crate) const fn new(row: Index, column: Index) -> Self {
         Self { row, column }
     }
 
@@ -114,7 +121,7 @@ impl Display for Address {
 
 /// Signifies a sequence of `Address`es.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Span {
+pub(crate) struct Span {
     /// The first `Address` included in the `Span`.
     first: Address,
     /// The first `Address` not included in the `Span`.
@@ -123,7 +130,7 @@ pub struct Span {
 
 impl Span {
     /// Creates a new `Span`.
-    pub const fn new(first: Address, last: Address) -> Self {
+    pub(crate) const fn new(first: Address, last: Address) -> Self {
         Self { first, last }
     }
 
@@ -143,7 +150,7 @@ impl Display for Span {
 
 /// Signifies a modification to the grid.
 #[derive(Clone, Debug, DisplayDoc, Eq, Hash, PartialEq)]
-pub enum Change {
+pub(crate) enum Change {
     /// Clears all cells.
     Clear,
     /// Formats `{0}` to `{1}`.
@@ -166,7 +173,7 @@ impl Default for Change {
 /// Signifies a color.
 // Order must be kept as defined to match pancurses.
 #[derive(Clone, Copy, Debug, DisplayDoc, Eq, Hash, PartialEq)]
-pub enum Color {
+pub(crate) enum Color {
     /// default foreground on default background
     Default,
     /// default foreground on red background
@@ -191,19 +198,19 @@ impl Color {
 /// All output is displayed in a grid of cells. Each cell contains one character and can change its
 /// background color.
 #[derive(Debug)]
-pub struct Terminal {
+pub(crate) struct Terminal {
     /// The window that interfaces with the application.
     window: pancurses::Window,
 }
 
 impl Terminal {
     /// Creates a new `Terminal`.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Converts the given result of a `Terminal` function to a [`Outcome`].
-    fn process(result: i32, error: Error) -> Outcome {
+    /// Converts the given result of a `Terminal` function to an [`EmptyOutcome`].
+    fn process(result: i32, error: Error) -> EmptyOutcome {
         if result == pancurses::OK {
             Ok(())
         } else {
@@ -212,22 +219,22 @@ impl Terminal {
     }
 
     /// Writes a string starting at the cursor.
-    fn add_str(&self, s: String) -> Outcome {
+    fn add_str(&self, s: String) -> EmptyOutcome {
         Self::process(self.window.addstr(s), Error::Waddstr)
     }
 
     /// Clears the entire window.
-    fn clear_all(&self) -> Outcome {
+    fn clear_all(&self) -> EmptyOutcome {
         Self::process(self.window.clear(), Error::Wclear)
     }
 
     /// Clears all blocks from the cursor to the end of the row.
-    fn clear_to_row_end(&self) -> Outcome {
+    fn clear_to_row_end(&self) -> EmptyOutcome {
         Self::process(self.window.clrtoeol(), Error::Wcleartoeol)
     }
 
     /// Defines [`Color`] as having a background color.
-    fn define_color(&self, color: Color, background: i16) -> Outcome {
+    fn define_color(&self, color: Color, background: i16) -> EmptyOutcome {
         Self::process(
             pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
             Error::InitPair,
@@ -237,22 +244,22 @@ impl Terminal {
     /// Deletes the character at the cursor.
     ///
     /// All subseqent characters are shifted to the left and a blank block is added at the end.
-    fn delete_char(&self) -> Outcome {
+    fn delete_char(&self) -> EmptyOutcome {
         Self::process(self.window.delch(), Error::Wdelch)
     }
 
     /// Disables echoing received characters on the screen.
-    fn disable_echo(&self) -> Outcome {
+    fn disable_echo(&self) -> EmptyOutcome {
         Self::process(pancurses::noecho(), Error::Noecho)
     }
 
     /// Sets user interface to not wait for an input.
-    fn enable_nodelay(&self) -> Outcome {
+    fn enable_nodelay(&self) -> EmptyOutcome {
         Self::process(self.window.nodelay(true), Error::Nodelay)
     }
 
     /// Sets the color of the next specified number of blocks from the cursor.
-    fn format(&self, length: i32, color: Color) -> Outcome {
+    fn format(&self, length: i32, color: Color) -> EmptyOutcome {
         Self::process(
             self.window.chgat(length, pancurses::A_NORMAL, color.cp()),
             Error::Wchgat,
@@ -260,29 +267,29 @@ impl Terminal {
     }
 
     /// Inserts a character at the cursor, shifting all subsequent blocks to the right.
-    fn insert_char(&self, c: char) -> Outcome {
+    fn insert_char(&self, c: char) -> EmptyOutcome {
         Self::process(self.window.insch(c), Error::Winsch)
     }
 
     /// Moves the cursor to an [`Address`].
-    fn move_to(&self, address: Address) -> Outcome {
+    fn move_to(&self, address: Address) -> EmptyOutcome {
         Self::process(self.window.mv(address.y(), address.x()), Error::Wmove)
     }
 
     /// Initializes color processing.
     ///
     /// Must be called before any other color manipulation routine is called.
-    fn start_color(&self) -> Outcome {
+    fn start_color(&self) -> EmptyOutcome {
         Self::process(pancurses::start_color(), Error::StartColor)
     }
 
     /// Initializes the default colors.
-    fn use_default_colors(&self) -> Outcome {
+    fn use_default_colors(&self) -> EmptyOutcome {
         Self::process(pancurses::use_default_colors(), Error::UseDefaultColors)
     }
 
     /// Sets up the user interface for use.
-    pub fn init(&self) -> Outcome {
+    pub(crate) fn init(&self) -> EmptyOutcome {
         self.start_color()?;
         self.use_default_colors()?;
         self.disable_echo()?;
@@ -293,17 +300,17 @@ impl Terminal {
     }
 
     /// Closes the user interface.
-    pub fn close(&self) -> Outcome {
+    pub(crate) fn close(&self) -> EmptyOutcome {
         Self::process(pancurses::endwin(), Error::Endwin)
     }
 
     /// Flashes the output.
-    fn flash(&self) -> Outcome {
+    fn flash(&self) -> EmptyOutcome {
         Self::process(pancurses::flash(), Error::Flash)
     }
 
     /// Applies the `Change` to the output.
-    pub fn apply(&self, change: Change) -> Outcome {
+    pub(crate) fn apply(&self, change: Change) -> EmptyOutcome {
         match change {
             Change::Clear => self.clear_all(),
             Change::Format(span, color) => {
@@ -340,17 +347,22 @@ impl Terminal {
     }
 
     /// Returns the number of cells that make up the height of the grid.
-    pub fn grid_height(&self) -> Result<Index, TryFromIntError> {
-        Index::try_from(self.window.get_max_y())
+    pub(crate) fn grid_height(&self) -> Outcome<Index> {
+        // Index::try_from() will fail only if get_max_y() returns an error value.
+        Index::try_from(self.window.get_max_y()).map_err(|_| Error::Getmaxyx)
     }
 
     /// Returns the input from the user.
     ///
     /// Returns [`None`] if no character input is provided.
-    pub fn receive_input(&self) -> Option<Input> {
+    pub(crate) fn input(&self) -> Option<Input> {
         self.window.getch().and_then(|input| {
             if let TerminalInput::Character(c) = input {
-                Some(Input::Key(c))
+                Some(match c {
+                    ENTER => Input::Enter,
+                    ESC => Input::Escape,
+                    _ => Input::Char(c),
+                })
             } else {
                 None
             }

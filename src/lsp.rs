@@ -1,5 +1,5 @@
 //! Implements the client side of the language server protocol.
-use crate::mode::Flag;
+use crate::Alert;
 use jsonrpc_core::{self, Id, Version};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -214,7 +214,7 @@ impl From<io::Error> for Error {
     }
 }
 
-impl From<Error> for Flag {
+impl From<Error> for Alert {
     fn from(error: Error) -> Self {
         Self::Lsp(error)
     }
@@ -298,7 +298,7 @@ pub(crate) enum Status {
     /// MUST NOT exist if there was an error invoking the method.
     Result(ResultValue),
     /// The error object in case a request fails.
-    Error(ResponseError),
+    Error(Box<ResponseError>),
 }
 
 /// Specifies all response messages.
@@ -375,13 +375,13 @@ impl NotificationMessage {
 
 #[derive(Deserialize, Debug, Serialize)]
 /// `ProgressParams` defined by `VSCode`.
-pub struct ProgressParams {
+pub(crate) struct ProgressParams {
     /// The id of the notification.
     id: String,
     /// The title of the notification.
     title: String,
     /// The message of the notification.
-    pub message: Option<String>,
+    message: Option<String>,
     /// Indicates if no more notifications will be sent.
     done: Option<bool>,
 }
