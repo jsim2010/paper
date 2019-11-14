@@ -1,21 +1,20 @@
 //! Implements the client side of the language server protocol.
 use crate::Alert;
 use jsonrpc_core::{self, Id, Version};
+use lsp_types::{
+    ClientCapabilities, DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
+    InitializeResult, InitializedParams, PublishDiagnosticsParams, Range, Registration,
+    RegistrationParams, ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentItem, Url,
+    VersionedTextDocumentIdentifier,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     fmt::{self, Display, Formatter},
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write, Result as IoResult},
     process::{self, Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex},
     thread::{Builder, JoinHandle},
-};
-
-use lsp_msg::{
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams, InitializeResult,
-    InitializedParams, PublishDiagnosticsParams, Range, Registration, RegistrationParams,
-    ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentItem,
-    VersionedTextDocumentIdentifier,
 };
 
 /// The interface with the language server.
@@ -38,9 +37,8 @@ pub(crate) struct LanguageClient {
 impl LanguageClient {
     /// Creates a new `LanguageClient`.
     pub(crate) fn new(command: &str) -> Arc<Mutex<Self>> {
-        let server = Self::spawn_server(command);
         let their_client = Arc::new(Mutex::new(Self {
-            server,
+            server: Self::spawn_server(command).unwrap(),
             request_id: u64::default(),
             server_capabilities: ServerCapabilities::default(),
             registrations: Vec::new(),
@@ -49,8 +47,7 @@ impl LanguageClient {
         }));
         let my_client = Arc::clone(&their_client);
         their_client
-            .lock()
-            .expect("Locking language client")
+            .lock().unwrap()
             .receiver_handle = Builder::new()
             .name("LangClientRx".to_string())
             .spawn(move || Self::process(my_client))
@@ -58,14 +55,13 @@ impl LanguageClient {
         their_client
     }
 
-    /// Returns a spawned progress running the language server.
-    fn spawn_server(command: &str) -> Child {
+    /// Returns a spawned procress running the language server.
+    fn spawn_server(command: &str) -> IoResult<Child> {
         Command::new(command)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("Spawning language server process")
     }
 
     /// Process a message received from the language server.
@@ -268,11 +264,20 @@ pub(crate) enum RequestMethod {
 
 impl RequestMethod {
     /// Creates a new `RequestMethod::Initialize`.
-    pub(crate) fn initialize(root_dir: &str) -> Self {
+    pub(crate) fn initialize(root_uri: Url) -> Self {
         Self::Initialize(Box::new(InitializeParams {
             process_id: Some(u64::from(process::id())),
-            root_uri: Some(String::from(root_dir)),
-            ..InitializeParams::default()
+            root_path: None,
+            root_uri: Some(root_uri),
+            initialization_options: None,
+            capabilities: ClientCapabilities {
+                workspace: None,
+                text_document: None,
+                window: None,
+                experimental: None,
+            },
+            trace: None,
+            workspace_folders: None,
         }))
     }
 }
@@ -353,7 +358,7 @@ impl NotificationMessage {
 
     /// Creates a new `NotificationMessage::DidOpenTextDocument`.
     pub(crate) fn did_open_text_document(text_document: TextDocumentItem) -> Self {
-        Self::DidOpenTextDocument(DidOpenTextDocumentParams::from(text_document))
+        Self::DidOpenTextDocument(DidOpenTextDocumentParams { text_document })
     }
 
     /// Creates a new `NotificationMessage::DidChangeTextDocument`.
@@ -362,14 +367,15 @@ impl NotificationMessage {
         range: &Range,
         text: &str,
     ) -> Self {
-        doc.increment_version();
-        Self::DidChangeTextDocument(DidChangeTextDocumentParams::new(
-            VersionedTextDocumentIdentifier::from(doc.clone()),
-            vec![TextDocumentContentChangeEvent::new(
-                *range,
-                text.to_string(),
-            )],
-        ))
+        doc.version += 1;
+        Self::DidChangeTextDocument(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier::new(doc.uri.clone(), doc.version),
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: Some(*range),
+                range_length: None,
+                text: text.to_string(),
+            }],
+        })
     }
 }
 

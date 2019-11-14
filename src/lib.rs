@@ -63,7 +63,6 @@
     unused_lifetimes,
     unused_qualifications,
     unused_results,
-    variant_size_differences,
     clippy::cargo,
     clippy::nursery,
     clippy::pedantic,
@@ -72,6 +71,7 @@
 // Rustc lints that are not warned:
 // box_pointers: Boxes are generally okay.
 // single_use_lifetimes: Flags methods in derived traits.
+// variant_size_differences: This is generally not a bad thing.
 #![allow(
     clippy::fallible_impl_from, // Not always valid; issues should be detected by tests or other lints.
     clippy::implicit_return, // Goes against rust convention and requires return calls in places it is not helpful (e.g. closures).
@@ -89,16 +89,17 @@ mod num;
 mod translate;
 mod ui;
 
-use app::{Direction, Operation, Output, Sheet};
+use app::{Direction, Operation, Sheet};
+use core::borrow::Borrow;
 use displaydoc::Display as DisplayDoc;
-use lsp_msg::Position;
+use lsp_types::Position;
 use parse_display::Display as ParseDisplay;
-use std::{borrow::Borrow, collections::HashMap};
-use translate::{Interpreter, DisplayInterpreter, CommandInterpreter, FilterInterpreter, ActionInterpreter, EditInterpreter};
+use std::{collections::HashMap, path::PathBuf};
+use translate::{
+    ActionInterpreter, CommandInterpreter, DisplayInterpreter, EditInterpreter, FilterInterpreter,
+    Interpreter,
+};
 use ui::Terminal;
-
-/// Signifies a [`Result`] with [`Alert`] as its Error.
-type Outcome<T> = Result<T, Alert>;
 
 /// The [`Interpreter`] when mode is [`Mode::Display`].
 static DISPLAY_INTERPRETER: DisplayInterpreter = DisplayInterpreter::new();
@@ -149,7 +150,7 @@ pub struct Paper {
 
 impl Paper {
     /// Creates a new paper application.
-    pub fn new() -> Outcome<Self> {
+    pub fn new() -> Result<Self, Failure> {
         // Must first create ui to pass info to Sheet.
         let ui = Terminal::new();
 
@@ -176,31 +177,34 @@ impl Paper {
 
     /// Runs the application.
     #[inline]
-    pub fn run(&mut self) -> Outcome<()> {
+    pub fn run(&mut self) -> Result<(), Failure> {
+        let mut result;
+
         self.ui.init()?;
         self.sheet.init()?;
 
         loop {
-            if let Err(Alert::Quit) = self.step() {
+            result = self.step();
+
+            if result.is_err() {
                 break;
             }
         }
 
         self.ui.close()?;
-        Ok(())
+        result
     }
 
     /// Processes 1 input from the user.
     #[inline]
-    fn step(&mut self) -> Output<()> {
+    fn step(&mut self) -> Result<(), Failure> {
+        let mut alerts = Vec::new();
+
         if let Some(input) = self.ui.input() {
-            for operation in self
-                .interpreters
-                .get(&self.mode)
-                .ok_or(Alert::UnknownMode(self.mode))?
-                .decode(input, &self.sheet)?
-            {
-                self.operate(operation)?;
+            for operation in self.interpreter()?.decode(input, &self.sheet) {
+                if let Some(alert) = self.operate(operation)? {
+                    alerts.push(alert);
+                }
             }
         }
 
@@ -213,14 +217,23 @@ impl Paper {
         Ok(())
     }
 
+    /// Returns the [`Interpreter`] for the current [`Mode`].
+    fn interpreter(&self) -> Result<&&dyn Interpreter, Failure> {
+        self.interpreters.get(&self.mode).ok_or(Failure::UnknownMode(self.mode))
+    }
+
     /// Executes an [`Operation`].
     #[inline]
-    pub fn operate(&mut self, operation: Operation) -> Output<()> {
+    pub fn operate(&mut self, operation: Operation) -> Result<Option<Alert>, Failure> {
         match operation {
-            Operation::Scroll(direction) => match direction {
-                Direction::Up => self.sheet.scroll_up(),
-                Direction::Down => self.sheet.scroll_down(),
-            },
+            Operation::Scroll(direction) => {
+                match direction {
+                    Direction::Up => self.sheet.scroll_up(),
+                    Direction::Down => self.sheet.scroll_down(),
+                }
+
+                Ok(None)
+            }
             Operation::EnterMode(mode) => {
                 self.mode = mode;
 
@@ -233,30 +246,65 @@ impl Paper {
                     }
                     Mode::Action | Mode::Edit | Mode::Filter => {}
                 }
+
+                Ok(None)
             }
-            Operation::ResetControlPanel(c) => self.sheet.reset_control_panel(c),
+            Operation::ResetControlPanel(c) => {
+                self.sheet.reset_control_panel(c);
+                Ok(None)
+            }
             Operation::DisplayFile(path) => {
-                self.sheet.change(path.borrow())?;
+                Ok(self.sheet.change(path.borrow()).err())
             }
             Operation::Save => {
-                self.sheet.save()?;
+                Ok(self.sheet.save().err())
             }
             Operation::AddToControlPanel(c) => {
                 self.sheet.input_to_control_panel(c);
+                Ok(None)
             }
             Operation::Add(c) => {
                 // TODO: Need to determine position.
-                self.sheet.add(
+                Ok(self.sheet.add(
                     &mut Position {
                         line: 0,
                         character: 0,
                     },
                     c,
-                )?;
+                ).err())
+            }
+            Operation::Quit => {
+                Err(Failure::Quit)
+            }
+            Operation::UserError => {
+                Ok(None)
             }
         }
+    }
+}
 
-        Ok(())
+/// An event that causes the application to stop running.
+#[derive(Debug, DisplayDoc)]
+pub enum Failure {
+    /// user interface error: `{0}`
+    Ui(ui::Error),
+    /// file error: `{0}`
+    File(file::Error),
+    /// unknown mode: `{0}`
+    UnknownMode(Mode),
+    /// user quit application
+    Quit
+}
+
+impl From<ui::Error> for Failure {
+    fn from(value: ui::Error) -> Self {
+        Self::Ui(value)
+    }
+}
+
+impl From<file::Error> for Failure {
+    fn from(value: file::Error) -> Self {
+        Self::File(value)
     }
 }
 
@@ -269,15 +317,13 @@ pub enum Alert {
     Explorer(file::Error),
     /// language server protocol: `{0}`
     Lsp(lsp::Error),
-    /// `{0}`
-    Custom(&'static str),
     /// mode `{0}` is unknown
     UnknownMode(Mode),
+    /// unable to convert `{0:?}` to `Url`
+    InvalidPath(PathBuf),
     /// invalid input from user
     User,
-    /// quit the application
-    ///
-    /// This does not necessarily mean that an error occurred, ex: the user commands the application to quit.
+    /// user quit application
     Quit,
 }
 

@@ -1,8 +1,8 @@
 //! Implements the modality of the application.
 use crate::{
     file::Explorer,
-    ui::{Address, Change, Color, Index, Input, Span, BACKSPACE, ENTER},
-    Alert, Mode, Outcome,
+    ui::{Address, Change, Color, Index, Span, BACKSPACE, ENTER},
+    Alert, Mode, Failure
 };
 use core::{
     convert::TryFrom,
@@ -18,7 +18,7 @@ use std::{
     rc::Rc,
 };
 
-use lsp_msg::{Position, Range, TextDocumentItem};
+use lsp_types::{Position, Range, TextDocumentItem};
 
 /// Defines the type that identifies a line.
 ///
@@ -30,24 +30,6 @@ type Line = u64;
 type LineIndex = usize;
 /// Defines a [`Result`] with [`Alert`] as its Error.
 pub(crate) type Output<T> = Result<T, Alert>;
-
-/// Signifies a function to be performed when the application enters a mode.
-///
-/// In general, only certain modes can implement certain Initiations; for example: only Filter
-/// implements [`StartFilter`].
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub(crate) enum Initiation {
-    /// Opens the document specified by the given path relative to the root directory.
-    OpenDoc(String),
-    /// Saves the current data of the view.
-    Save,
-    /// Starts a filter.
-    StartFilter(char),
-    /// Sets a list of [`Range`]s.
-    SetSignals(Vec<Range>),
-    /// Marks a list of [`Position`]s.
-    Mark(Vec<Position>),
-}
 
 /// The control panel of a [`Sheet`].
 #[derive(Clone, Debug, Default, Hash)]
@@ -127,10 +109,10 @@ impl Deref for ControlPanel {
     }
 }
 
-/// Signfifies the pane of the current file.
+/// Signfifies display of the current file.
 #[derive(Clone, Debug)]
 pub(crate) struct Sheet {
-    /// The first line that is displayed in the ui.
+    /// The first line that is displayed in the user interface.
     first_line: Line,
     /// The number of columns needed to display the margin.
     margin_width: u8,
@@ -152,7 +134,7 @@ pub(crate) struct Sheet {
 
 impl Sheet {
     /// Creates a new Sheet with a given height.
-    pub(crate) fn new(height: Index) -> Outcome<Self> {
+    pub(crate) fn new(height: Index) -> Result<Self, Failure> {
         let height = Rc::new(height);
 
         Ok(Self {
@@ -173,7 +155,7 @@ impl Sheet {
     }
 
     /// Initializes the `Sheet`.
-    pub(crate) fn init(&mut self) -> Output<()> {
+    pub(crate) fn init(&mut self) -> Result<(), Failure> {
         self.explorer.start()?;
         Ok(())
     }
@@ -308,18 +290,18 @@ impl Sheet {
     /// Adds a character at a [`Position`].
     pub(crate) fn add(&mut self, position: &mut Position, input: char) -> Output<()> {
         let mut new_text = String::new();
-        let mut range = Range::from(*position);
+        let mut range = Range::new(*position, *position);
 
         if input == BACKSPACE {
-            if range.start.is_first_character() {
-                if !range.start.is_first_line() {
-                    range.start.move_up();
-                    range.start.move_to_end_of_line();
+            if range.start.character == 0 {
+                if !range.start.line == 0 {
+                    range.start.line -= 1;
+                    range.start.character = u64::max_value();
                     self.will_wipe = true;
                     self.refresh();
                 }
             } else {
-                range.start.move_left();
+                range.start.character -= 1;
 
                 if let Some(span) = self.span_at(&range) {
                     self.changes.push(Change::Text(span, new_text.clone()));
@@ -340,15 +322,18 @@ impl Sheet {
 
         let pointer = self
             .line_indices()
-            .nth(LineIndex::try_from(range.start.line).map_err(|_| Alert::Custom("invalid line"))?);
+            // TODO: Update the Alert.
+            .nth(LineIndex::try_from(range.start.line).map_err(|_| Alert::User)?);
 
         if let Some(doc) = &mut self.doc {
             if let Some(index) = pointer {
+                // TODO: Update the Alert.
                 let mut index =
-                    u64::try_from(index).map_err(|_| Alert::Custom("invalid line index"))?;
+                    u64::try_from(index).map_err(|_| Alert::User)?;
                 index += range.start.character;
+                // TODO: Update the Alert.
                 let data_index =
-                    usize::try_from(index).map_err(|_| Alert::Custom("invalid line index"))?;
+                    usize::try_from(index).map_err(|_| Alert::User)?;
 
                 if input == BACKSPACE {
                     // TODO: For now, do not care to check what is removed. But this may become important for
@@ -359,7 +344,7 @@ impl Sheet {
                     *position = range.start;
                 } else {
                     doc.text.insert(data_index, input);
-                    position.move_right();
+                    position.character += 1;
                 }
             }
 
@@ -520,6 +505,8 @@ pub enum Operation {
     AddToControlPanel(char),
     Save,
     Add(char),
+    Quit,
+    UserError,
 }
 
 #[derive(Clone, Copy, Debug)]

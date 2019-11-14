@@ -1,8 +1,9 @@
 //! Defines the interaction with files.
 use crate::{
     lsp::{self, LanguageClient, NotificationMessage, ProgressParams, RequestMethod},
-    Alert, Outcome,
+    Alert, Failure,
 };
+use lsp_types::{Range, TextDocumentItem, Url};
 use std::{
     env,
     fmt::{self, Debug, Display, Formatter},
@@ -10,12 +11,9 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
 };
-use url::Url;
-
-use lsp_msg::{Range, TextDocumentItem};
 
 /// Specifies the type returned by `Explorer` functions.
-pub(crate) type Effect<T> = Result<T, Error>;
+pub(crate) type Outcome<T> = Result<T, Error>;
 
 /// Defines the interface between the application and documents.
 #[derive(Clone, Debug)]
@@ -30,10 +28,10 @@ impl Explorer {
     /// Creates a new `Explorer`.
     pub(crate) fn new() -> Outcome<Self> {
         env::current_dir()
-            .map_err(Alert::from)
+            .map_err(Error::from)
             .and_then(|path| {
                 Url::from_directory_path(path)
-                    .map_err(|_| Alert::Custom("unable to convert current directory to `Url`"))
+                    .map_err(|_| Error::InvalidPath)
             })
             .map(|root_uri| Self {
                 language_client: LanguageClient::new("rls"),
@@ -49,19 +47,19 @@ impl Explorer {
     }
 
     /// Initializes all functionality needed by the Explorer.
-    pub(crate) fn start(&mut self) -> Effect<()> {
+    pub(crate) fn start(&mut self) -> Outcome<()> {
         let uri = self.root_uri.clone();
         self.language_client_mut()
-            .send_request(RequestMethod::initialize(uri.as_str()))?;
+            .send_request(RequestMethod::initialize(uri))?;
         Ok(())
     }
 
     /// Returns the text from a file.
-    pub(crate) fn read(&mut self, path: &PathBuf) -> Effect<TextDocumentItem> {
+    pub(crate) fn read(&mut self, path: &PathBuf) -> Outcome<TextDocumentItem> {
         let uri = self.root_uri.join(path.as_path().to_str().unwrap())?;
 
         let doc = TextDocumentItem {
-            uri: uri.clone().into_string(),
+            uri: uri.clone(),
             language_id: "rust".to_string(),
             version: 0,
             text: fs::read_to_string(uri.to_file_path().map_err(|_| Error::InvalidUrl)?)?
@@ -73,13 +71,18 @@ impl Explorer {
     }
 
     /// Writes text to a file.
-    pub(crate) fn write(&self, doc: &TextDocumentItem) -> Effect<()> {
-        fs::write(PathBuf::from(&doc.uri), &doc.text)?;
+    pub(crate) fn write(&self, doc: &TextDocumentItem) -> Outcome<()> {
+        fs::write(PathBuf::from(doc.uri.as_str()), &doc.text)?;
         Ok(())
     }
 
     /// Inform server of change to the working copy of a file.
-    pub(crate) fn change(&mut self, doc: &mut TextDocumentItem, range: &Range, text: &str) -> Effect<()> {
+    pub(crate) fn change(
+        &mut self,
+        doc: &mut TextDocumentItem,
+        range: &Range,
+        text: &str,
+    ) -> Outcome<()> {
         self.language_client_mut().send_notification(
             NotificationMessage::did_change_text_document(doc, range, text),
         )?;
@@ -109,6 +112,8 @@ pub enum Error {
     Url(url::ParseError),
     /// Error caused by invalid URL.
     InvalidUrl,
+    /// Error caused by invalid path.
+    InvalidPath
 }
 
 impl Display for Error {
@@ -118,6 +123,7 @@ impl Display for Error {
             Self::Lsp(e) => write!(f, "Lsp Error {}", e),
             Self::Url(e) => write!(f, "URL Parsing error {}", e),
             Self::InvalidUrl => write!(f, "Invalid URL"),
+            Self::InvalidPath => write!(f, "Invalid Path"),
         }
     }
 }

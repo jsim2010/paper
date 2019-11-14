@@ -1,13 +1,17 @@
 //! Implements the functionality of converting [`Input`] to [`Operation`]s.
-use crate::{Alert, Mode, Outcome, ui::Input, app::{Direction, Operation, Sheet}};
+use crate::{
+    app::{Direction, Operation, Sheet},
+    ui::Input,
+    Alert, Mode, Effect,
+};
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::{path::PathBuf, fmt::Debug};
+use std::{fmt::Debug, path::PathBuf};
 
 /// Defines the functionality to convert [`Input`] to [`Operation`]s.
 pub(crate) trait Interpreter: Debug {
     /// Converts `input` to [`Operation`]s.
-    fn decode(&self, input: Input, sheet: &Sheet) -> Outcome<Vec<Operation>>;
+    fn decode(&self, input: Input, sheet: &Sheet) -> Vec<Operation>;
 }
 
 /// The [`Interpreter`] for [`Mode::Display`].
@@ -22,8 +26,8 @@ impl DisplayInterpreter {
 }
 
 impl Interpreter for DisplayInterpreter {
-    fn decode(&self, input: Input, _sheet: &Sheet) -> Outcome<Vec<Operation>> {
-        Ok(if let Input::Char(c) = input {
+    fn decode(&self, input: Input, _sheet: &Sheet) -> Vec<Operation> {
+        if let Input::Char(c) = input {
             match c {
                 '.' => vec![Operation::EnterMode(Mode::Command)],
                 '#' | '/' => vec![
@@ -36,7 +40,7 @@ impl Interpreter for DisplayInterpreter {
             }
         } else {
             vec![]
-        })
+        }
     }
 }
 
@@ -52,9 +56,10 @@ impl CommandInterpreter {
 }
 
 impl Interpreter for CommandInterpreter {
-    fn decode(&self, input: Input, sheet: &Sheet) -> Outcome<Vec<Operation>> {
+    fn decode(&self, input: Input, sheet: &Sheet) -> Vec<Operation> {
         lazy_static! {
-            static ref RE: Regex = Regex::new(r"(?P<command>\S+)(\s+(?P<args>.*))").expect("compiling command regular expression");
+            static ref RE: Regex = Regex::new(r"(?P<command>\S+)(\s+(?P<args>.*))")
+                .expect("compiling command regular expression");
         }
 
         match input {
@@ -66,30 +71,34 @@ impl Interpreter for CommandInterpreter {
                         None => {}
                         Some(command) => match command {
                             "see" => {
-                                if let Some(path) = captures.name("args").map(|args_match| args_match.as_str()) {
-                                    operations.push(Operation::DisplayFile(Box::new(PathBuf::from(path))));
+                                if let Some(path) =
+                                    captures.name("args").map(|args_match| args_match.as_str())
+                                {
+                                    operations.push(Operation::DisplayFile(Box::new(
+                                        PathBuf::from(path),
+                                    )));
                                 }
                             }
                             "put" => {
                                 operations.push(Operation::Save);
                             }
                             "end" => {
-                                return Err(Alert::Quit);
+                                operations.push(Operation::Quit);
                             }
                             _ => {
-                                return Err(Alert::User);
+                                operations.push(Operation::UserError);
                             }
-                        }
+                        },
                     }
 
                     operations.push(Operation::EnterMode(Mode::Display));
-                    Ok(operations)
+                    operations
                 } else {
-                    Ok(vec![])
+                    vec![]
                 }
             }
-            Input::Escape => Ok(vec![Operation::EnterMode(Mode::Display)]),
-            Input::Char(c) => Ok(vec![Operation::AddToControlPanel(c)]),
+            Input::Escape => vec![Operation::EnterMode(Mode::Display)],
+            Input::Char(c) => vec![Operation::AddToControlPanel(c)],
         }
     }
 }
@@ -106,12 +115,12 @@ impl FilterInterpreter {
 }
 
 impl Interpreter for FilterInterpreter {
-    fn decode(&self, input: Input, _sheet: &Sheet) -> Outcome<Vec<Operation>> {
-        Ok(if let Input::Escape = input {
+    fn decode(&self, input: Input, _sheet: &Sheet) -> Vec<Operation> {
+        if let Input::Escape = input {
             vec![Operation::EnterMode(Mode::Display)]
         } else {
             vec![]
-        })
+        }
     }
 }
 
@@ -127,12 +136,12 @@ impl ActionInterpreter {
 }
 
 impl Interpreter for ActionInterpreter {
-    fn decode(&self, input: Input, _sheet: &Sheet) -> Outcome<Vec<Operation>> {
-        Ok(if let Input::Escape = input {
+    fn decode(&self, input: Input, _sheet: &Sheet) -> Vec<Operation> {
+        if let Input::Escape = input {
             vec![Operation::EnterMode(Mode::Display)]
         } else {
             vec![]
-        })
+        }
     }
 }
 
@@ -148,11 +157,11 @@ impl EditInterpreter {
 }
 
 impl Interpreter for EditInterpreter {
-    fn decode(&self, input: Input, _sheet: &Sheet) -> Outcome<Vec<Operation>> {
-        Ok(if let Input::Escape = input {
+    fn decode(&self, input: Input, _sheet: &Sheet) -> Vec<Operation> {
+        if let Input::Escape = input {
             vec![Operation::EnterMode(Mode::Display)]
         } else {
             vec![]
-        })
+        }
     }
 }
