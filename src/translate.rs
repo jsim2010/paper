@@ -2,7 +2,7 @@
 use crate::{
     app::{Direction, Operation, Sheet},
     ui::Input,
-    Alert, Mode, Effect,
+    Alert, Mode,
 };
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -74,9 +74,9 @@ impl Interpreter for CommandInterpreter {
                                 if let Some(path) =
                                     captures.name("args").map(|args_match| args_match.as_str())
                                 {
-                                    operations.push(Operation::DisplayFile(Box::new(
-                                        PathBuf::from(path),
-                                    )));
+                                    operations.push(Operation::DisplayFile(
+                                        path.to_string()
+                                    ));
                                 }
                             }
                             "put" => {

@@ -1,6 +1,5 @@
 //! Implements the modality of the application.
 use crate::{
-    file::Explorer,
     ui::{Address, Change, Color, Index, Span, BACKSPACE, ENTER},
     Alert, Mode, Failure
 };
@@ -14,7 +13,7 @@ use std::{
     fmt::{self, Debug, Display, Formatter},
     iter,
     ops::Deref,
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
 };
 
@@ -126,10 +125,10 @@ pub(crate) struct Sheet {
     changes: Vec<Change>,
     /// If `Sheet` will clear and redraw on next update.
     will_wipe: bool,
-    /// The `Explorer` used by `Sheet`.
-    explorer: Explorer,
     /// The document being represented by `Sheet`.
     doc: Option<TextDocumentItem>,
+    file: String,
+    path: String,
 }
 
 impl Sheet {
@@ -139,7 +138,6 @@ impl Sheet {
 
         Ok(Self {
             control_panel: ControlPanel::new(&height),
-            explorer: Explorer::new()?,
             height,
             first_line: Line::default(),
             margin_width: u8::default(),
@@ -147,17 +145,13 @@ impl Sheet {
             changes: Vec::default(),
             will_wipe: bool::default(),
             doc: None,
+            file: String::new(),
+            path: String::new(),
         })
     }
 
     pub(crate) fn control_panel(&self) -> &ControlPanel {
         &self.control_panel
-    }
-
-    /// Initializes the `Sheet`.
-    pub(crate) fn init(&mut self) -> Result<(), Failure> {
-        self.explorer.start()?;
-        Ok(())
     }
 
     /// Returns the `Change`s needed to update `Sheet`.
@@ -272,19 +266,19 @@ impl Sheet {
     }
 
     /// Changes the pane to a new path.
-    pub(crate) fn change(&mut self, path: &PathBuf) -> Output<()> {
-        self.doc = Some(self.explorer.read(path)?);
+    pub(crate) fn change(&mut self, path: String, file: String) -> Output<()> {
+        self.path = path;
+        self.file = file;
         self.refresh();
         Ok(())
     }
 
-    /// Saves the document of `Sheet` to its file system.
-    pub(crate) fn save(&self) -> Output<()> {
-        if let Some(doc) = &self.doc {
-            self.explorer.write(doc)?;
-        }
+    pub(crate) fn path(&self) -> &String {
+        &self.path
+    }
 
-        Ok(())
+    pub(crate) fn file(&self) -> &String {
+        &self.file
     }
 
     /// Adds a character at a [`Position`].
@@ -347,8 +341,6 @@ impl Sheet {
                     position.character += 1;
                 }
             }
-
-            self.explorer.change(doc, &range, &new_text)?;
         }
 
         Ok(())
@@ -501,7 +493,7 @@ pub enum Operation {
     EnterMode(Mode),
     ResetControlPanel(Option<char>),
     Scroll(Direction),
-    DisplayFile(Box<PathBuf>),
+    DisplayFile(String),
     AddToControlPanel(char),
     Save,
     Add(char),

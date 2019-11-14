@@ -8,7 +8,7 @@ use std::{
     env,
     fmt::{self, Debug, Display, Formatter},
     fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -20,23 +20,18 @@ pub(crate) type Outcome<T> = Result<T, Error>;
 pub(crate) struct Explorer {
     /// A `LanguageClient`.
     language_client: Arc<Mutex<LanguageClient>>,
-    /// Root URI.
-    root_uri: Url,
+    root_dir: PathBuf,
 }
 
 impl Explorer {
     /// Creates a new `Explorer`.
     pub(crate) fn new() -> Outcome<Self> {
-        env::current_dir()
-            .map_err(Error::from)
-            .and_then(|path| {
-                Url::from_directory_path(path)
-                    .map_err(|_| Error::InvalidPath)
-            })
-            .map(|root_uri| Self {
-                language_client: LanguageClient::new("rls"),
-                root_uri,
-            })
+        let root_dir = env::current_dir()?;
+
+        Ok(Self {
+            language_client: LanguageClient::new("rls"),
+            root_dir,
+        })
     }
 
     /// Returns a mutable reference to the `LanguageClient`.
@@ -47,47 +42,47 @@ impl Explorer {
     }
 
     /// Initializes all functionality needed by the Explorer.
-    pub(crate) fn start(&mut self) -> Outcome<()> {
-        let uri = self.root_uri.clone();
+    pub(crate) fn init(&mut self) -> Outcome<()> {
+        let uri = Url::from_directory_path(self.root_dir.clone()).map_err(|_| Error::InvalidPath)?;
         self.language_client_mut()
             .send_request(RequestMethod::initialize(uri))?;
         Ok(())
     }
 
     /// Returns the text from a file.
-    pub(crate) fn read(&mut self, path: &PathBuf) -> Outcome<TextDocumentItem> {
-        let uri = self.root_uri.join(path.as_path().to_str().unwrap())?;
+    pub(crate) fn read(&mut self, path: String) -> Outcome<String> {
+        fs::read_to_string(self.root_dir.join(path)).map(|file| file.replace('\r', "")).map_err(Error::from)
+        //let uri = self.root_uri.join(path.as_path().to_str().unwrap())?;
 
-        let doc = TextDocumentItem {
-            uri: uri.clone(),
-            language_id: "rust".to_string(),
-            version: 0,
-            text: fs::read_to_string(uri.to_file_path().map_err(|_| Error::InvalidUrl)?)?
-                .replace('\r', ""),
-        };
-        self.language_client_mut()
-            .send_notification(NotificationMessage::did_open_text_document(doc.clone()))?;
-        Ok(doc)
+        //let doc = TextDocumentItem {
+        //    uri: uri.clone(),
+        //    language_id: "rust".to_string(),
+        //    version: 0,
+        //    text: fs::read_to_string(uri.to_file_path().map_err(|_| Error::InvalidUrl)?)?
+        //        .replace('\r', ""),
+        //};
+        //self.language_client_mut()
+        //    .send_notification(NotificationMessage::did_open_text_document(doc.clone()))?;
+        //Ok(doc)
     }
 
     /// Writes text to a file.
-    pub(crate) fn write(&self, doc: &TextDocumentItem) -> Outcome<()> {
-        fs::write(PathBuf::from(doc.uri.as_str()), &doc.text)?;
-        Ok(())
+    pub(crate) fn write(&self, path: &String, file: &String) -> Outcome<()> {
+        fs::write(path, file).map_err(Error::from)
     }
 
-    /// Inform server of change to the working copy of a file.
-    pub(crate) fn change(
-        &mut self,
-        doc: &mut TextDocumentItem,
-        range: &Range,
-        text: &str,
-    ) -> Outcome<()> {
-        self.language_client_mut().send_notification(
-            NotificationMessage::did_change_text_document(doc, range, text),
-        )?;
-        Ok(())
-    }
+    ///// Inform server of change to the working copy of a file.
+    //pub(crate) fn change(
+    //    &mut self,
+    //    doc: &mut TextDocumentItem,
+    //    range: &Range,
+    //    text: &str,
+    //) -> Outcome<()> {
+    //    self.language_client_mut().send_notification(
+    //        NotificationMessage::did_change_text_document(doc, range, text),
+    //    )?;
+    //    Ok(())
+    //}
 
     /// Returns the oldest notification from `Explorer`.
     pub(crate) fn receive_notification(&mut self) -> Option<ProgressParams> {

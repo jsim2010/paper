@@ -92,6 +92,7 @@ mod ui;
 use app::{Direction, Operation, Sheet};
 use core::borrow::Borrow;
 use displaydoc::Display as DisplayDoc;
+use file::Explorer;
 use lsp_types::Position;
 use parse_display::Display as ParseDisplay;
 use std::{collections::HashMap, path::PathBuf};
@@ -144,6 +145,8 @@ pub struct Paper {
     interpreters: HashMap<Mode, &'static dyn Interpreter>,
     /// User interface of the application.
     ui: Terminal,
+    /// Interface between the application and the file system.
+    explorer: Explorer,
     /// The [`Sheet`] of the application.
     sheet: Sheet,
 }
@@ -160,6 +163,7 @@ impl Paper {
 
         Ok(Self {
             sheet: Sheet::new(ui.grid_height()?)?,
+            explorer: Explorer::new()?,
             ui,
             mode: Mode::default(),
             interpreters: [
@@ -181,7 +185,7 @@ impl Paper {
         let mut result;
 
         self.ui.init()?;
-        self.sheet.init()?;
+        self.explorer.init()?;
 
         loop {
             result = self.step();
@@ -254,10 +258,10 @@ impl Paper {
                 Ok(None)
             }
             Operation::DisplayFile(path) => {
-                Ok(self.sheet.change(path.borrow()).err())
+                Ok(self.sheet.change(path.clone(), self.explorer.read(path)?).err())
             }
             Operation::Save => {
-                Ok(self.sheet.save().err())
+                Ok(self.explorer.write(self.sheet.path(), self.sheet.file()).map_err(Alert::from).err())
             }
             Operation::AddToControlPanel(c) => {
                 self.sheet.input_to_control_panel(c);
