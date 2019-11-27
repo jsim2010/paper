@@ -1,107 +1,77 @@
-//! Implements how the user interfaces with the application.
-pub use crate::num::NonNegativeI32 as Index;
+//! Implements the interface between the user and the application.
+pub(crate) use crate::num::NonNegI32 as Index;
 
-use crate::ptr::Mrc;
-use pancurses::Input;
-use std::{
-    cell::RefCell,
-    error,
+use clap::ArgMatches;
+use core::{
+    convert::TryFrom,
     fmt::{self, Debug, Display, Formatter},
-    rc::Rc,
+    num::TryFromIntError,
 };
-use try_from::{TryFrom, TryFromIntError};
+use lsp_types::{Position, TextEdit};
+use pancurses;
+use parse_display::Display as ParseDisplay;
 
-/// The [`Result`] returned by functions of this module.
-pub type Effect = Result<(), Error>;
+/// A [`Result`] returned by a function that does not return anything but can error.
+type UnitResult = Result<(), Error>;
 
 /// The character that represents the `Backspace` key.
-pub const BACKSPACE: char = '\u{08}';
+const BACKSPACE: char = '\u{08}';
 /// The character that represents the `Enter` key.
-pub(crate) const ENTER: char = '\n';
+const ENTER: char = '\n';
 /// The character that represents the `Esc` key.
 // Currently ESC is set to Ctrl-C to allow manual testing within vim terminal where ESC is already
 // mapped.
-pub const ESC: char = '';
-
-/// Represents the default color.
-const DEFAULT_COLOR: i16 = -1;
+const ESC: char = '';
 
 /// Describes possible errors during ui functions.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, ParseDisplay)]
+#[display("error during call to `{}()`")]
+#[display(style = "snake_case")]
+#[allow(clippy::missing_docs_in_private_items)] // Documentation would be repetitive.
 pub enum Error {
-    /// Describes an error due to no user interface being created.
-    NoUi,
-    /// Describes a possible error during call to `endwin()`.
     Endwin,
-    /// Describes a possible error during call to `flash()`.
     Flash,
-    /// Describes a possible error during call to `init_pair()`.
     InitPair,
-    /// Describes a possible error during call to `noecho()`.
     Noecho,
-    /// Describes a possible error during call to `start_color()`.
     StartColor,
-    /// Describes a possible error during call to `use_default_colors()`.
     UseDefaultColors,
-    /// Describes a possible error during call to `waddch()`.
     Waddch,
-    /// Describes a possible error during call to `waddstr()`.
     Waddstr,
-    /// Describes a possible error during call to `wchgat()`.
     Wchgat,
-    /// Describes a possible error during call to `wclear()`.
     Wclear,
-    /// Describes a possible error during call to `wcleartoeol()`.
     Wcleartoeol,
-    /// Describes a possible error during call to `wdelch()`.
     Wdelch,
-    /// Describes a possible error during call to `winsch()`.
     Winsch,
-    /// Describes a possible error during call to `wmove()`.
     Wmove,
-    /// Describes a possible error during call to `nodelay()`.
     Nodelay,
+    Getmaxy,
 }
 
-impl Error {
-    /// Returns the function that caused the current `Error`.
-    fn get_function(&self) -> &str {
-        match self {
-            Error::Endwin => "endwin",
-            Error::Flash => "flash",
-            Error::InitPair => "init_pair",
-            Error::Noecho => "noecho",
-            Error::StartColor => "start_color",
-            Error::UseDefaultColors => "use_default_colors",
-            Error::Waddch => "waddch",
-            Error::Waddstr => "waddstr",
-            Error::Wchgat => "wchgat",
-            Error::Wclear => "wclear",
-            Error::Wcleartoeol => "wcleartoeol",
-            Error::Wdelch => "wdelch",
-            Error::Winsch => "winsch",
-            Error::Wmove => "wmove",
-            Error::Nodelay => "nodelay",
-            Error::NoUi => "",
-        }
-    }
+/// Signifies a command-line argument.
+#[derive(Clone, Debug)]
+pub(crate) enum Argument {
+    /// The `file` command argument.
+    File(String),
 }
 
-impl Display for Error {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::NoUi => write!(f, "No UserInterface was created."),
-            _ => write!(f, "Failed while calling {}().", self.get_function()),
-        }
-    }
+/// Signifies input provided by the user.
+#[derive(Clone, Debug)]
+pub(crate) enum Input {
+    /// A key that represents a printable character.
+    Char(char),
+    /// The `Enter` key
+    Enter,
+    /// The `Esc` key.
+    Escape,
+    /// The `Backspace` key.
+    Backspace,
+    /// Command arguments.
+    Arg(Argument),
 }
-
-impl error::Error for Error {}
 
 /// Signifies a specific cell in the grid.
 #[derive(Clone, Copy, Eq, Debug, Default, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Address {
+pub(crate) struct Address {
     /// The index of the row that contains the cell (starts at 0).
     row: Index,
     /// The index of the column that contains the cell (starts at 0).
@@ -109,17 +79,6 @@ pub struct Address {
 }
 
 impl Address {
-    /// Creates a new `Address` with a given row and column.
-    #[inline]
-    pub const fn new(row: Index, column: Index) -> Self {
-        Self { row, column }
-    }
-
-    /// Returns if `Address` represents the end of a row.
-    fn is_end_of_row(self) -> bool {
-        self.column == Index::max_value()
-    }
-
     /// Returns the column of `self`.
     ///
     /// Used with [`pancurses`].
@@ -142,147 +101,112 @@ impl Display for Address {
     }
 }
 
-/// Signifies a sequence of `Address`es.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Span {
-    /// The first `Address` included in the `Span`.
-    first: Address,
-    /// The first `Address` not included in the `Span`.
-    last: Address,
-}
+impl TryFrom<Position> for Address {
+    type Error = TryFromIntError;
 
-impl Span {
-    /// Creates a new `Span`.
-    pub const fn new(first: Address, last: Address) -> Self {
-        Self { first, last }
-    }
-
-    /// Returns the length of the `Span`.
-    ///
-    /// Assumes that the `Span` only covers 1 row.
-    fn length(&self) -> i32 {
-        self.last.x().saturating_sub(self.first.x())
-    }
-}
-
-impl Display for Span {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "[{} -> {}]", self.first, self.last)
+    fn try_from(value: Position) -> Result<Self, Self::Error> {
+        Ok(Self {
+            row: Index::try_from(value.line)?,
+            column: Index::try_from(value.line)?,
+        })
     }
 }
 
 /// Signifies a modification to the grid.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum Change {
-    /// Clears all cells.
-    Clear,
-    /// Sets the color of a given number of cells.
-    Format(Span, Color),
-    /// Does nothing.
-    Nothing,
-    /// Flashes the display.
-    Flash,
-    /// Sets the text for a given `Span` of `Addresses`.
-    Text(Span, String),
-}
-
-impl Default for Change {
-    #[inline]
-    fn default() -> Self {
-        Change::Nothing
-    }
-}
-
-impl Display for Change {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Change::Clear => write!(f, "Clear"),
-            Change::Format(span, color) => write!(f, "Format {} to {}", span, color),
-            Change::Nothing => write!(f, "Nothing"),
-            Change::Flash => write!(f, "Flash"),
-            Change::Text(span, text) => write!(f, "Set {} to {}", span, text),
-        }
-    }
-}
-
-/// Signifies a color.
-// Order must be kept as defined to match pancurses.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum Color {
-    /// The default foreground on the default background.
-    Default,
-    /// The default foreground on a red background.
-    Red,
-    /// The default foreground on a green background.
-    Green,
-    /// The default foreground on a yellow background.
-    Yellow,
-    /// The default foreground on a blue background.
-    Blue,
-}
-
-impl Color {
-    /// Converts `self` to a `color-pair` as specified in `pancurses`.
-    const fn cp(self) -> i16 {
-        self as i16
-    }
-}
-
-impl Display for Color {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Color::Default => write!(f, "Default"),
-            Color::Red => write!(f, "Red"),
-            Color::Green => write!(f, "Green"),
-            Color::Yellow => write!(f, "Yellow"),
-            Color::Blue => write!(f, "Blue"),
-        }
-    }
-}
-
-/// The interface between the user and the application.
-///
-/// All output is displayed in a grid of cells. Each cell contains one character and can change its
-/// background color.
-pub trait UserInterface: Debug {
-    /// Sets up the user interface for use.
-    fn init(&self) -> Effect;
-    /// Closes the user interface.
-    fn close(&self) -> Effect;
-    /// Returns the number of cells that make up the height of the grid.
-    fn grid_height(&self) -> Result<Index, TryFromIntError>;
-    /// Applies the `Change` to the output.
-    fn apply(&self, change: Change) -> Effect;
-    /// Flashes the output.
-    fn flash(&self) -> Effect;
-    /// Returns the input from the user.
-    ///
-    /// Returns [`None`] if no character input is provided.
-    fn receive_input(&self) -> Option<Input>;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Change {
+    /// Modifies the text of the current document.
+    Text(Vec<TextEdit>),
 }
 
 /// The user interface provided by a terminal.
-#[derive(Debug)]
-pub struct Terminal {
+///
+/// All output is displayed in a grid of cells. Each cell contains one character and can change its
+/// background color.
+#[derive(Debug, Default)]
+pub(crate) struct Terminal {
     /// The window that interfaces with the application.
-    window: pancurses::Window,
+    api: PancursesWrapper,
+    /// Inputs from command arguments.
+    arg_inputs: Vec<Argument>,
 }
 
 impl Terminal {
-    /// Creates a new `Terminal`.
-    #[inline]
-    pub fn new() -> Mrc<Self> {
-        Rc::new(RefCell::new(Self {
-            // Must call initscr() first.
-            window: pancurses::initscr(),
-        }))
+    /// Sets up the user interface for use.
+    pub(crate) fn init(&mut self, args: &ArgMatches<'_>) -> UnitResult {
+        self.api.start_color()?;
+        self.api.use_default_colors()?;
+        self.api.disable_echo()?;
+        self.api.enable_nodelay()?;
+
+        if let Some(file) = args.value_of("file").map(str::to_string) {
+            self.arg_inputs.push(Argument::File(file))
+        }
+
+        Ok(())
     }
 
-    /// Converts the given result of a `Terminal` function to a [`Effect`].
-    fn process(result: i32, error: Error) -> Effect {
-        if result == pancurses::OK {
+    /// Closes the user interface.
+    pub(crate) fn stop(&self) -> UnitResult {
+        self.api.stop()
+    }
+
+    /// Applies `change` to the output.
+    pub(crate) fn apply(&self, change: Change) -> UnitResult {
+        match change {
+            Change::Text(edits) => {
+                for edit in edits {
+                    if let Ok(start) = Address::try_from(edit.range.start) {
+                        let mut new_text_len = edit.new_text.len() as u64;
+                        self.api.move_to(start)?;
+                        self.api.add_string(edit.new_text)?;
+
+                        if edit.range.end.character == u64::max_value() {
+                            self.api.clear_to_row_end()?;
+                        } else {
+                            new_text_len -= edit
+                                .range
+                                .end
+                                .character
+                                .saturating_sub(edit.range.start.character);
+
+                            for _ in 0..new_text_len {
+                                self.api.delete_char()?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns the input from the user.
+    ///
+    /// Returns [`None`] if no input is provided.
+    pub(crate) fn input(&mut self) -> Option<Input> {
+        // First check arg inputs, then check for key input.
+        self.arg_inputs
+            .pop()
+            .map(Input::Arg)
+            .or_else(|| self.api.get_char())
+    }
+}
+
+/// The interface with [`pancurses`].
+///
+/// Provides a wrapper to "Rustify" the input and return values of [`pancurses`] methods.
+#[derive(Debug)]
+struct PancursesWrapper {
+    /// The [`pancurses`] window.
+    window: pancurses::Window,
+}
+
+impl PancursesWrapper {
+    /// Converts `status`, the return value of a `pancurses` function, to an [`UnitResult`].
+    fn result(status: i32, error: Error) -> UnitResult {
+        if status == pancurses::OK {
             Ok(())
         } else {
             Err(error)
@@ -290,143 +214,88 @@ impl Terminal {
     }
 
     /// Writes a string starting at the cursor.
-    fn add_str(&self, s: String) -> Effect {
-        Self::process(self.window.addstr(s), Error::Waddstr)
-    }
-
-    /// Clears the entire window.
-    fn clear_all(&self) -> Effect {
-        Self::process(self.window.clear(), Error::Wclear)
+    fn add_string(&self, s: String) -> UnitResult {
+        Self::result(self.window.addstr(s), Error::Waddstr)
     }
 
     /// Clears all blocks from the cursor to the end of the row.
-    fn clear_to_row_end(&self) -> Effect {
-        Self::process(self.window.clrtoeol(), Error::Wcleartoeol)
-    }
-
-    /// Defines [`Color`] as having a background color.
-    fn define_color(&self, color: Color, background: i16) -> Effect {
-        Self::process(
-            pancurses::init_pair(color.cp(), DEFAULT_COLOR, background),
-            Error::InitPair,
-        )
+    fn clear_to_row_end(&self) -> UnitResult {
+        Self::result(self.window.clrtoeol(), Error::Wcleartoeol)
     }
 
     /// Deletes the character at the cursor.
     ///
     /// All subseqent characters are shifted to the left and a blank block is added at the end.
-    fn delete_char(&self) -> Effect {
-        Self::process(self.window.delch(), Error::Wdelch)
+    fn delete_char(&self) -> UnitResult {
+        Self::result(self.window.delch(), Error::Wdelch)
     }
 
     /// Disables echoing received characters on the screen.
-    fn disable_echo(&self) -> Effect {
-        Self::process(pancurses::noecho(), Error::Noecho)
+    fn disable_echo(&self) -> UnitResult {
+        Self::result(pancurses::noecho(), Error::Noecho)
     }
 
     /// Sets user interface to not wait for an input.
-    fn enable_nodelay(&self) -> Effect {
-        Self::process(self.window.nodelay(true), Error::Nodelay)
+    fn enable_nodelay(&self) -> UnitResult {
+        Self::result(self.window.nodelay(true), Error::Nodelay)
     }
 
-    /// Sets the color of the next specified number of blocks from the cursor.
-    fn format(&self, length: i32, color: Color) -> Effect {
-        Self::process(
-            self.window.chgat(length, pancurses::A_NORMAL, color.cp()),
-            Error::Wchgat,
-        )
-    }
+    ///// Returns the height, in cells, of the terminal window.
+    //fn get_height(&self) -> Result<i32, Error> {
+    //    let max_y = self.window.get_max_y();
 
-    /// Inserts a character at the cursor, shifting all subsequent blocks to the right.
-    fn insert_char(&self, c: char) -> Effect {
-        Self::process(self.window.insch(c), Error::Winsch)
-    }
+    //    if max_y.is_negative() {
+    //        Err(Error::Getmaxy)
+    //    } else {
+    //        Ok(max_y)
+    //    }
+    //}
 
     /// Moves the cursor to an [`Address`].
-    fn move_to(&self, address: Address) -> Effect {
-        Self::process(self.window.mv(address.y(), address.x()), Error::Wmove)
+    fn move_to(&self, address: Address) -> UnitResult {
+        Self::result(self.window.mv(address.y(), address.x()), Error::Wmove)
     }
 
     /// Initializes color processing.
     ///
     /// Must be called before any other color manipulation routine is called.
-    fn start_color(&self) -> Effect {
-        Self::process(pancurses::start_color(), Error::StartColor)
+    fn start_color(&self) -> UnitResult {
+        Self::result(pancurses::start_color(), Error::StartColor)
     }
 
     /// Initializes the default colors.
-    fn use_default_colors(&self) -> Effect {
-        Self::process(pancurses::use_default_colors(), Error::UseDefaultColors)
+    fn use_default_colors(&self) -> UnitResult {
+        Self::result(pancurses::use_default_colors(), Error::UseDefaultColors)
+    }
+
+    /// Stops the user interface.
+    pub(crate) fn stop(&self) -> UnitResult {
+        Self::result(pancurses::endwin(), Error::Endwin)
+    }
+
+    /// Returns the input from the terminal window.
+    pub(crate) fn get_char(&self) -> Option<Input> {
+        self.window.getch().and_then(|input| {
+            // TODO: Change this to be a try_from.
+            if let pancurses::Input::Character(c) = input {
+                Some(match c {
+                    ENTER => Input::Enter,
+                    ESC => Input::Escape,
+                    BACKSPACE => Input::Backspace,
+                    _ => Input::Char(c),
+                })
+            } else {
+                None
+            }
+        })
     }
 }
 
-impl UserInterface for Terminal {
-    #[inline]
-    fn init(&self) -> Effect {
-        self.start_color()?;
-        self.use_default_colors()?;
-        self.disable_echo()?;
-        self.enable_nodelay()?;
-        self.define_color(Color::Red, pancurses::COLOR_RED)?;
-        self.define_color(Color::Blue, pancurses::COLOR_BLUE)?;
-        Ok(())
-    }
-
-    #[inline]
-    fn close(&self) -> Effect {
-        Self::process(pancurses::endwin(), Error::Endwin)
-    }
-
-    #[inline]
-    fn flash(&self) -> Effect {
-        Self::process(pancurses::flash(), Error::Flash)
-    }
-
-    #[inline]
-    fn apply(&self, change: Change) -> Effect {
-        match change {
-            Change::Clear => self.clear_all(),
-            Change::Format(span, color) => {
-                self.move_to(span.first)?;
-                self.format(span.length(), color)
-            }
-            Change::Nothing => Ok(()),
-            Change::Flash => self.flash(),
-            Change::Text(span, text) => {
-                // Currently only support
-                // - removing a single character (not ENTER)
-                // - inserting text that does not include ENTER
-                // - overwriting to the end of the row
-                self.move_to(span.first)?;
-
-                if text.is_empty() {
-                    self.delete_char()
-                } else {
-                    if span.first == span.last {
-                        for c in text.chars().rev() {
-                            self.insert_char(c)?;
-                        }
-                    } else if span.last.is_end_of_row() {
-                        self.add_str(text)?;
-                        self.clear_to_row_end()?;
-                    } else {
-                        self.add_str(text)?;
-                    }
-
-                    Ok(())
-                }
-            }
+impl Default for PancursesWrapper {
+    fn default() -> Self {
+        Self {
+            // Must call initscr() first.
+            window: pancurses::initscr(),
         }
-    }
-
-    // TODO: Store this value and update when size is changed.
-    #[inline]
-    fn grid_height(&self) -> Result<Index, TryFromIntError> {
-        Index::try_from(self.window.get_max_y())
-    }
-
-    #[inline]
-    fn receive_input(&self) -> Option<Input> {
-        self.window.getch()
     }
 }
