@@ -20,15 +20,6 @@ use core::{
 pub struct NonNegI32(i32);
 
 impl NonNegI32 {
-    /// Create a `NonNegI32` without checking the value.
-    ///
-    /// # Safety
-    ///
-    /// `value >= 0`
-    pub unsafe fn new_unchecked(value: i32) -> Self {
-        Self(value)
-    }
-
     /// Creates a `NonNegI32` with the smallest value that can be represented by `NonNegI32`.
     ///
     /// # Examples

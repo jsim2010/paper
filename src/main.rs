@@ -1,11 +1,16 @@
 // `app_from_crate` requires using all the macros that it calls.
-use clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version};
+use clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, Arg};
 use paper::Paper;
 
 fn main() {
-    let _ = app_from_crate!().get_matches();
+    // Forces compiler to rebuild when Cargo.toml file is changed.
+    let _ = include_str!("../Cargo.toml");
 
-    if let Err(error) = Paper::new().and_then(|mut paper| paper.run()) {
+    let args = app_from_crate!()
+        .arg(Arg::with_name("file").help("the file to be viewed"))
+        .get_matches();
+
+    if let Err(error) = Paper::default().run(&args) {
         eprintln!("{}", error);
     }
 }

@@ -13,9 +13,9 @@ edition = "2018"
 [dependencies]
 clap = "2.33.0"
 displaydoc = "0.1.4"
-either = "1.5.2"
 jsonrpc-core = "11.0.0"
 lazy_static = "1.4.0"
+log = "0.4.8"
 lsp-types = "0.61.0"
 pancurses = { version = "0.16", features = ["win32"] }
 parse-display = "0.1.1"
@@ -23,7 +23,6 @@ rec = "0.4.0"
 regex = "1.1.6"
 serde = { version = "1.0.90", features = ["derive"] }
 serde_json = "1.0.39"
-try_from = "0.3.2"
+simplelog = "0.7.4"
 # Required because lsp-types does not provide access to url::ParseError.
 url = "2.0.0"
-version-sync = "0.8.1"
