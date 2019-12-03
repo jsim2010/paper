@@ -1,10 +1,11 @@
 //! Implements the modality of the application.
-use crate::{ui::Index, Failure};
+use crate::{Failure, ui::Config};
 use core::convert::TryFrom;
+use displaydoc::Display as DisplayDoc;
 use log::trace;
-use lsp_types::{Position, Range, TextEdit};
+use lsp_types::{MessageType, ShowMessageParams, Position, Range, TextEdit};
 use parse_display::Display as ParseDisplay;
-use std::{fmt::Debug, fs, io};
+use std::{fmt::Debug, fs, io::{self, ErrorKind}};
 use url::{ParseError, Url};
 
 /// Signifies the mode of the application.
@@ -35,15 +36,20 @@ pub(crate) enum Outcome {
     SwitchMode(Mode),
     /// Edits the text of the current document.
     EditText(Vec<TextEdit>),
+    /// Displays a message to the user.
+    Alert(ShowMessageParams),
 }
 
 /// Signifies errors associated with [`Document`].
+#[derive(DisplayDoc)]
 enum DocumentError {
-    /// An error attempting to parse a string to a [`Url`].
+    /// unable to parse file `{0}`
     Parse(ParseError),
-    /// An error with the given file path.
+    /// invalid path
     InvalidFilePath(),
-    /// An IO Error.
+    /// cannot find file `{0}`
+    NonExistantFile(String),
+    /// io: {0}
     Io(io::Error),
 }
 
@@ -56,6 +62,15 @@ impl From<io::Error> for DocumentError {
 impl From<ParseError> for DocumentError {
     fn from(value: ParseError) -> Self {
         Self::Parse(value)
+    }
+}
+
+impl From<DocumentError> for ShowMessageParams {
+    fn from(value: DocumentError) -> Self {
+        Self {
+            typ: MessageType::Log,
+            message: value.to_string(),
+        }
     }
 }
 
@@ -84,7 +99,10 @@ impl TryFrom<String> for Document {
                 url.clone()
                     .to_file_path()
                     .map_err(|_| DocumentError::InvalidFilePath())?,
-            )?,
+            ).map_err(|error| match error.kind() {
+                ErrorKind::NotFound => DocumentError::NonExistantFile(value),
+                _ => DocumentError::Io(error),
+            })?,
             url,
         })
     }
@@ -111,47 +129,28 @@ impl Sheet {
                 Ok(Some(Outcome::SwitchMode(mode)))
             }
             Operation::Quit => Err(Failure::Quit),
-            Operation::ViewFile(file) => {
-                if let Ok(doc) = Document::try_from(file) {
-                    let text = doc.text.clone();
+            Operation::UpdateConfig(Config::File(file)) => {
+                match Document::try_from(file) {
+                    Ok(doc) => {
+                        let text = doc.text.clone();
 
-                    self.doc = Some(doc);
-                    Ok(Some(Outcome::EditText(vec![TextEdit::new(
-                        Range::new(
-                            Position::new(0, 0),
-                            Position::new(u64::max_value(), u64::max_value()),
-                        ),
-                        text,
-                    )])))
-                } else {
-                    Ok(None)
+                        self.doc = Some(doc);
+                        Ok(Some(Outcome::EditText(vec![TextEdit::new(
+                            Range::new(
+                                Position::new(0, 0),
+                                Position::new(u64::max_value(), u64::max_value()),
+                            ),
+                            text,
+                        )])))
+                    }
+                    Err(error) => {
+                        Ok(Some(Outcome::Alert(ShowMessageParams::from(error))))
+                    }
                 }
             } //Operation::Save => {
               //    fs::write(path, file)
               //}
         }
-    }
-}
-
-/// An [`Iterator`] of [`Index`]es.
-struct IndexIterator {
-    /// The current [`Index`].
-    current: Index,
-    /// The first [`Index`] that is not valid.
-    end: Index,
-}
-
-impl Iterator for IndexIterator {
-    type Item = Index;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current == self.end {
-            return None;
-        }
-
-        let next_index = self.current;
-        self.current = self.current.add_one();
-        Some(next_index)
     }
 }
 
@@ -162,6 +161,6 @@ pub(crate) enum Operation {
     SwitchMode(Mode),
     /// Quits the application.
     Quit,
-    /// Displays the given file.
-    ViewFile(String),
+    /// Updates a configuration.
+    UpdateConfig(Config),
 }

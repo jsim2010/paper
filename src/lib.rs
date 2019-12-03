@@ -91,8 +91,9 @@ mod num;
 mod translate;
 mod ui;
 
+pub use ui::Settings;
+
 use app::{Mode, Operation, Outcome, Sheet};
-use clap::ArgMatches;
 use displaydoc::Display as DisplayDoc;
 use log::SetLoggerError;
 use simplelog::{Config, LevelFilter, WriteLogger};
@@ -103,7 +104,7 @@ use ui::{Change, Input, Terminal};
 /// An event that causes the application to stop running.
 #[derive(Debug, DisplayDoc)]
 pub enum Failure {
-    /// user interface error: `{0}`
+    /// user interface: `{0}`
     Ui(ui::Error),
     /// file error: `{0}`
     File(io::Error),
@@ -171,7 +172,7 @@ impl Default for InterpreterMap {
 }
 
 /// Describes the paper application.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Paper {
     /// Current [`Mode`] of the application.
     mode: Mode,
@@ -184,13 +185,36 @@ pub struct Paper {
 }
 
 impl Paper {
+    /// Creates a new instance of the application.
+    pub fn new() -> Result<Self, Failure> {
+        Ok(Self {
+            mode: Mode::default(),
+            interpreters: InterpreterMap::default(),
+            ui: Terminal::new()?,
+            sheet: Sheet::default(),
+        })
+    }
+
+    /// Initializes the application.
+    pub fn init(&self) -> Result<(), Failure> {
+        WriteLogger::init(
+            LevelFilter::Trace,
+            Config::default(),
+            File::create("paper.log")?,
+        )?;
+        Ok(())
+    }
+
+    /// Configures the application.
+    pub fn configure(&mut self, settings: Settings) -> Result<(), Failure> {
+        self.ui.init(settings)?;
+        Ok(())
+    }
+
     /// Runs the application.
     #[inline]
-    pub fn run(&mut self, args: &ArgMatches<'_>) -> Result<(), Failure> {
+    pub fn run(&mut self) -> Result<(), Failure> {
         let mut result;
-
-        self.initialize_logger()?;
-        self.ui.init(args)?;
 
         loop {
             result = self.step();
@@ -223,21 +247,14 @@ impl Paper {
                         Outcome::EditText(edits) => {
                             self.ui.apply(Change::Text(edits))?;
                         }
+                        Outcome::Alert(alert) => {
+                            self.ui.apply(Change::Alert(alert))?;
+                        }
                     }
                 }
             }
         }
 
-        Ok(())
-    }
-
-    /// Initializes the logger for the application.
-    fn initialize_logger(&self) -> Result<(), Failure> {
-        WriteLogger::init(
-            LevelFilter::Trace,
-            Config::default(),
-            File::create("paper.log")?,
-        )?;
         Ok(())
     }
 

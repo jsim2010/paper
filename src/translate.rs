@@ -1,7 +1,7 @@
 //! Implements the functionality of converting [`Input`] to [`Operation`]s.
 use crate::{
     app::{Operation, Sheet},
-    ui::{Argument, Input},
+    ui::Input,
     Mode,
 };
 use std::fmt::Debug;
@@ -26,7 +26,7 @@ impl ViewInterpreter {
 impl Interpreter for ViewInterpreter {
     fn decode(&self, input: Input, _sheet: &Sheet) -> Vec<Operation> {
         match input {
-            Input::Arg(Argument::File(file)) => vec![Operation::ViewFile(file)],
+            Input::Config(config) => vec![Operation::UpdateConfig(config)],
             // Temporary mapping to provide basic functionality prior to adding Mode::Command.
             Input::Backspace => vec![Operation::Quit],
             Input::Escape => vec![Operation::SwitchMode(Mode::View)],
