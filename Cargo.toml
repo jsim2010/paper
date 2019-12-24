@@ -14,7 +14,7 @@ edition = "2018"
 clap = "2.33.0"
 displaydoc = "0.1.4"
 log = "0.4.8"
-lsp-types = "0.63.0"
+lsp-types = "0.67.1"
 pancurses = { version = "0.16", features = ["win32"] }
 parse-display = "0.1.1"
 simplelog = "0.7.4"
