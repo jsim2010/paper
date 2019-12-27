@@ -93,19 +93,22 @@ mod ui;
 
 pub use ui::Settings;
 
-use app::{Mode, Operation, Outcome, Sheet};
 use displaydoc::Display as DisplayDoc;
 use log::SetLoggerError;
 use simplelog::{Config, LevelFilter, WriteLogger};
 use std::{collections::HashMap, fs::File, io};
 use translate::{Interpreter, ViewInterpreter};
 use ui::{Change, Input, Terminal};
+use {
+    app::{Mode, Operation, Outcome, Sheet},
+    crossterm::ErrorKind,
+};
 
 /// An event that causes the application to stop running.
 #[derive(Debug, DisplayDoc)]
 pub enum Failure {
-    /// user interface: `{0}`
-    Ui(ui::Error),
+    /// user interface: {0}
+    Ui(ErrorKind),
     /// file error: `{0}`
     File(io::Error),
     /// unknown mode: `{0}`
@@ -116,8 +119,8 @@ pub enum Failure {
     Quit,
 }
 
-impl From<ui::Error> for Failure {
-    fn from(value: ui::Error) -> Self {
+impl From<ErrorKind> for Failure {
+    fn from(value: ErrorKind) -> Self {
         Self::Ui(value)
     }
 }
@@ -172,7 +175,7 @@ impl Default for InterpreterMap {
 }
 
 /// Describes the paper application.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Paper {
     /// Current [`Mode`] of the application.
     mode: Mode,
@@ -184,36 +187,22 @@ pub struct Paper {
     sheet: Sheet,
 }
 
+use log::trace;
 impl Paper {
     /// Creates a new instance of the application.
-    pub fn new() -> Result<Self, Failure> {
-        Ok(Self {
-            mode: Mode::default(),
-            interpreters: InterpreterMap::default(),
-            ui: Terminal::new()?,
-            sheet: Sheet::default(),
-        })
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Initializes the application.
-    pub fn init(&self) -> Result<(), Failure> {
+    /// Configures and runs the application.
+    #[inline]
+    pub fn run(&mut self, settings: Settings) -> Result<(), Failure> {
         WriteLogger::init(
             LevelFilter::Trace,
             Config::default(),
             File::create("paper.log")?,
         )?;
-        Ok(())
-    }
-
-    /// Configures the application.
-    pub fn configure(&mut self, settings: Settings) -> Result<(), Failure> {
         self.ui.init(settings)?;
-        Ok(())
-    }
-
-    /// Runs the application.
-    #[inline]
-    pub fn run(&mut self) -> Result<(), Failure> {
         let mut result;
 
         loop {
@@ -222,7 +211,9 @@ impl Paper {
             if let Err(error) = &result {
                 // Quit indicates user requested to end application, which is not not a
                 // true Failure.
+                trace!("{}", error);
                 if let Failure::Quit = error {
+                    trace!("quitting");
                     result = Ok(());
                 }
 
@@ -230,14 +221,14 @@ impl Paper {
             }
         }
 
-        self.ui.stop()?;
+        self.ui.quit()?;
         result
     }
 
-    /// Processes a single input from the user.
+    /// Processes a single event from the user.
     #[inline]
     fn step(&mut self) -> Result<(), Failure> {
-        if let Some(input) = self.ui.input() {
+        if let Some(input) = self.ui.input()? {
             for operation in self.translate(input)? {
                 if let Some(outcome) = self.sheet.operate(operation)? {
                     match outcome {

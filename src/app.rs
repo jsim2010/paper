@@ -1,11 +1,15 @@
 //! Implements the modality of the application.
-use crate::{Failure, ui::Config};
+use crate::{ui::Config, Failure};
 use core::convert::TryFrom;
 use displaydoc::Display as DisplayDoc;
 use log::trace;
-use lsp_types::{MessageType, ShowMessageParams, Position, Range, TextEdit};
+use lsp_types::{MessageType, Position, Range, ShowMessageParams, TextEdit};
 use parse_display::Display as ParseDisplay;
-use std::{fmt::Debug, fs, io::{self, ErrorKind}};
+use std::{
+    fmt::Debug,
+    fs,
+    io::{self, ErrorKind},
+};
 use url::{ParseError, Url};
 
 /// Signifies the mode of the application.
@@ -99,9 +103,27 @@ impl TryFrom<String> for Document {
                 url.clone()
                     .to_file_path()
                     .map_err(|_| DocumentError::InvalidFilePath())?,
-            ).map_err(|error| match error.kind() {
+            )
+            .map_err(|error| match error.kind() {
                 ErrorKind::NotFound => DocumentError::NonExistantFile(value),
-                _ => DocumentError::Io(error),
+                ErrorKind::PermissionDenied
+                | ErrorKind::ConnectionRefused
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::NotConnected
+                | ErrorKind::AddrInUse
+                | ErrorKind::AddrNotAvailable
+                | ErrorKind::BrokenPipe
+                | ErrorKind::AlreadyExists
+                | ErrorKind::WouldBlock
+                | ErrorKind::InvalidInput
+                | ErrorKind::InvalidData
+                | ErrorKind::TimedOut
+                | ErrorKind::WriteZero
+                | ErrorKind::Interrupted
+                | ErrorKind::Other
+                | ErrorKind::UnexpectedEof
+                | _ => DocumentError::Io(error),
             })?,
             url,
         })
@@ -129,27 +151,23 @@ impl Sheet {
                 Ok(Some(Outcome::SwitchMode(mode)))
             }
             Operation::Quit => Err(Failure::Quit),
-            Operation::UpdateConfig(Config::File(file)) => {
-                match Document::try_from(file) {
-                    Ok(doc) => {
-                        let text = doc.text.clone();
+            Operation::UpdateConfig(Config::File(file)) => match Document::try_from(file) {
+                Ok(doc) => {
+                    let text = doc.text.clone();
 
-                        self.doc = Some(doc);
-                        Ok(Some(Outcome::EditText(vec![TextEdit::new(
-                            Range::new(
-                                Position::new(0, 0),
-                                Position::new(u64::max_value(), u64::max_value()),
-                            ),
-                            text,
-                        )])))
-                    }
-                    Err(error) => {
-                        Ok(Some(Outcome::Alert(ShowMessageParams::from(error))))
-                    }
+                    self.doc = Some(doc);
+                    Ok(Some(Outcome::EditText(vec![TextEdit::new(
+                        Range::new(
+                            Position::new(0, 0),
+                            Position::new(u64::max_value(), u64::max_value()),
+                        ),
+                        text,
+                    )])))
                 }
-            } //Operation::Save => {
-              //    fs::write(path, file)
-              //}
+                Err(error) => Ok(Some(Outcome::Alert(ShowMessageParams::from(error)))),
+            }, //Operation::Save => {
+               //    fs::write(path, file)
+               //}
         }
     }
 }
