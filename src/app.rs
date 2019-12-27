@@ -3,12 +3,18 @@ use crate::{ui::Config, Failure};
 use core::convert::TryFrom;
 use displaydoc::Display as DisplayDoc;
 use log::trace;
-use lsp_types::{MessageType, Position, Range, ShowMessageParams, TextEdit};
+use lsp_types::{request::Request, ClientCapabilities, InitializeParams, InitializeResult, MessageType, Position, Range, ShowMessageParams, TextEdit};
 use parse_display::Display as ParseDisplay;
-use std::{
-    fmt::Debug,
-    fs,
-    io::{self, ErrorKind},
+use {
+    jsonrpc_core::{Id, Params, Version, MethodCall},
+    std::{
+        collections::{HashMap, hash_map::Entry},
+        fmt::Debug,
+        fs,
+        io::{self, BufRead, BufReader, ErrorKind, Write, Read},
+        process::{Command, Child, Stdio, ChildStdout},
+    },
+    serde_json::{self, Value},
 };
 use url::{ParseError, Url};
 
@@ -85,6 +91,13 @@ struct Document {
     url: Url,
     /// The text of the `Document`.
     text: String,
+    extension: Option<String>,
+}
+
+impl Document {
+    fn extension(&self) -> &Option<String> {
+        &self.extension
+    }
 }
 
 impl TryFrom<String> for Document {
@@ -98,12 +111,10 @@ impl TryFrom<String> for Document {
         let url = base.join(&value)?;
 
         trace!("Reading text at `{}`", url);
+        let file_path = url.clone().to_file_path().map_err(|_| DocumentError::InvalidFilePath())?;
         Ok(Self {
-            text: fs::read_to_string(
-                url.clone()
-                    .to_file_path()
-                    .map_err(|_| DocumentError::InvalidFilePath())?,
-            )
+            extension: file_path.extension().map(|ext| ext.to_string_lossy().into_owned()),
+            text: fs::read_to_string(file_path)
             .map_err(|error| match error.kind() {
                 ErrorKind::NotFound => DocumentError::NonExistantFile(value),
                 ErrorKind::PermissionDenied
@@ -130,13 +141,78 @@ impl TryFrom<String> for Document {
     }
 }
 
+#[derive(Debug)]
+struct LspServer {
+    process: Child,
+    reader: BufReader<ChildStdout>,
+}
+
+impl LspServer {
+    fn new(process_cmd: &str) -> Result<Self, Failure> {
+        let mut process = Command::new(process_cmd).stdin(Stdio::piped()).spawn()?;
+        Ok(Self {
+            reader: BufReader::new(process.stdout.take().unwrap()),
+            process,
+        })
+    }
+
+    fn initialize(&mut self) {
+        let initialize_params = InitializeParams{
+            process_id: Some(u64::from(std::process::id())),
+            root_path: None,
+            root_uri: Some(Url::from_file_path(std::env::current_dir().unwrap().as_path()).unwrap()),
+            initialization_options: None,
+            capabilities: ClientCapabilities::default(),
+            trace: None,
+            workspace_folders: None,
+        };
+        if let Value::Object(params) = serde_json::to_value(initialize_params).unwrap() {
+            let request = MethodCall {
+                jsonrpc: Some(Version::V2),
+                method: lsp_types::request::Initialize::METHOD.to_string(),
+                params: Params::Map(params),
+                id: Id::Num(0),
+            };
+
+            let json_string = serde_json::to_string(&request).unwrap();
+            write!(self.process.stdin.as_mut().unwrap(), "Content-Length: {}\r\n\r\n{}", json_string.len(), json_string);
+
+            let mut line = String::new();
+            let mut blank_line = String::new();
+
+            if self.reader.read_line(&mut line).is_ok() {
+                let mut split = line.trim().split(": ");
+
+                if split.next() == Some("Content-Length") && self.reader.read_line(&mut blank_line).is_ok() {
+                    if let Some(length_str) = split.next() {
+                        let mut content = vec![0; length_str.parse().unwrap()];
+
+                        if self.reader.read_exact(&mut content).is_ok() {
+                            if let Ok(json_string) = String::from_utf8(content) {
+                                if let Ok(message) = serde_json::from_str::<Value>(&json_string) {
+                                    if let Some(result) = message.get("result") {
+                                        if let Ok(initialize_result) = serde_json::from_value::<InitializeResult>(result.to_owned()) {
+                                            // Send notification
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Signfifies display of the current file.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct Sheet {
     /// The document being displayed.
     doc: Option<Document>,
     /// The number of lines in the document.
     line_count: usize,
+    lsp_servers: HashMap<String, LspServer>,
 }
 
 impl Sheet {
@@ -153,6 +229,12 @@ impl Sheet {
             Operation::Quit => Err(Failure::Quit),
             Operation::UpdateConfig(Config::File(file)) => match Document::try_from(file) {
                 Ok(doc) => {
+                    if let Some(ext) = doc.extension() {
+                        if let Entry::Vacant(entry) = self.lsp_servers.entry(ext.to_string()) {
+                            entry.insert(LspServer::new("rls")?).initialize();
+                        }
+                    }
+
                     let text = doc.text.clone();
 
                     self.doc = Some(doc);
