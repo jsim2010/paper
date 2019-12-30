@@ -1,9 +1,11 @@
 //! Implements the interface between the user and the application.
+//!
+//! The primary output functionality of the user interface is to show the text of a document. Additionally, the user interface may show a message to the user. A message will overlap the upper portion of the document until it has been cleared.
 use {
     clap::ArgMatches,
-    core::{convert::TryFrom, fmt::Debug, time::Duration},
+    core::{convert::TryInto, time::Duration},
     crossterm::{
-        terminal::{EnterAlternateScreen, LeaveAlternateScreen},
+        terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
         execute,
         cursor::MoveTo,
         event::{self, Event},
@@ -16,16 +18,20 @@ use {
     std::io::{self, Stdout, Write},
 };
 
-/// Signifies a modification to the grid.
+/// Signifies a potential modification to the output of the user interface.
+///
+/// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Change {
-    /// Modifies the text of the current document.
+    /// Text of the current document was modified.
     Text(Vec<TextEdit>),
-    /// Displays a message to the user.
-    Alert(ShowMessageParams),
+    /// Message will be displayed to the user.
+    Message(ShowMessageParams),
+    /// Message will be cleared.
+    Reset,
 }
 
-/// Settings of the application.
+/// Signifies settings of the application.
 #[derive(Debug)]
 pub struct Settings {
     /// The file to be viewed.
@@ -42,25 +48,36 @@ impl From<ArgMatches<'_>> for Settings {
 }
 
 /// The user interface provided by a terminal.
-///
-/// All output is displayed in a grid of cells. Each cell contains one character.
 #[derive(Debug)]
 pub(crate) struct Terminal {
     /// The output of the application.
     out: Stdout,
-    /// If the `Terminal` has been initialized.
+    /// If `Terminal` has been initialized.
     is_init: bool,
     /// Inputs from command arguments.
+    ///
+    /// Command arguments are viewed as input so that all processing of arguments is performed within the main application loop.
     arg_inputs: Vec<Config>,
+    /// Number of columns provided by terminal.
+    columns: u16,
+    /// Number of rows provided by terminal.
+    rows: u16,
+    /// The index of the first line of the document that may be displayed.
+    first_line: u64,
+    /// The grid of `chars` that represent the terminal.
+    grid: Vec<String>,
+    /// The number of lines currrently covered by an alert.
+    alert_line_count: usize,
 }
 
 impl Terminal {
-    /// Sets up the user interface for use.
+    /// Initializes the terminal user interface.
     pub(crate) fn init(&mut self, settings: Settings) -> crossterm::Result<()> {
         if let Some(file) = settings.file {
             self.arg_inputs.push(Config::File(file))
         }
 
+        // Ensure all previous terminal output is not lost.
         execute!(self.out, EnterAlternateScreen)?;
         self.is_init = true;
         Ok(())
@@ -71,34 +88,63 @@ impl Terminal {
         match change {
             Change::Text(edits) => {
                 for edit in edits {
-                    queue!(
-                        self.out,
-                        MoveTo(
-                            Self::u16_from(edit.range.start.character),
-                            Self::u16_from(edit.range.start.line)
-                        ),
-                        Print(edit.new_text)
-                    )?;
+                    let start_row = self.get_row(edit.range.start.line);
+                    let end_row = self.get_row(edit.range.end.line);
+                    let mut modifications = self.get_modifications(&edit);
+
+                    self.print_at_row(start_row, &modifications.join("\n"))?;
+
+                    if let Some(modified_lines) = self.grid.get_mut(start_row.into()..=end_row.into()) {
+                        modified_lines.swap_with_slice(&mut modifications);
+                    }
                 }
             }
-            Change::Alert(alert) => {
+            Change::Message(alert) => {
                 trace!("alert: {:?} {}", alert.typ, alert.message);
-                queue!(self.out, MoveTo(0, 0), Print(alert.message))?;
-                trace!("added alert");
+                self.alert_line_count = alert.message.lines().count();
+                self.print_at_row(0, &alert.message)?;
+            }
+            Change::Reset => {
+                if self.alert_line_count != 0 {
+                    let lines = match self.grid.get(0..self.alert_line_count) {
+                        Some(l) => l.join("\n"),
+                        None => " ".repeat(self.columns.into()),
+                    };
+                    self.print_at_row(0, &lines)?;
+                    self.alert_line_count = 0;
+                }
             }
         }
 
         self.out.flush().map_err(ErrorKind::IoError)
     }
 
-    /// Returns the best u16 representation of `value`.
-    fn u16_from(value: u64) -> u16 {
-        u16::try_from(value).unwrap_or(u16::max_value())
+    /// Returns the row of `line` within the visible grid.
+    ///
+    /// `0` indicates `line` is either the first line of the grid or above it.
+    /// `u16::max_value()` indicates `line` is either the last line of the grid or below it.
+    fn get_row(&self, line: u64) -> u16 {
+        line.saturating_sub(self.first_line).try_into().unwrap_or(u16::max_value())
+    }
+    
+    /// Returns the lines within `edit` that will modify the user interface.
+    fn get_modifications(&self, edit: &TextEdit) -> Vec<String> {
+        edit.new_text.lines().skip(self.first_line.saturating_sub(edit.range.start.line).try_into().unwrap_or(usize::max_value())).take(self.rows.into()).map(|text| {
+            let mut line = String::from(text);
+
+            line.push_str(&" ".repeat(usize::from(self.columns).saturating_sub(text.len())));
+            line
+        }).collect::<Vec<String>>()
+    }
+
+    /// Adds to the queue the commands to print `s` starting at column 0 of `row`.
+    fn print_at_row(&mut self, row: u16, s: &str) -> crossterm::Result<()> {
+        queue!(self.out, MoveTo(0, row), Print(s))
     }
 
     /// Returns the input from the user.
     ///
-    /// Returns [`None`] if no input is provided.
+    /// First checks for arg inputsReturns [`None`] if no input is provided.
     pub(crate) fn input(&mut self) -> crossterm::Result<Option<Input>> {
         // First check arg inputs, then check for key input.
         match self.arg_inputs.pop() {
@@ -114,10 +160,23 @@ impl Terminal {
 
 impl Default for Terminal {
     fn default() -> Self {
+        let (columns, rows) = terminal::size().unwrap_or_default();
+
+        let mut grid = Vec::default();
+
+        for _ in 0..rows {
+            grid.push(" ".repeat(columns.into()));
+        }
+
         Self {
             out: io::stdout(),
             is_init: false,
             arg_inputs: Vec::default(),
+            columns,
+            rows,
+            first_line: 0,
+            grid,
+            alert_line_count: 0,
         }
     }
 }
@@ -125,7 +184,7 @@ impl Default for Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.is_init && execute!(self.out, LeaveAlternateScreen).is_err() {
-            warn!("Unable to leave alternate screen");
+            warn!("Failed to leave alternate screen");
         }
     }
 }
@@ -133,7 +192,7 @@ impl Drop for Terminal {
 /// Signifies a configuration.
 #[derive(Clone, Debug)]
 pub(crate) enum Config {
-    /// The `file` command argument.
+    /// The file path of the document.
     File(String),
 }
 

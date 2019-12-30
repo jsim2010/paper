@@ -20,6 +20,9 @@ use {
 };
 use url::{ParseError, Url};
 
+/// A [`Range`] specifying the entire document.
+const ENTIRE_DOCUMENT: Range = Range{start: Position{line: 0, character: 0}, end: Position{line: u64::max_value(), character: u64::max_value()}};
+
 /// Signifies the mode of the application.
 #[derive(Copy, Clone, Eq, ParseDisplay, PartialEq, Hash, Debug)]
 #[display(style = "CamelCase")]
@@ -298,10 +301,7 @@ impl Sheet {
 
                     self.doc = Some(doc);
                     Ok(Some(Outcome::EditText(vec![TextEdit::new(
-                        Range::new(
-                            Position::new(0, 0),
-                            Position::new(u64::max_value(), u64::max_value()),
-                        ),
+                        ENTIRE_DOCUMENT,
                         text,
                     )])))
                 }
