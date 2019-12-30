@@ -80,14 +80,12 @@
 )]
 // Temporary allows.
 #![allow(
-    clippy::missing_const_for_fn, // Flags methods in derived traits.
     clippy::missing_inline_in_public_items, // Flags methods in derived traits.
     clippy::multiple_crate_versions, // Requires redox_users update to avoid multiple versions of rand_core.
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
 )]
 
 mod app;
-mod num;
 mod translate;
 mod ui;
 
@@ -96,7 +94,7 @@ pub use ui::Settings;
 use displaydoc::Display as DisplayDoc;
 use log::SetLoggerError;
 use simplelog::{Config, LevelFilter, WriteLogger};
-use std::{collections::HashMap, fs::File, io};
+use std::{collections::HashMap, fs::File, io, num::ParseIntError};
 use translate::{Interpreter, ViewInterpreter};
 use ui::{Change, Input, Terminal};
 use {
@@ -115,23 +113,46 @@ pub enum Failure {
     UnknownMode(Mode),
     /// logger error: `{0}`
     Logger(SetLoggerError),
+    /// serialization error: `{0}`
+    Serde(serde_json::Error),
+    /// parse error: `{0}`
+    Parse(ParseIntError),
+    /// language server error: `{0}`
+    Lsp(String),
     /// user quit application
     Quit,
 }
 
 impl From<ErrorKind> for Failure {
+    #[must_use]
     fn from(value: ErrorKind) -> Self {
         Self::Ui(value)
     }
 }
 
 impl From<io::Error> for Failure {
+    #[must_use]
     fn from(value: io::Error) -> Self {
         Self::File(value)
     }
 }
 
+impl From<ParseIntError> for Failure {
+    #[must_use]
+    fn from(value: ParseIntError) -> Self {
+        Self::Parse(value)
+    }
+}
+
+impl From<serde_json::Error> for Failure {
+    #[must_use]
+    fn from(value: serde_json::Error) -> Self {
+        Self::Serde(value)
+    }
+}
+
 impl From<SetLoggerError> for Failure {
+    #[must_use]
     fn from(value: SetLoggerError) -> Self {
         Self::Logger(value)
     }
@@ -190,6 +211,7 @@ pub struct Paper {
 use log::trace;
 impl Paper {
     /// Creates a new instance of the application.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -221,7 +243,6 @@ impl Paper {
             }
         }
 
-        self.ui.quit()?;
         result
     }
 

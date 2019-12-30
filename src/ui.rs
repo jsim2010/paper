@@ -11,7 +11,7 @@ use {
         style::Print,
         ErrorKind,
     },
-    log::trace,
+    log::{trace, warn},
     lsp_types::{ShowMessageParams, TextEdit},
     std::io::{self, Stdout, Write},
 };
@@ -33,6 +33,7 @@ pub struct Settings {
 }
 
 impl From<ArgMatches<'_>> for Settings {
+    #[must_use]
     fn from(value: ArgMatches<'_>) -> Self {
         Self {
             file: value.value_of("file").map(str::to_string),
@@ -42,12 +43,13 @@ impl From<ArgMatches<'_>> for Settings {
 
 /// The user interface provided by a terminal.
 ///
-/// All output is displayed in a grid of cells. Each cell contains one character and can change its
-/// background color.
+/// All output is displayed in a grid of cells. Each cell contains one character.
 #[derive(Debug)]
 pub(crate) struct Terminal {
     /// The output of the application.
     out: Stdout,
+    /// If the `Terminal` has been initialized.
+    is_init: bool,
     /// Inputs from command arguments.
     arg_inputs: Vec<Config>,
 }
@@ -59,12 +61,9 @@ impl Terminal {
             self.arg_inputs.push(Config::File(file))
         }
 
-        execute!(self.out, EnterAlternateScreen)
-    }
-
-    /// Finishes and cleans the user interface.
-    pub(crate) fn quit(&mut self) -> crossterm::Result<()> {
-        execute!(self.out, LeaveAlternateScreen)
+        execute!(self.out, EnterAlternateScreen)?;
+        self.is_init = true;
+        Ok(())
     }
 
     /// Applies `change` to the output.
@@ -117,7 +116,16 @@ impl Default for Terminal {
     fn default() -> Self {
         Self {
             out: io::stdout(),
+            is_init: false,
             arg_inputs: Vec::default(),
+        }
+    }
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        if self.is_init && execute!(self.out, LeaveAlternateScreen).is_err() {
+            warn!("Unable to leave alternate screen");
         }
     }
 }

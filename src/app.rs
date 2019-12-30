@@ -2,17 +2,19 @@
 use crate::{ui::Config, Failure};
 use core::convert::TryFrom;
 use displaydoc::Display as DisplayDoc;
-use log::trace;
-use lsp_types::{request::Request, ClientCapabilities, InitializeParams, InitializeResult, MessageType, Position, Range, ShowMessageParams, TextEdit};
+use log::{trace, warn};
+use lsp_types::{request::{Request, Initialize}, notification::{Initialized, Notification}, ClientCapabilities, InitializeParams, InitializeResult, MessageType, Position, Range, ShowMessageParams, TextEdit, InitializedParams};
 use parse_display::Display as ParseDisplay;
 use {
-    jsonrpc_core::{Id, Params, Version, MethodCall},
+    jsonrpc_core::{Call, Id, Params, Version, MethodCall},
+    serde::Serialize, 
     std::{
         collections::{HashMap, hash_map::Entry},
+        env,
         fmt::Debug,
         fs,
         io::{self, BufRead, BufReader, ErrorKind, Write, Read},
-        process::{Command, Child, Stdio, ChildStdout},
+        process::{self, Command, Child, Stdio, ChildStdout},
     },
     serde_json::{self, Value},
 };
@@ -76,6 +78,7 @@ impl From<ParseError> for DocumentError {
 }
 
 impl From<DocumentError> for ShowMessageParams {
+    #[must_use]
     fn from(value: DocumentError) -> Self {
         Self {
             typ: MessageType::Log,
@@ -91,11 +94,13 @@ struct Document {
     url: Url,
     /// The text of the `Document`.
     text: String,
+    /// The extension.
     extension: Option<String>,
 }
 
 impl Document {
-    fn extension(&self) -> &Option<String> {
+    /// The extension of `self`.
+    const fn extension(&self) -> &Option<String> {
         &self.extension
     }
 }
@@ -104,13 +109,10 @@ impl TryFrom<String> for Document {
     type Error = DocumentError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        trace!("Finding base URL");
-        let base = Url::from_directory_path(std::env::current_dir()?)
+        let base = Url::from_directory_path(env::current_dir()?)
             .map_err(|_| DocumentError::InvalidFilePath())?;
-        trace!("Parsing `{}` to URL with base `{}`", value, base);
         let url = base.join(&value)?;
 
-        trace!("Reading text at `{}`", url);
         let file_path = url.clone().to_file_path().map_err(|_| DocumentError::InvalidFilePath())?;
         Ok(Self {
             extension: file_path.extension().map(|ext| ext.to_string_lossy().into_owned()),
@@ -141,59 +143,54 @@ impl TryFrom<String> for Document {
     }
 }
 
+/// Represents a language server process.
 #[derive(Debug)]
 struct LspServer {
+    /// The language server process.
     process: Child,
+    /// Process the output from the language server.
     reader: BufReader<ChildStdout>,
 }
 
 impl LspServer {
+    /// Creates a new `LspServer` represented by `process_cmd`.
     fn new(process_cmd: &str) -> Result<Self, Failure> {
-        let mut process = Command::new(process_cmd).stdin(Stdio::piped()).spawn()?;
+        let mut process = Command::new(process_cmd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
         Ok(Self {
-            reader: BufReader::new(process.stdout.take().unwrap()),
+            reader: BufReader::new(process.stdout.take().ok_or_else(|| Failure::Lsp("Unable to access stdout of language server".to_string()))?),
             process,
         })
     }
 
-    fn initialize(&mut self) {
-        let initialize_params = InitializeParams{
-            process_id: Some(u64::from(std::process::id())),
+    /// Initializes the `LspServer`.
+    fn initialize(&mut self) -> Result<(), Failure> {
+        self.send_request::<Initialize>(InitializeParams{
+            process_id: Some(u64::from(process::id())),
             root_path: None,
-            root_uri: Some(Url::from_file_path(std::env::current_dir().unwrap().as_path()).unwrap()),
+            root_uri: Some(Url::from_directory_path(env::current_dir()?.as_path()).map_err(|_| Failure::File(io::Error::new(ErrorKind::Other, "cannot convert current_dir to url")))?),
             initialization_options: None,
             capabilities: ClientCapabilities::default(),
             trace: None,
             workspace_folders: None,
-        };
-        if let Value::Object(params) = serde_json::to_value(initialize_params).unwrap() {
-            let request = MethodCall {
-                jsonrpc: Some(Version::V2),
-                method: lsp_types::request::Initialize::METHOD.to_string(),
-                params: Params::Map(params),
-                id: Id::Num(0),
-            };
+        })?;
 
-            let json_string = serde_json::to_string(&request).unwrap();
-            write!(self.process.stdin.as_mut().unwrap(), "Content-Length: {}\r\n\r\n{}", json_string.len(), json_string);
+        let mut line = String::new();
+        let mut blank_line = String::new();
 
-            let mut line = String::new();
-            let mut blank_line = String::new();
+        if self.reader.read_line(&mut line).is_ok() {
+            let mut split = line.trim().split(": ");
 
-            if self.reader.read_line(&mut line).is_ok() {
-                let mut split = line.trim().split(": ");
+            if split.next() == Some("Content-Length") && self.reader.read_line(&mut blank_line).is_ok() {
+                if let Some(length_str) = split.next() {
+                    let mut content = vec![0; length_str.parse()?];
 
-                if split.next() == Some("Content-Length") && self.reader.read_line(&mut blank_line).is_ok() {
-                    if let Some(length_str) = split.next() {
-                        let mut content = vec![0; length_str.parse().unwrap()];
-
-                        if self.reader.read_exact(&mut content).is_ok() {
-                            if let Ok(json_string) = String::from_utf8(content) {
-                                if let Ok(message) = serde_json::from_str::<Value>(&json_string) {
-                                    if let Some(result) = message.get("result") {
-                                        if let Ok(initialize_result) = serde_json::from_value::<InitializeResult>(result.to_owned()) {
-                                            // Send notification
-                                        }
+                    if self.reader.read_exact(&mut content).is_ok() {
+                        if let Ok(json_string) = String::from_utf8(content) {
+                            trace!("received: {}", json_string);
+                            if let Ok(message) = serde_json::from_str::<Value>(&json_string) {
+                                if let Some(result) = message.get("result") {
+                                    if serde_json::from_value::<InitializeResult>(result.to_owned()).is_ok() {
+                                        self.send_notification::<Initialized>(InitializedParams {})?;
                                     }
                                 }
                             }
@@ -201,6 +198,67 @@ impl LspServer {
                     }
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Sends a request with `params` to the language server process.
+    fn send_request<T: Request>(&mut self, params: T::Params) -> Result<(), Failure>
+    where
+        T::Params: Serialize,
+    {
+        if let Value::Object(params_object) = serde_json::to_value(params)? {
+            self.send_message(&Call::MethodCall(MethodCall {
+                jsonrpc: Some(Version::V2),
+                method: T::METHOD.to_string(),
+                params: Params::Map(params_object),
+                id: Id::Num(0),
+            }))?;
+        } else {
+            warn!("Request params converted to something other than an object");
+        }
+
+        Ok(())
+    }
+
+    /// Sends a notification with `params` to the language server process.
+    fn send_notification<T: Notification>(&mut self, params: T::Params) -> Result<(), Failure>
+    where
+        T::Params: Serialize,
+    {
+        if let Value::Object(params_object) = serde_json::to_value(params)? {
+            self.send_message(&Call::Notification(jsonrpc_core::Notification {
+                jsonrpc: Some(Version::V2),
+                method: T::METHOD.to_string(),
+                params: Params::Map(params_object),
+            }))?;
+        } else {
+            warn!("Notification params converted to something other than an object");
+        }
+
+        Ok(())
+    }
+
+    /// Sends `message` to the language server process.
+    fn send_message(&mut self, message: &Call) -> Result<(), Failure>{
+        let json_string = serde_json::to_string(message)?;
+        trace!("Sending: {}", json_string);
+
+        if let Some(stdin) = self.process.stdin.as_mut() {
+            write!(stdin, "Content-Length: {}\r\n\r\n{}", json_string.len(), json_string).unwrap();
+        } else {
+            warn!("Unable to retrieve stdin of language server processs");
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for LspServer {
+    fn drop(&mut self) {
+        if self.process.kill().is_err() {
+            warn!("Attempted to kill a language server process that was not running");
         }
     }
 }
@@ -212,6 +270,7 @@ pub(crate) struct Sheet {
     doc: Option<Document>,
     /// The number of lines in the document.
     line_count: usize,
+    /// The [`LspServer`]s managed by this document.
     lsp_servers: HashMap<String, LspServer>,
 }
 
@@ -231,7 +290,7 @@ impl Sheet {
                 Ok(doc) => {
                     if let Some(ext) = doc.extension() {
                         if let Entry::Vacant(entry) = self.lsp_servers.entry(ext.to_string()) {
-                            entry.insert(LspServer::new("rls")?).initialize();
+                            entry.insert(LspServer::new("rls")?).initialize()?;
                         }
                     }
 
