@@ -259,6 +259,6 @@ impl Default for InterpreterMap {
         let mut map: HashMap<Mode, &'static dyn Interpreter> = HashMap::new();
 
         let _ = map.insert(Mode::View, &VIEW_INTERPRETER);
-        Self {map}
+        Self { map }
     }
 }

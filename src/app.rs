@@ -3,25 +3,39 @@ use crate::{ui::Config, Failure};
 use core::convert::TryFrom;
 use displaydoc::Display as DisplayDoc;
 use log::{trace, warn};
-use lsp_types::{request::{Request, Initialize}, notification::{Initialized, Notification}, ClientCapabilities, InitializeParams, InitializeResult, MessageType, Position, Range, ShowMessageParams, TextEdit, InitializedParams};
+use lsp_types::{
+    notification::{Initialized, Notification},
+    request::{Initialize, Request},
+    ClientCapabilities, InitializeParams, InitializeResult, InitializedParams, MessageType,
+    Position, Range, ShowMessageParams, TextEdit,
+};
 use parse_display::Display as ParseDisplay;
+use url::{ParseError, Url};
 use {
-    jsonrpc_core::{Call, Id, Params, Version, MethodCall},
-    serde::Serialize, 
+    jsonrpc_core::{Call, Id, MethodCall, Params, Version},
+    serde::Serialize,
+    serde_json::{self, Value},
     std::{
-        collections::{HashMap, hash_map::Entry},
+        collections::{hash_map::Entry, HashMap},
         env,
         fmt::Debug,
         fs,
-        io::{self, BufRead, BufReader, ErrorKind, Write, Read},
-        process::{self, Command, Child, Stdio, ChildStdout},
+        io::{self, BufRead, BufReader, ErrorKind, Read, Write},
+        process::{self, Child, ChildStdout, Command, Stdio},
     },
-    serde_json::{self, Value},
 };
-use url::{ParseError, Url};
 
 /// A [`Range`] specifying the entire document.
-const ENTIRE_DOCUMENT: Range = Range{start: Position{line: 0, character: 0}, end: Position{line: u64::max_value(), character: u64::max_value()}};
+const ENTIRE_DOCUMENT: Range = Range {
+    start: Position {
+        line: 0,
+        character: 0,
+    },
+    end: Position {
+        line: u64::max_value(),
+        character: u64::max_value(),
+    },
+};
 
 /// Signifies the mode of the application.
 #[derive(Copy, Clone, Eq, ParseDisplay, PartialEq, Hash, Debug)]
@@ -116,11 +130,15 @@ impl TryFrom<String> for Document {
             .map_err(|_| DocumentError::InvalidFilePath())?;
         let url = base.join(&value)?;
 
-        let file_path = url.clone().to_file_path().map_err(|_| DocumentError::InvalidFilePath())?;
+        let file_path = url
+            .clone()
+            .to_file_path()
+            .map_err(|_| DocumentError::InvalidFilePath())?;
         Ok(Self {
-            extension: file_path.extension().map(|ext| ext.to_string_lossy().into_owned()),
-            text: fs::read_to_string(file_path)
-            .map_err(|error| match error.kind() {
+            extension: file_path
+                .extension()
+                .map(|ext| ext.to_string_lossy().into_owned()),
+            text: fs::read_to_string(file_path).map_err(|error| match error.kind() {
                 ErrorKind::NotFound => DocumentError::NonExistantFile(value),
                 ErrorKind::PermissionDenied
                 | ErrorKind::ConnectionRefused
@@ -158,19 +176,32 @@ struct LspServer {
 impl LspServer {
     /// Creates a new `LspServer` represented by `process_cmd`.
     fn new(process_cmd: &str) -> Result<Self, Failure> {
-        let mut process = Command::new(process_cmd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let mut process = Command::new(process_cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
         Ok(Self {
-            reader: BufReader::new(process.stdout.take().ok_or_else(|| Failure::Lsp("Unable to access stdout of language server".to_string()))?),
+            reader: BufReader::new(process.stdout.take().ok_or_else(|| {
+                Failure::Lsp("Unable to access stdout of language server".to_string())
+            })?),
             process,
         })
     }
 
     /// Initializes the `LspServer`.
     fn initialize(&mut self) -> Result<(), Failure> {
-        self.send_request::<Initialize>(InitializeParams{
+        self.send_request::<Initialize>(InitializeParams {
             process_id: Some(u64::from(process::id())),
             root_path: None,
-            root_uri: Some(Url::from_directory_path(env::current_dir()?.as_path()).map_err(|_| Failure::File(io::Error::new(ErrorKind::Other, "cannot convert current_dir to url")))?),
+            root_uri: Some(
+                Url::from_directory_path(env::current_dir()?.as_path()).map_err(|_| {
+                    Failure::File(io::Error::new(
+                        ErrorKind::Other,
+                        "cannot convert current_dir to url",
+                    ))
+                })?,
+            ),
             initialization_options: None,
             capabilities: ClientCapabilities::default(),
             trace: None,
@@ -183,7 +214,9 @@ impl LspServer {
         if self.reader.read_line(&mut line).is_ok() {
             let mut split = line.trim().split(": ");
 
-            if split.next() == Some("Content-Length") && self.reader.read_line(&mut blank_line).is_ok() {
+            if split.next() == Some("Content-Length")
+                && self.reader.read_line(&mut blank_line).is_ok()
+            {
                 if let Some(length_str) = split.next() {
                     let mut content = vec![0; length_str.parse()?];
 
@@ -192,8 +225,12 @@ impl LspServer {
                             trace!("received: {}", json_string);
                             if let Ok(message) = serde_json::from_str::<Value>(&json_string) {
                                 if let Some(result) = message.get("result") {
-                                    if serde_json::from_value::<InitializeResult>(result.to_owned()).is_ok() {
-                                        self.send_notification::<Initialized>(InitializedParams {})?;
+                                    if serde_json::from_value::<InitializeResult>(result.to_owned())
+                                        .is_ok()
+                                    {
+                                        self.send_notification::<Initialized>(
+                                            InitializedParams {},
+                                        )?;
                                     }
                                 }
                             }
@@ -244,12 +281,18 @@ impl LspServer {
     }
 
     /// Sends `message` to the language server process.
-    fn send_message(&mut self, message: &Call) -> Result<(), Failure>{
+    fn send_message(&mut self, message: &Call) -> Result<(), Failure> {
         let json_string = serde_json::to_string(message)?;
         trace!("Sending: {}", json_string);
 
         if let Some(stdin) = self.process.stdin.as_mut() {
-            write!(stdin, "Content-Length: {}\r\n\r\n{}", json_string.len(), json_string).unwrap();
+            write!(
+                stdin,
+                "Content-Length: {}\r\n\r\n{}",
+                json_string.len(),
+                json_string
+            )
+            .unwrap();
         } else {
             warn!("Unable to retrieve stdin of language server processs");
         }

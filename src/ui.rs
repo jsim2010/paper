@@ -5,12 +5,11 @@ use {
     clap::ArgMatches,
     core::{convert::TryInto, time::Duration},
     crossterm::{
-        terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
-        execute,
         cursor::MoveTo,
         event::{self, Event},
-        queue,
+        execute, queue,
         style::Print,
+        terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
         ErrorKind,
     },
     log::{trace, warn},
@@ -94,7 +93,9 @@ impl Terminal {
 
                     self.print_at_row(start_row, &modifications.join("\n"))?;
 
-                    if let Some(modified_lines) = self.grid.get_mut(start_row.into()..=end_row.into()) {
+                    if let Some(modified_lines) =
+                        self.grid.get_mut(start_row.into()..=end_row.into())
+                    {
                         modified_lines.swap_with_slice(&mut modifications);
                     }
                 }
@@ -124,17 +125,29 @@ impl Terminal {
     /// `0` indicates `line` is either the first line of the grid or above it.
     /// `u16::max_value()` indicates `line` is either the last line of the grid or below it.
     fn get_row(&self, line: u64) -> u16 {
-        line.saturating_sub(self.first_line).try_into().unwrap_or(u16::max_value())
+        line.saturating_sub(self.first_line)
+            .try_into()
+            .unwrap_or(u16::max_value())
     }
-    
+
     /// Returns the lines within `edit` that will modify the user interface.
     fn get_modifications(&self, edit: &TextEdit) -> Vec<String> {
-        edit.new_text.lines().skip(self.first_line.saturating_sub(edit.range.start.line).try_into().unwrap_or(usize::max_value())).take(self.rows.into()).map(|text| {
-            let mut line = String::from(text);
+        edit.new_text
+            .lines()
+            .skip(
+                self.first_line
+                    .saturating_sub(edit.range.start.line)
+                    .try_into()
+                    .unwrap_or(usize::max_value()),
+            )
+            .take(self.rows.into())
+            .map(|text| {
+                let mut line = String::from(text);
 
-            line.push_str(&" ".repeat(usize::from(self.columns).saturating_sub(text.len())));
-            line
-        }).collect::<Vec<String>>()
+                line.push_str(&" ".repeat(usize::from(self.columns).saturating_sub(text.len())));
+                line
+            })
+            .collect::<Vec<String>>()
     }
 
     /// Adds to the queue the commands to print `s` starting at column 0 of `row`.
