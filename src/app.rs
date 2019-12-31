@@ -191,6 +191,7 @@ impl LspServer {
 
     /// Initializes the `LspServer`.
     fn initialize(&mut self) -> Result<(), Failure> {
+        #[allow(deprecated)] // root_path is a required field.
         self.send_request::<Initialize>(InitializeParams {
             process_id: Some(u64::from(process::id())),
             root_path: None,
@@ -206,6 +207,7 @@ impl LspServer {
             capabilities: ClientCapabilities::default(),
             trace: None,
             workspace_folders: None,
+            client_info: None,
         })?;
 
         let mut line = String::new();
