@@ -1,10 +1,13 @@
 //! Implements the functionality of converting [`Input`] to [`Operation`]s.
-use crate::{
-    app::{Operation, Sheet},
-    ui::{Argument, Input},
-    Mode,
-};
 use std::fmt::Debug;
+use {
+    crate::{
+        app::{Operation, Sheet},
+        ui::Input,
+        Mode,
+    },
+    crossterm::event::{Event, KeyCode},
+};
 
 /// Defines the functionality to convert [`Input`] to [`Operation`]s.
 pub(crate) trait Interpreter: Debug {
@@ -26,11 +29,31 @@ impl ViewInterpreter {
 impl Interpreter for ViewInterpreter {
     fn decode(&self, input: Input, _sheet: &Sheet) -> Vec<Operation> {
         match input {
-            Input::Arg(Argument::File(file)) => vec![Operation::ViewFile(file)],
-            // Temporary mapping to provide basic functionality prior to adding Mode::Command.
-            Input::Backspace => vec![Operation::Quit],
-            Input::Escape => vec![Operation::SwitchMode(Mode::View)],
-            Input::Char(_) | Input::Enter => vec![],
+            Input::Config(config) => vec![Operation::UpdateConfig(config)],
+            Input::User(event) => match event {
+                Event::Key(key) => match key.code {
+                    // Temporary mapping to provide basic functionality prior to adding Mode::Command.
+                    KeyCode::Backspace => vec![Operation::Quit],
+                    KeyCode::Esc => vec![Operation::SwitchMode(Mode::View)],
+                    KeyCode::Enter
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+                    | KeyCode::Tab
+                    | KeyCode::BackTab
+                    | KeyCode::Delete
+                    | KeyCode::Insert
+                    | KeyCode::F(..)
+                    | KeyCode::Char(..)
+                    | KeyCode::Null => vec![],
+                },
+                Event::Mouse(..) | Event::Resize(..) => vec![],
+            },
         }
     }
 }

@@ -80,54 +80,156 @@
 )]
 // Temporary allows.
 #![allow(
-    clippy::missing_const_for_fn, // Flags methods in derived traits.
     clippy::missing_inline_in_public_items, // Flags methods in derived traits.
     clippy::multiple_crate_versions, // Requires redox_users update to avoid multiple versions of rand_core.
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
 )]
 
 mod app;
-mod num;
 mod translate;
 mod ui;
 
-use app::{Mode, Operation, Outcome, Sheet};
-use clap::ArgMatches;
-use displaydoc::Display as DisplayDoc;
-use log::SetLoggerError;
-use simplelog::{Config, LevelFilter, WriteLogger};
-use std::{collections::HashMap, fs::File, io};
-use translate::{Interpreter, ViewInterpreter};
-use ui::{Change, Input, Terminal};
+pub use ui::Settings;
+
+use {
+    app::{Mode, Operation, Outcome, Sheet},
+    crossterm::ErrorKind,
+    displaydoc::Display as DisplayDoc,
+    log::SetLoggerError,
+    simplelog::{Config, LevelFilter, WriteLogger},
+    std::{collections::HashMap, fs::File, io, num::ParseIntError},
+    translate::{Interpreter, ViewInterpreter},
+    ui::{Change, Input, Terminal},
+};
+
+/// Describes the paper application.
+#[derive(Debug, Default)]
+pub struct Paper {
+    /// Current [`Mode`] of the application.
+    mode: Mode,
+    /// [`Interpreter`]s supported by the application.
+    interpreters: InterpreterMap,
+    /// Interface between the application and the user.
+    ui: Terminal,
+    /// The [`Sheet`] of the application.
+    sheet: Sheet,
+}
+
+impl Paper {
+    /// Creates a new instance of the application.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Configures and runs the application.
+    #[inline]
+    pub fn run(&mut self, settings: Settings) -> Result<(), Failure> {
+        WriteLogger::init(
+            LevelFilter::Trace,
+            Config::default(),
+            File::create("paper.log")?,
+        )?;
+        self.ui.init(settings)?;
+        let mut result;
+
+        loop {
+            result = self.step();
+
+            if let Err(error) = &result {
+                // Quit indicates user requested to end application, which is not a
+                // true Failure.
+                if let Failure::Quit = error {
+                    result = Ok(());
+                }
+
+                break;
+            }
+        }
+
+        result
+    }
+
+    /// Processes a single event from the user.
+    #[inline]
+    fn step(&mut self) -> Result<(), Failure> {
+        if let Some(input) = self.ui.input()? {
+            for operation in self.translate(input)? {
+                if let Some(outcome) = self.sheet.operate(operation)? {
+                    let change = match outcome {
+                        Outcome::SwitchMode(mode) => {
+                            self.mode = mode;
+                            Change::Reset
+                        }
+                        Outcome::EditText(edits) => Change::Text(edits),
+                        Outcome::Alert(alert) => Change::Message(alert),
+                    };
+
+                    self.ui.apply(change)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Converts `input` to the appropriate [`Vec`] of [`Operation`]s.
+    fn translate(&self, input: Input) -> Result<Vec<Operation>, Failure> {
+        Ok(self.interpreters.get(self.mode)?.decode(input, &self.sheet))
+    }
+}
 
 /// An event that causes the application to stop running.
 #[derive(Debug, DisplayDoc)]
 pub enum Failure {
-    /// user interface error: `{0}`
-    Ui(ui::Error),
+    /// user interface: {0}
+    Ui(ErrorKind),
     /// file error: `{0}`
     File(io::Error),
     /// unknown mode: `{0}`
     UnknownMode(Mode),
     /// logger error: `{0}`
     Logger(SetLoggerError),
+    /// serialization error: `{0}`
+    Serde(serde_json::Error),
+    /// parse error: `{0}`
+    Parse(ParseIntError),
+    /// language server error: `{0}`
+    Lsp(String),
     /// user quit application
     Quit,
 }
 
-impl From<ui::Error> for Failure {
-    fn from(value: ui::Error) -> Self {
+impl From<ErrorKind> for Failure {
+    #[must_use]
+    fn from(value: ErrorKind) -> Self {
         Self::Ui(value)
     }
 }
 
 impl From<io::Error> for Failure {
+    #[must_use]
     fn from(value: io::Error) -> Self {
         Self::File(value)
     }
 }
 
+impl From<ParseIntError> for Failure {
+    #[must_use]
+    fn from(value: ParseIntError) -> Self {
+        Self::Parse(value)
+    }
+}
+
+impl From<serde_json::Error> for Failure {
+    #[must_use]
+    fn from(value: serde_json::Error) -> Self {
+        Self::Serde(value)
+    }
+}
+
 impl From<SetLoggerError> for Failure {
+    #[must_use]
     fn from(value: SetLoggerError) -> Self {
         Self::Logger(value)
     }
@@ -153,96 +255,10 @@ impl Default for InterpreterMap {
     fn default() -> Self {
         /// The [`Interpreter`] for [`Mode::View`].
         static VIEW_INTERPRETER: ViewInterpreter = ViewInterpreter::new();
-        // Must use local variable to annotate that view_interpreter has type &dyn
-        // Interpreter. The compiler infers all subsequent pointers.
-        let view_interpreter: &dyn Interpreter = &VIEW_INTERPRETER;
 
-        Self {
-            map: [
-                (Mode::View, view_interpreter),
-                //(Mode::Command, &CommandInterpreter::new()),
-                //(Mode::Edit, &EditInterpreter::new()),
-            ]
-            .iter()
-            .cloned()
-            .collect(),
-        }
-    }
-}
+        let mut map: HashMap<Mode, &'static dyn Interpreter> = HashMap::new();
 
-/// Describes the paper application.
-#[derive(Debug, Default)]
-pub struct Paper {
-    /// Current [`Mode`] of the application.
-    mode: Mode,
-    /// [`Interpreter`]s supported by the application.
-    interpreters: InterpreterMap,
-    /// Interface between the application and the user.
-    ui: Terminal,
-    /// The [`Sheet`] of the application.
-    sheet: Sheet,
-}
-
-impl Paper {
-    /// Runs the application.
-    #[inline]
-    pub fn run(&mut self, args: &ArgMatches<'_>) -> Result<(), Failure> {
-        let mut result;
-
-        self.initialize_logger()?;
-        self.ui.init(args)?;
-
-        loop {
-            result = self.step();
-
-            if let Err(error) = &result {
-                // Quit indicates user requested to end application, which is not not a
-                // true Failure.
-                if let Failure::Quit = error {
-                    result = Ok(());
-                }
-
-                break;
-            }
-        }
-
-        self.ui.stop()?;
-        result
-    }
-
-    /// Processes a single input from the user.
-    #[inline]
-    fn step(&mut self) -> Result<(), Failure> {
-        if let Some(input) = self.ui.input() {
-            for operation in self.translate(input)? {
-                if let Some(outcome) = self.sheet.operate(operation)? {
-                    match outcome {
-                        Outcome::SwitchMode(mode) => {
-                            self.mode = mode;
-                        }
-                        Outcome::EditText(edits) => {
-                            self.ui.apply(Change::Text(edits))?;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Initializes the logger for the application.
-    fn initialize_logger(&self) -> Result<(), Failure> {
-        WriteLogger::init(
-            LevelFilter::Trace,
-            Config::default(),
-            File::create("paper.log")?,
-        )?;
-        Ok(())
-    }
-
-    /// Converts `input` to the appropriate [`Vec`] of [`Operation`]s.
-    fn translate(&self, input: Input) -> Result<Vec<Operation>, Failure> {
-        Ok(self.interpreters.get(self.mode)?.decode(input, &self.sheet))
+        let _ = map.insert(Mode::View, &VIEW_INTERPRETER);
+        Self { map }
     }
 }
