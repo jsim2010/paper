@@ -4,7 +4,7 @@ use {
     lsp_types::{lsp_request, lsp_notification, InitializeParams, InitializedParams, Url, ClientCapabilities, notification::Notification, request::Request},
     serde::Serialize,
     std::{sync::{Mutex, Arc, mpsc::{self, Receiver, RecvError, Sender, SendError}}, io::{self, Read, BufRead, BufReader, Write, ErrorKind}, env, process::{self, Stdio, Command, Child, ChildStdout, ChildStdin}, thread},
-    log::{trace, error},
+    log::{trace, error, warn},
     displaydoc::Display as DisplayDoc,
 };
 
@@ -182,6 +182,22 @@ impl LspServer {
         Ok(())
     }
 
+    fn shutdown_and_exit(&mut self) -> Result<(), Failure> {
+        self.send_request::<lsp_request!("shutdown")>(())?;
+        self.terminate_stderr_thread();
+        self.transmitter.send_notification::<lsp_notification!("exit")>(())?;
+        
+        if let Err(e) = self.process.wait() {
+            warn!("Unable to wait on language server process exit: {}", e);
+        }
+
+        Ok(())
+    }
+
+    fn terminate_stderr_thread(&self) {
+        self.stderr_tx.send(()).unwrap();
+    }
+
     /// Sends a request with `params` to the language server process and waits for a response.
     fn send_request<T: Request>(&mut self, params: T::Params) -> Result<(), Failure>
     where
@@ -197,16 +213,13 @@ impl LspServer {
 
 impl Drop for LspServer {
     fn drop(&mut self) {
-        if let Err(e) = self.send_request::<lsp_request!("shutdown")>(()) {
-            error!("Unable to send shutdown request to language server: {}", e);
-        } else {
-            self.stderr_tx.send(()).unwrap();
-            if let Err(e) = self.transmitter.send_notification::<lsp_notification!("exit")>(()) {
-                error!("Unable to send exit notification to language server: {}", e);
+        if let Err(e) = self.shutdown_and_exit() {
+            warn!("Unable to cleanly shutdown and exit language server: {}", e);
+
+            if let Err(kill_error) = self.process.kill() {
+                warn!("Unable to kill language server process: {}", kill_error);
             }
         }
-
-        self.process.wait();
     }
 }
 
