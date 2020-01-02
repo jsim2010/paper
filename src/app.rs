@@ -1,27 +1,20 @@
 //! Implements the modality of the application.
-use crate::{ui::Config, Failure};
-use core::convert::TryFrom;
-use displaydoc::Display as DisplayDoc;
-use log::{trace, warn};
-use lsp_types::{
-    notification::{Initialized, Notification},
-    request::{Initialize, Request},
-    ClientCapabilities, InitializeParams, InitializeResult, InitializedParams, MessageType,
-    Position, Range, ShowMessageParams, TextEdit,
-};
-use parse_display::Display as ParseDisplay;
-use url::{ParseError, Url};
+mod lsp;
+
 use {
-    jsonrpc_core::{Call, Id, MethodCall, Params, Version},
-    serde::Serialize,
-    serde_json::{self, Value},
+    url::{ParseError, Url},
+    crate::{ui::Config, Failure},
+    core::convert::TryFrom,
+    displaydoc::Display as DisplayDoc,
+    lsp::LspServer,
+    parse_display::Display as ParseDisplay,
+    lsp_types::{MessageType, Position, Range, ShowMessageParams, TextEdit},
     std::{
         collections::{hash_map::Entry, HashMap},
         env,
         fmt::Debug,
         fs,
-        io::{self, BufRead, BufReader, ErrorKind, Read, Write},
-        process::{self, Child, ChildStdout, Command, Stdio},
+        io::{self, ErrorKind},
     },
 };
 
@@ -161,153 +154,6 @@ impl TryFrom<String> for Document {
             })?,
             url,
         })
-    }
-}
-
-/// Represents a language server process.
-#[derive(Debug)]
-struct LspServer {
-    /// The language server process.
-    process: Child,
-    /// Process the output from the language server.
-    reader: BufReader<ChildStdout>,
-}
-
-impl LspServer {
-    /// Creates a new `LspServer` represented by `process_cmd`.
-    fn new(process_cmd: &str) -> Result<Self, Failure> {
-        let mut process = Command::new(process_cmd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        Ok(Self {
-            reader: BufReader::new(process.stdout.take().ok_or_else(|| {
-                Failure::Lsp("Unable to access stdout of language server".to_string())
-            })?),
-            process,
-        })
-    }
-
-    /// Initializes the `LspServer`.
-    fn initialize(&mut self) -> Result<(), Failure> {
-        #[allow(deprecated)] // root_path is a required field.
-        self.send_request::<Initialize>(InitializeParams {
-            process_id: Some(u64::from(process::id())),
-            root_path: None,
-            root_uri: Some(
-                Url::from_directory_path(env::current_dir()?.as_path()).map_err(|_| {
-                    Failure::File(io::Error::new(
-                        ErrorKind::Other,
-                        "cannot convert current_dir to url",
-                    ))
-                })?,
-            ),
-            initialization_options: None,
-            capabilities: ClientCapabilities::default(),
-            trace: None,
-            workspace_folders: None,
-            client_info: None,
-        })?;
-
-        let mut line = String::new();
-        let mut blank_line = String::new();
-
-        if self.reader.read_line(&mut line).is_ok() {
-            let mut split = line.trim().split(": ");
-
-            if split.next() == Some("Content-Length")
-                && self.reader.read_line(&mut blank_line).is_ok()
-            {
-                if let Some(length_str) = split.next() {
-                    let mut content = vec![0; length_str.parse()?];
-
-                    if self.reader.read_exact(&mut content).is_ok() {
-                        if let Ok(json_string) = String::from_utf8(content) {
-                            trace!("received: {}", json_string);
-                            if let Ok(message) = serde_json::from_str::<Value>(&json_string) {
-                                if let Some(result) = message.get("result") {
-                                    if serde_json::from_value::<InitializeResult>(result.to_owned())
-                                        .is_ok()
-                                    {
-                                        self.send_notification::<Initialized>(
-                                            InitializedParams {},
-                                        )?;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Sends a request with `params` to the language server process.
-    fn send_request<T: Request>(&mut self, params: T::Params) -> Result<(), Failure>
-    where
-        T::Params: Serialize,
-    {
-        if let Value::Object(params_object) = serde_json::to_value(params)? {
-            self.send_message(&Call::MethodCall(MethodCall {
-                jsonrpc: Some(Version::V2),
-                method: T::METHOD.to_string(),
-                params: Params::Map(params_object),
-                id: Id::Num(0),
-            }))?;
-        } else {
-            warn!("Request params converted to something other than an object");
-        }
-
-        Ok(())
-    }
-
-    /// Sends a notification with `params` to the language server process.
-    fn send_notification<T: Notification>(&mut self, params: T::Params) -> Result<(), Failure>
-    where
-        T::Params: Serialize,
-    {
-        if let Value::Object(params_object) = serde_json::to_value(params)? {
-            self.send_message(&Call::Notification(jsonrpc_core::Notification {
-                jsonrpc: Some(Version::V2),
-                method: T::METHOD.to_string(),
-                params: Params::Map(params_object),
-            }))?;
-        } else {
-            warn!("Notification params converted to something other than an object");
-        }
-
-        Ok(())
-    }
-
-    /// Sends `message` to the language server process.
-    fn send_message(&mut self, message: &Call) -> Result<(), Failure> {
-        let json_string = serde_json::to_string(message)?;
-        trace!("Sending: {}", json_string);
-
-        if let Some(stdin) = self.process.stdin.as_mut() {
-            write!(
-                stdin,
-                "Content-Length: {}\r\n\r\n{}",
-                json_string.len(),
-                json_string
-            )
-            .unwrap();
-        } else {
-            warn!("Unable to retrieve stdin of language server processs");
-        }
-
-        Ok(())
-    }
-}
-
-impl Drop for LspServer {
-    fn drop(&mut self) {
-        if self.process.kill().is_err() {
-            warn!("Attempted to kill a language server process that was not running");
-        }
     }
 }
 
