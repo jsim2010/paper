@@ -1,7 +1,7 @@
 use {
     crate::Failure,
     jsonrpc_core::{Call, MethodCall, Value, Params, Output, Success, Response, Version, Id},
-    lsp_types::{lsp_request, lsp_notification, InitializeParams, InitializedParams, Url, ClientCapabilities, notification::Notification, request::Request},
+    lsp_types::{lsp_request, InitializeParams, InitializedParams, Url, ClientCapabilities, request::Request},
     serde::Serialize,
     std::{sync::{Mutex, Arc, mpsc::{self, Receiver, RecvError, Sender, SendError}}, io::{self, Read, BufRead, BufReader, Write, ErrorKind}, env, process::{self, Stdio, Command, Child, ChildStdout, ChildStdin}, thread},
     log::{trace, error, warn},
@@ -175,9 +175,7 @@ impl LspServer {
             client_info: None,
         })?;
 
-        self.transmitter.send_notification::<lsp_notification!("initialized")>(
-            InitializedParams {},
-        )?;
+        self.transmitter.send_notification(InitializedParams{})?;
 
         Ok(())
     }
@@ -185,7 +183,7 @@ impl LspServer {
     fn shutdown_and_exit(&mut self) -> Result<(), Failure> {
         self.send_request::<lsp_request!("shutdown")>(())?;
         self.terminate_stderr_thread();
-        self.transmitter.send_notification::<lsp_notification!("exit")>(())?;
+        self.transmitter.send_notification(ExitParams{})?;
         
         if let Err(e) = self.process.wait() {
             warn!("Unable to wait on language server process exit: {}", e);
@@ -245,6 +243,16 @@ impl LspTransmitter {
         result
     }
 
+    fn send_notification(&mut self, notification: impl Notification + Serialize) -> Result<(), Failure> {
+        self.send_call(&Call::Notification(jsonrpc_core::Notification {
+            jsonrpc: Some(Version::V2),
+            method: notification.method(),
+            params: notification.params()?,
+        }))?;
+
+        Ok(())
+    }
+
     fn get_params<T: Serialize>(params: T) -> Result<Params, Failure>
     {
         Ok(match serde_json::to_value(params)? {
@@ -265,20 +273,6 @@ impl LspTransmitter {
             params: Self::get_params(params)?,
             id: Id::Num(self.id),
         }))
-    }
-
-    /// Sends a notification with `params` to the language server process.
-    fn send_notification<T: Notification>(&mut self, params: T::Params) -> Result<(), Failure>
-    where
-        T::Params: Serialize,
-    {
-        self.send_call(&Call::Notification(jsonrpc_core::Notification {
-            jsonrpc: Some(Version::V2),
-            method: T::METHOD.to_string(),
-            params: Self::get_params(params)?,
-        }))?;
-
-        Ok(())
     }
 
     /// Sends `call` to the language server process.
@@ -303,5 +297,36 @@ impl LspTransmitter {
             s.len(),
             s
         ).unwrap();
+    }
+}
+
+trait Notification {
+    fn method(&self) -> String;
+
+    fn params(&self) -> Result<Params, Failure>
+        where
+            Self: Serialize,
+    {
+        Ok(match serde_json::to_value(self)? {
+            Value::Object(object) => Ok(Params::Map(object)),
+            Value::Null => Ok(Params::None),
+            _ => Err(LspError::InvalidRequestParams),
+        }?)
+    }
+}
+
+impl Notification for InitializedParams {
+    fn method(&self) -> String {
+        "initialized".to_string()
+    }
+}
+
+// lsp_types does not define a Params for "exit".
+#[derive(Serialize)]
+struct ExitParams {}
+
+impl Notification for ExitParams {
+    fn method(&self) -> String {
+        "exit".to_string()
     }
 }
