@@ -1,33 +1,28 @@
 use {
     crate::Failure,
-    jsonrpc_core::{Call, MethodCall, Value, Params, Version, Id},
-    lsp_types::{InitializeParams, InitializedParams, InitializeResult, Url, ClientCapabilities, notification::{Notification, Initialized}, request::{Initialize, Request}},
+    jsonrpc_core::{Call, MethodCall, Value, Params, Output, Success, Response, Version, Id},
+    lsp_types::{lsp_request, lsp_notification, InitializeParams, InitializedParams, Url, ClientCapabilities, notification::Notification, request::Request},
     serde::Serialize,
-    std::{sync::mpsc::{self, Receiver, RecvError, Sender, SendError}, io::{self, Read, BufRead, BufReader, Write, ErrorKind}, env, process::{self, Stdio, Command, Child, ChildStdout}, thread},
-    log::{trace, warn, error},
+    std::{sync::{Mutex, Arc, mpsc::{self, Receiver, RecvError, Sender, SendError}}, io::{self, Read, BufRead, BufReader, Write, ErrorKind}, env, process::{self, Stdio, Command, Child, ChildStdout, ChildStdin}, thread},
+    log::{trace, error},
     displaydoc::Display as DisplayDoc,
 };
 
-/// A response to a LSP request.
-#[derive(Debug)]
-pub enum Response {
-    /// Response for `initialize`.
-    Initialize(InitializeResult),
-}
-
 /// An Lsp Error.
-#[derive(Debug, DisplayDoc)]
+#[derive(Clone, Copy, Debug, DisplayDoc)]
 pub enum LspError {
     /// send error `{0}`
-    Send(SendError<Response>),
+    Send(SendError<u64>),
     /// receive error `{0}`
     Receive(RecvError),
     /// unable to access stdout of language server
     InvalidStdout,
+    /// unable to process request params
+    InvalidRequestParams,
 }
 
-impl From<SendError<Response>> for LspError {
-    fn from(value: SendError<Response>) -> Self {
+impl From<SendError<u64>> for LspError {
+    fn from(value: SendError<u64>) -> Self {
         Self::Send(value)
     }
 }
@@ -39,39 +34,52 @@ impl From<RecvError> for LspError {
 }
 
 struct LspProcessor {
+    transmitter: LspTransmitter,
     reader: BufReader<ChildStdout>,
-    tx: Sender<Response>,
+    response_tx: Sender<u64>,
+    is_quitting: bool,
 }
 
 impl LspProcessor {
-    fn new(process: &mut Child, tx: Sender<Response>) -> Result<Self, Failure> {
+    fn new(process: &mut Child, response_tx: Sender<u64>, transmitter: LspTransmitter) -> Result<Self, Failure> {
         process.stdout.take().ok_or_else(|| {
                 LspError::InvalidStdout.into()
-        }).map(|stdout| Self { reader: BufReader::new(stdout), tx})
+        }).map(|stdout| Self { reader: BufReader::new(stdout), response_tx, is_quitting: false, transmitter})
     }
 
     fn process(&mut self) -> Result<(), LspError> {
         let mut line = String::new();
         let mut blank_line = String::new();
 
-        if self.reader.read_line(&mut line).is_ok() {
-            let mut split = line.trim().split(": ");
+        while !self.is_quitting {
+            if self.reader.read_line(&mut line).is_ok() {
+                let mut split = line.trim().split(": ");
 
-            if split.next() == Some("Content-Length")
-                && self.reader.read_line(&mut blank_line).is_ok()
-            {
-                if let Some(length_str) = split.next() {
-                    if let Ok(length) = length_str.parse() {
-                        let mut content = vec![0; length];
+                if split.next() == Some("Content-Length")
+                    && self.reader.read_line(&mut blank_line).is_ok()
+                {
+                    if let Some(length_str) = split.next() {
+                        if let Ok(length) = length_str.parse() {
+                            let mut content = vec![0; length];
 
-                        if self.reader.read_exact(&mut content).is_ok() {
-                            if let Ok(json_string) = String::from_utf8(content) {
-                                trace!("received: {}", json_string);
-                                if let Ok(message) = serde_json::from_str::<Value>(&json_string) {
-                                    if let Some(result) = message.get("result") {
-                                        if let Ok(response) = serde_json::from_value(result.clone()) {
-                                            #[allow(clippy::result_expect_used)]
-                                            self.tx.send(Response::Initialize(response))?;
+                            if self.reader.read_exact(&mut content).is_ok() {
+                                if let Ok(json_string) = String::from_utf8(content) {
+                                    trace!("Received: {}", json_string);
+                                    if let Ok(message) = serde_json::from_str::<Value>(&json_string) {
+                                        if let Some(_result) = message.get("result") {
+                                            if let Some(id) = message.get("id") {
+                                                if let Ok(response_id) = serde_json::from_value(id.clone()) {
+                                                    self.response_tx.send(response_id)?;
+                                                }
+                                            }
+                                        } else if let Some(id) = message.get("id") {
+                                            if let Ok(message_id) = serde_json::from_value::<u64>(id.clone()) {
+                                                self.transmitter.send_response(&Response::Single(Output::Success(Success {
+                                                    jsonrpc: Some(Version::V2),
+                                                    result: Value::Null,
+                                                    id: Id::Num(message_id),
+                                                })))?;
+                                            }
                                         }
                                     }
                                 }
@@ -79,10 +87,18 @@ impl LspProcessor {
                         }
                     }
                 }
+                
+                line.clear();
             }
         }
-
+        
         Ok(())
+    }
+}
+
+impl Drop for LspProcessor {
+    fn drop(&mut self) {
+        self.is_quitting = true;
     }
 }
 
@@ -92,7 +108,9 @@ pub(crate) struct LspServer {
     /// The language server process.
     process: Child,
     /// Receives responses from the language server process.
-    rx: Receiver<Response>,
+    response_rx: Receiver<u64>,
+    transmitter: LspTransmitter,
+    stderr_tx: Sender<()>,
 }
 
 impl LspServer {
@@ -103,8 +121,9 @@ impl LspServer {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let (tx, rx) = mpsc::channel();
-        let mut processor = LspProcessor::new(&mut process, tx)?;
+        let (response_tx, response_rx) = mpsc::channel();
+        let transmitter = LspTransmitter::new(process.stdin.take().unwrap());
+        let mut processor = LspProcessor::new(&mut process, response_tx, transmitter.clone())?;
 
         let _ = thread::spawn(move || {
             if let Err(error) = processor.process() {
@@ -112,16 +131,33 @@ impl LspServer {
             }
         });
 
+        let stderr = process.stderr.take().unwrap();
+        let (stderr_tx, stderr_rx) = mpsc::channel();
+        let _ = thread::spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+
+            while stderr_rx.try_recv().is_err() {
+                // Rust's language server (rls) seems to send empty lines over stderr after shutdown request so skip those.
+                if reader.read_line(&mut line).is_ok() && !line.is_empty() {
+                    error!("{}", line);
+                    line.clear();
+                }
+            }
+        });
+
         Ok(Self {
             process,
-            rx,
+            response_rx,
+            transmitter,
+            stderr_tx,
         })
     }
 
     /// Initializes the `LspServer`.
     pub(crate) fn initialize(&mut self) -> Result<(), Failure> {
         #[allow(deprecated)] // root_path is a required field.
-        self.send_request::<Initialize>(InitializeParams {
+        self.send_request::<lsp_request!("initialize")>(InitializeParams {
             process_id: Some(u64::from(process::id())),
             root_path: None,
             root_uri: Some(
@@ -139,67 +175,21 @@ impl LspServer {
             client_info: None,
         })?;
 
-        let _response = self.rx.recv().map_err(LspError::from)?;
-        self.send_notification::<Initialized>(
+        self.transmitter.send_notification::<lsp_notification!("initialized")>(
             InitializedParams {},
         )?;
 
         Ok(())
     }
 
-    /// Sends a request with `params` to the language server process.
+    /// Sends a request with `params` to the language server process and waits for a response.
     fn send_request<T: Request>(&mut self, params: T::Params) -> Result<(), Failure>
     where
         T::Params: Serialize,
     {
-        if let Value::Object(params_object) = serde_json::to_value(params)? {
-            self.send_message(&Call::MethodCall(MethodCall {
-                jsonrpc: Some(Version::V2),
-                method: T::METHOD.to_string(),
-                params: Params::Map(params_object),
-                id: Id::Num(0),
-            }))?;
-        } else {
-            warn!("Request params converted to something other than an object");
-        }
+        self.transmitter.send_request::<T>(params)?;
 
-        Ok(())
-    }
-
-    /// Sends a notification with `params` to the language server process.
-    fn send_notification<T: Notification>(&mut self, params: T::Params) -> Result<(), Failure>
-    where
-        T::Params: Serialize,
-    {
-        if let Value::Object(params_object) = serde_json::to_value(params)? {
-            self.send_message(&Call::Notification(jsonrpc_core::Notification {
-                jsonrpc: Some(Version::V2),
-                method: T::METHOD.to_string(),
-                params: Params::Map(params_object),
-            }))?;
-        } else {
-            warn!("Notification params converted to something other than an object");
-        }
-
-        Ok(())
-    }
-
-    /// Sends `message` to the language server process.
-    fn send_message(&mut self, message: &Call) -> Result<(), Failure> {
-        let json_string = serde_json::to_string(message)?;
-        trace!("Sending: {}", json_string);
-
-        if let Some(stdin) = self.process.stdin.as_mut() {
-            write!(
-                stdin,
-                "Content-Length: {}\r\n\r\n{}",
-                json_string.len(),
-                json_string
-            )
-            .unwrap();
-        } else {
-            warn!("Unable to retrieve stdin of language server processs");
-        }
+        while !self.transmitter.confirm_id(self.response_rx.recv().map_err(LspError::from)?) {}
 
         Ok(())
     }
@@ -207,8 +197,98 @@ impl LspServer {
 
 impl Drop for LspServer {
     fn drop(&mut self) {
-        if self.process.kill().is_err() {
-            warn!("Attempted to kill a language server process that was not running");
+        if let Err(e) = self.send_request::<lsp_request!("shutdown")>(()) {
+            error!("Unable to send shutdown request to language server: {}", e);
+        } else {
+            self.stderr_tx.send(()).unwrap();
+            if let Err(e) = self.transmitter.send_notification::<lsp_notification!("exit")>(()) {
+                error!("Unable to send exit notification to language server: {}", e);
+            }
         }
+
+        self.process.wait();
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LspTransmitter {
+    stdin: Arc<Mutex<ChildStdin>>,
+    /// Current request id.
+    id: u64,
+}
+
+impl LspTransmitter {
+    fn new(stdin: ChildStdin) -> Self {
+        Self {id: 0, stdin: Arc::new(Mutex::new(stdin))}
+    }
+
+    fn confirm_id(&mut self, id: u64) -> bool {
+        let result = id == self.id;
+        
+        if result {
+            self.id += 1;
+        }
+
+        result
+    }
+
+    fn get_params<T: Serialize>(params: T) -> Result<Params, Failure>
+    {
+        Ok(match serde_json::to_value(params)? {
+            Value::Object(params_object) => Ok(Params::Map(params_object)),
+            Value::Null => Ok(Params::None),
+            _ => Err(LspError::InvalidRequestParams),
+        }?)
+    }
+
+    /// Sends a request with `params` to the language server process and waits for a response.
+    fn send_request<T: Request>(&mut self, params: T::Params) -> Result<(), Failure>
+    where
+        T::Params: Serialize,
+    {
+        self.send_call(&Call::MethodCall(MethodCall {
+            jsonrpc: Some(Version::V2),
+            method: T::METHOD.to_string(),
+            params: Self::get_params(params)?,
+            id: Id::Num(self.id),
+        }))
+    }
+
+    /// Sends a notification with `params` to the language server process.
+    fn send_notification<T: Notification>(&mut self, params: T::Params) -> Result<(), Failure>
+    where
+        T::Params: Serialize,
+    {
+        self.send_call(&Call::Notification(jsonrpc_core::Notification {
+            jsonrpc: Some(Version::V2),
+            method: T::METHOD.to_string(),
+            params: Self::get_params(params)?,
+        }))?;
+
+        Ok(())
+    }
+
+    /// Sends `call` to the language server process.
+    fn send_call(&mut self, call: &Call) -> Result<(), Failure> {
+        self.send_string(serde_json::to_string(call)?);
+
+        Ok(())
+    }
+
+    fn send_response(&mut self, response: &Response) -> Result<(), LspError> {
+        self.send_string(serde_json::to_string(response).unwrap());
+
+        Ok(())
+    }
+
+    fn send_string(&mut self, s: String) {
+        trace!("Sending: {}", s);
+
+        write!(
+            self.stdin.lock().unwrap(),
+            "Content-Length: {}\r\n\r\n{}",
+            s.len(),
+            s
+        ).unwrap();
     }
 }
