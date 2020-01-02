@@ -1,17 +1,89 @@
-//! Implements LSP functionality.
 use {
     crate::Failure,
     jsonrpc_core::{Call, MethodCall, Value, Params, Version, Id},
     lsp_types::{InitializeParams, InitializedParams, InitializeResult, Url, ClientCapabilities, notification::{Notification, Initialized}, request::{Initialize, Request}},
     serde::Serialize,
-    std::{sync::mpsc::{self, Receiver}, io::{self, Read, BufRead, BufReader, Write, ErrorKind}, env, process::{self, Stdio, Command, Child}, thread},
-    log::{trace, warn},
+    std::{sync::mpsc::{self, Receiver, RecvError, Sender, SendError}, io::{self, Read, BufRead, BufReader, Write, ErrorKind}, env, process::{self, Stdio, Command, Child, ChildStdout}, thread},
+    log::{trace, warn, error},
+    displaydoc::Display as DisplayDoc,
 };
 
 /// A response to a LSP request.
-enum Response {
+#[derive(Debug)]
+pub enum Response {
     /// Response for `initialize`.
     Initialize(InitializeResult),
+}
+
+/// An Lsp Error.
+#[derive(Debug, DisplayDoc)]
+pub enum LspError {
+    /// send error `{0}`
+    Send(SendError<Response>),
+    /// receive error `{0}`
+    Receive(RecvError),
+    /// unable to access stdout of language server
+    InvalidStdout,
+}
+
+impl From<SendError<Response>> for LspError {
+    fn from(value: SendError<Response>) -> Self {
+        Self::Send(value)
+    }
+}
+
+impl From<RecvError> for LspError {
+    fn from(value: RecvError) -> Self {
+        Self::Receive(value)
+    }
+}
+
+struct LspProcessor {
+    reader: BufReader<ChildStdout>,
+    tx: Sender<Response>,
+}
+
+impl LspProcessor {
+    fn new(process: &mut Child, tx: Sender<Response>) -> Result<Self, Failure> {
+        process.stdout.take().ok_or_else(|| {
+                LspError::InvalidStdout.into()
+        }).map(|stdout| Self { reader: BufReader::new(stdout), tx})
+    }
+
+    fn process(&mut self) -> Result<(), LspError> {
+        let mut line = String::new();
+        let mut blank_line = String::new();
+
+        if self.reader.read_line(&mut line).is_ok() {
+            let mut split = line.trim().split(": ");
+
+            if split.next() == Some("Content-Length")
+                && self.reader.read_line(&mut blank_line).is_ok()
+            {
+                if let Some(length_str) = split.next() {
+                    if let Ok(length) = length_str.parse() {
+                        let mut content = vec![0; length];
+
+                        if self.reader.read_exact(&mut content).is_ok() {
+                            if let Ok(json_string) = String::from_utf8(content) {
+                                trace!("received: {}", json_string);
+                                if let Ok(message) = serde_json::from_str::<Value>(&json_string) {
+                                    if let Some(result) = message.get("result") {
+                                        if let Ok(response) = serde_json::from_value(result.clone()) {
+                                            #[allow(clippy::result_expect_used)]
+                                            self.tx.send(Response::Initialize(response))?;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Represents a language server process.
@@ -31,41 +103,12 @@ impl LspServer {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let mut reader = BufReader::new(process.stdout.take().ok_or_else(|| {
-            Failure::Lsp("Unable to access stdout of language server".to_string())
-        })?);
         let (tx, rx) = mpsc::channel();
+        let mut processor = LspProcessor::new(&mut process, tx)?;
 
         let _ = thread::spawn(move || {
-            let mut line = String::new();
-            let mut blank_line = String::new();
-
-            if reader.read_line(&mut line).is_ok() {
-                let mut split = line.trim().split(": ");
-
-                if split.next() == Some("Content-Length")
-                    && reader.read_line(&mut blank_line).is_ok()
-                {
-                    if let Some(length_str) = split.next() {
-                        if let Ok(length) = length_str.parse() {
-                            let mut content = vec![0; length];
-
-                            if reader.read_exact(&mut content).is_ok() {
-                                if let Ok(json_string) = String::from_utf8(content) {
-                                    trace!("received: {}", json_string);
-                                    if let Ok(message) = serde_json::from_str::<Value>(&json_string) {
-                                        if let Some(result) = message.get("result") {
-                                            if let Ok(response) = serde_json::from_value(result.clone()) {
-                                                #[allow(clippy::result_expect_used)]
-                                                tx.send(Response::Initialize(response)).expect("Unable to send on LspServer channel");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Err(error) = processor.process() {
+                error!("Error in LspProcessor: {}", error);
             }
         });
 
@@ -96,7 +139,7 @@ impl LspServer {
             client_info: None,
         })?;
 
-        let _response = self.rx.recv().map_err(|_| Failure::Lsp("Sending half of LspServer channel disconnected".to_string()));
+        let _response = self.rx.recv().map_err(LspError::from)?;
         self.send_notification::<Initialized>(
             InitializedParams {},
         )?;
