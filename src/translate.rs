@@ -2,7 +2,7 @@
 use std::fmt::Debug;
 use {
     crate::{
-        app::{Operation, ConfirmAction},
+        app::{ConfirmAction, Operation},
         ui::Input,
     },
     crossterm::event::{Event, KeyCode},
@@ -31,11 +31,10 @@ impl Interpreter for ViewInterpreter {
             Input::Config(config) => vec![Operation::UpdateConfig(config)],
             Input::User(event) => match event {
                 Event::Key(key) => match key.code {
-                    // Temporary mapping to provide basic functionality prior to adding Mode::Command.
-                    KeyCode::Backspace => vec![Operation::Quit],
                     KeyCode::Esc => vec![Operation::Reset],
                     KeyCode::Char('q') => vec![Operation::Confirm(ConfirmAction::Quit)],
                     KeyCode::Enter
+                    | KeyCode::Backspace
                     | KeyCode::Left
                     | KeyCode::Right
                     | KeyCode::Up
@@ -69,14 +68,22 @@ mod test_view {
     fn quit() {
         let view = ViewInterpreter::new();
 
-        assert_eq!(view.decode(Input::User(Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty())))), vec![Operation::Confirm(ConfirmAction::Quit)]);
+        assert_eq!(
+            view.decode(Input::User(Event::Key(KeyEvent::new(
+                KeyCode::Char('q'),
+                KeyModifiers::empty()
+            )))),
+            vec![Operation::Confirm(ConfirmAction::Quit)]
+        );
     }
 }
 
+/// The [`Interpreter`] for [`Mode::Confirm`].
 #[derive(Clone, Debug)]
 pub(crate) struct ConfirmInterpreter {}
 
 impl ConfirmInterpreter {
+    /// Creates a new `ConfirmInterpreter`.
     pub(crate) const fn new() -> Self {
         Self {}
     }
@@ -88,11 +95,28 @@ impl Interpreter for ConfirmInterpreter {
             Input::User(event) => match event {
                 Event::Key(key) => match key.code {
                     KeyCode::Char('y') => vec![Operation::Quit],
-                    _ => vec![Operation::Reset],
-                }
-                _ => vec![],
-            }
-            _ => vec![],
+                    KeyCode::Char(..)
+                    | KeyCode::Backspace
+                    | KeyCode::Enter
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+                    | KeyCode::Tab
+                    | KeyCode::BackTab
+                    | KeyCode::Delete
+                    | KeyCode::Insert
+                    | KeyCode::F(..)
+                    | KeyCode::Null
+                    | KeyCode::Esc => vec![Operation::Reset],
+                },
+                Event::Mouse(..) | Event::Resize(..) => vec![],
+            },
+            Input::Config(..) => vec![],
         }
     }
 }
@@ -102,20 +126,44 @@ impl Interpreter for ConfirmInterpreter {
 mod test_confirm {
     use super::*;
     use crossterm::event::{KeyEvent, KeyModifiers};
-    
+
     static INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
 
     /// The `y` key shall confirm the action.
     #[test]
     fn confirm() {
-        assert_eq!(INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty())))), vec![Operation::Quit]);
+        assert_eq!(
+            INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
+                KeyCode::Char('y'),
+                KeyModifiers::empty()
+            )))),
+            vec![Operation::Quit]
+        );
     }
 
     /// Any other key shall cancel the action.
     #[test]
     fn cancel() {
-        assert_eq!(INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty())))), vec![Operation::Reset]);
-        assert_eq!(INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::empty())))), vec![Operation::Reset]);
-        assert_eq!(INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::empty())))), vec![Operation::Reset]);
+        assert_eq!(
+            INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
+                KeyCode::Char('n'),
+                KeyModifiers::empty()
+            )))),
+            vec![Operation::Reset]
+        );
+        assert_eq!(
+            INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::empty()
+            )))),
+            vec![Operation::Reset]
+        );
+        assert_eq!(
+            INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
+                KeyCode::Char('1'),
+                KeyModifiers::empty()
+            )))),
+            vec![Operation::Reset]
+        );
     }
 }

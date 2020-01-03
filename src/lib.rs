@@ -105,7 +105,7 @@ use {
     log::SetLoggerError,
     simplelog::{Config, LevelFilter, WriteLogger},
     std::{collections::HashMap, fs::File, io, num::ParseIntError},
-    translate::{Interpreter, ViewInterpreter, ConfirmInterpreter},
+    translate::{ConfirmInterpreter, Interpreter, ViewInterpreter},
     ui::{Change, Input, Terminal},
 };
 
@@ -264,7 +264,9 @@ impl InterpreterMap {
 
 impl Default for InterpreterMap {
     fn default() -> Self {
+        /// The [`Interpreter`] for [`Mode::View`].
         static VIEW_INTERPRETER: ViewInterpreter = ViewInterpreter::new();
+        /// The [`Interpreter`] for [`Mode::Confirm`].
         static CONFIRM_INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
 
         let mut map: HashMap<Mode, &'static dyn Interpreter> = HashMap::new();

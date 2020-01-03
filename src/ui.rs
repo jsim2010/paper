@@ -8,12 +8,12 @@ use {
         cursor::MoveTo,
         event::{self, Event},
         execute, queue,
-        style::{SetBackgroundColor, ResetColor, Print, Color},
+        style::{Color, Print, ResetColor, SetBackgroundColor},
         terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
         ErrorKind,
     },
     log::{trace, warn},
-    lsp_types::{ShowMessageParams, MessageType, ShowMessageRequestParams, TextEdit},
+    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
     std::io::{self, Stdout, Write},
 };
 
@@ -113,7 +113,15 @@ impl Terminal {
             }
             Change::Reset => {
                 if self.alert_line_count != 0 {
-                    self.print_at_row(0, &self.grid.get(0..self.alert_line_count).unwrap_or_default().join("\n"), None)?;
+                    self.print_at_row(
+                        0,
+                        &self
+                            .grid
+                            .get(0..self.alert_line_count)
+                            .unwrap_or_default()
+                            .join("\n"),
+                        None,
+                    )?;
                     self.alert_line_count = 0;
                 }
             }
@@ -127,9 +135,12 @@ impl Terminal {
     /// `0` indicates `line` is either the first line of the grid or above it.
     /// `self.rows - 1` indicates `line` is either the last line of the grid or below it.
     fn get_row(&self, line: u64) -> u16 {
-        cmp::min(line.saturating_sub(self.first_line)
-            .try_into()
-            .unwrap_or(u16::max_value()), self.rows.saturating_sub(1))
+        cmp::min(
+            line.saturating_sub(self.first_line)
+                .try_into()
+                .unwrap_or(u16::max_value()),
+            self.rows.saturating_sub(1),
+        )
     }
 
     /// Returns the lines within `edit` that will modify the user interface.
@@ -148,21 +159,27 @@ impl Terminal {
     }
 
     /// Adds to the queue the commands to print `s` starting at column 0 of `row`.
-    fn print_at_row(&mut self, row: u16, s: &str, context: Option<MessageType>) -> crossterm::Result<()> {
+    fn print_at_row(
+        &mut self,
+        row: u16,
+        s: &str,
+        context: Option<MessageType>,
+    ) -> crossterm::Result<()> {
         let mut r = row;
 
         for line in s.lines() {
             queue!(self.out, MoveTo(0, r))?;
 
             if let Some(t) = context {
-                queue!(self.out, SetBackgroundColor(
-                    match t {
+                queue!(
+                    self.out,
+                    SetBackgroundColor(match t {
                         MessageType::Error => Color::Red,
                         MessageType::Warning => Color::Yellow,
                         MessageType::Info => Color::Blue,
                         MessageType::Log => Color::Grey,
-                    }
-                ))?;
+                    })
+                )?;
             }
 
             queue!(self.out, Print(line), Clear(ClearType::UntilNewLine))?;
@@ -171,7 +188,7 @@ impl Terminal {
                 queue!(self.out, ResetColor)?;
             }
 
-            r += 1;
+            r = r.saturating_add(1);
         }
 
         Ok(())

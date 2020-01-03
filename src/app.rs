@@ -8,13 +8,13 @@ use {
     core::convert::TryFrom,
     displaydoc::Display as DisplayDoc,
     lsp::LspServer,
-    lsp_types::{MessageType, Position, Range, ShowMessageRequestParams, ShowMessageParams, TextEdit, MessageActionItem},
+    lsp_types::{
+        MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams, TextEdit,
+    },
     parse_display::Display as ParseDisplay,
     std::{
         collections::{hash_map::Entry, HashMap},
-        env,
-        fmt,
-        fs,
+        env, fmt, fs,
         io::{self, ErrorKind},
     },
     url::{ParseError, Url},
@@ -165,7 +165,9 @@ impl Sheet {
     pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Failure> {
         match operation {
             Operation::Reset => Ok(Some(Change::Reset)),
-            Operation::Confirm(action) => Ok(Some(Change::Question(ShowMessageRequestParams::from(action)))),
+            Operation::Confirm(action) => Ok(Some(Change::Question(
+                ShowMessageRequestParams::from(action),
+            ))),
             Operation::Quit => Err(Failure::Quit),
             Operation::UpdateConfig(Config::File(file)) => match Document::try_from(file) {
                 Ok(doc) => {
@@ -194,7 +196,9 @@ impl Sheet {
 /// Signifies actions that can be performed by the application.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Operation {
+    /// Resets the application.
     Reset,
+    /// Confirms that the action is desired.
     Confirm(ConfirmAction),
     /// Quits the application.
     Quit,
@@ -202,15 +206,11 @@ pub(crate) enum Operation {
     UpdateConfig(Config),
 }
 
+/// Signifies actions that require a confirmation prior to their execution.
 #[derive(Debug, PartialEq)]
 pub(crate) enum ConfirmAction {
+    /// Quit the application.
     Quit,
-}
-
-impl ConfirmAction {
-    fn items(&self) -> Option<Vec<MessageActionItem>> {
-        Some(vec![MessageActionItem { title: "Confirm".to_string()}, MessageActionItem {title: "Cancel".to_string()}])
-    }
 }
 
 impl fmt::Display for ConfirmAction {
@@ -220,11 +220,12 @@ impl fmt::Display for ConfirmAction {
 }
 
 impl From<ConfirmAction> for ShowMessageRequestParams {
+    #[must_use]
     fn from(value: ConfirmAction) -> Self {
         Self {
             typ: MessageType::Info,
             message: value.to_string(),
-            actions: value.items(),
+            actions: None,
         }
     }
 }
