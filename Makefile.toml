@@ -2,7 +2,7 @@
 script = ["rustup component add clippy", "cargo install cargo-readme"]
 
 [tasks.eval]
-dependencies = ["check-format", "check-readme", "deny-clippy", "test-verbose"]
+dependencies = ["check-format", "deny-clippy", "test-verbose"]
 
 [tasks.fix]
 dependencies = ["format", "fix-readme"]
