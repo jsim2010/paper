@@ -1,3 +1,9 @@
+//! Implements the entry point for the `paper` binary.
+//!
+//! ## Arguments
+//! 1) Default
+//! THEREFORE:
+//!     - Running `paper` with no arguments shall open the application with a blank screen.
 use {
     // `app_from_crate` requires using all the macros that it calls.
     clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, Arg},

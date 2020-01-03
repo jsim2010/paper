@@ -4,16 +4,16 @@ mod lsp;
 pub(crate) use lsp::Error as LspError;
 
 use {
-    crate::{ui::Config, Failure},
+    crate::{ui::Config, Change, Failure},
     core::convert::TryFrom,
     displaydoc::Display as DisplayDoc,
     lsp::LspServer,
-    lsp_types::{MessageType, Position, Range, ShowMessageParams, TextEdit},
+    lsp_types::{MessageType, Position, Range, ShowMessageRequestParams, ShowMessageParams, TextEdit, MessageActionItem},
     parse_display::Display as ParseDisplay,
     std::{
         collections::{hash_map::Entry, HashMap},
         env,
-        fmt::Debug,
+        fmt,
         fs,
         io::{self, ErrorKind},
     },
@@ -38,9 +38,9 @@ const ENTIRE_DOCUMENT: Range = Range {
 // Mode is pub due to being a member of Failure::UnknownMode.
 pub enum Mode {
     /// Displays the current file.
-    ///
-    /// Allows moving the screen or switching to other modes.
     View,
+    /// Confirms the user's action
+    Confirm,
     /// Displays the current command.
     Command,
     /// Displays the current view along with the current edits.
@@ -52,16 +52,6 @@ impl Default for Mode {
     fn default() -> Self {
         Self::View
     }
-}
-
-/// Signifies an action of the application after [`Sheet`] has performed an [`Operation`].
-pub(crate) enum Outcome {
-    /// Switches the [`Mode`] of the application.
-    SwitchMode(Mode),
-    /// Edits the text of the current document.
-    EditText(Vec<TextEdit>),
-    /// Displays a message to the user.
-    Alert(ShowMessageParams),
 }
 
 /// Signifies errors associated with [`Document`].
@@ -172,15 +162,10 @@ pub(crate) struct Sheet {
 
 impl Sheet {
     /// Performs `operation`.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Outcome>, Failure> {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Failure> {
         match operation {
-            Operation::SwitchMode(mode) => {
-                match mode {
-                    Mode::View | Mode::Command | Mode::Edit => {}
-                }
-
-                Ok(Some(Outcome::SwitchMode(mode)))
-            }
+            Operation::Reset => Ok(Some(Change::Reset)),
+            Operation::Confirm(action) => Ok(Some(Change::Question(ShowMessageRequestParams::from(action)))),
             Operation::Quit => Err(Failure::Quit),
             Operation::UpdateConfig(Config::File(file)) => match Document::try_from(file) {
                 Ok(doc) => {
@@ -193,12 +178,12 @@ impl Sheet {
                     let text = doc.text.clone();
 
                     self.doc = Some(doc);
-                    Ok(Some(Outcome::EditText(vec![TextEdit::new(
+                    Ok(Some(Change::Text(vec![TextEdit::new(
                         ENTIRE_DOCUMENT,
                         text,
                     )])))
                 }
-                Err(error) => Ok(Some(Outcome::Alert(ShowMessageParams::from(error)))),
+                Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
             }, //Operation::Save => {
                //    fs::write(path, file)
                //}
@@ -207,12 +192,39 @@ impl Sheet {
 }
 
 /// Signifies actions that can be performed by the application.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum Operation {
-    /// Switches the mode of the application.
-    SwitchMode(Mode),
+    Reset,
+    Confirm(ConfirmAction),
     /// Quits the application.
     Quit,
     /// Updates a configuration.
     UpdateConfig(Config),
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum ConfirmAction {
+    Quit,
+}
+
+impl ConfirmAction {
+    fn items(&self) -> Option<Vec<MessageActionItem>> {
+        Some(vec![MessageActionItem { title: "Confirm".to_string()}, MessageActionItem {title: "Cancel".to_string()}])
+    }
+}
+
+impl fmt::Display for ConfirmAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "You have input that you want to quit the application.\nPlease confirm this action by pressing `y`. To cancel this action, press any other key.")
+    }
+}
+
+impl From<ConfirmAction> for ShowMessageRequestParams {
+    fn from(value: ConfirmAction) -> Self {
+        Self {
+            typ: MessageType::Info,
+            message: value.to_string(),
+            actions: value.items(),
+        }
+    }
 }

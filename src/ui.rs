@@ -3,17 +3,17 @@
 //! The primary output functionality of the user interface is to show the text of a document. Additionally, the user interface may show a message to the user. A message will overlap the upper portion of the document until it has been cleared.
 use {
     clap::ArgMatches,
-    core::{convert::TryInto, time::Duration},
+    core::{cmp, convert::TryInto, time::Duration},
     crossterm::{
         cursor::MoveTo,
         event::{self, Event},
         execute, queue,
-        style::Print,
-        terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+        style::{SetBackgroundColor, ResetColor, Print, Color},
+        terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
         ErrorKind,
     },
     log::{trace, warn},
-    lsp_types::{ShowMessageParams, TextEdit},
+    lsp_types::{ShowMessageParams, MessageType, ShowMessageRequestParams, TextEdit},
     std::io::{self, Stdout, Write},
 };
 
@@ -26,6 +26,8 @@ pub(crate) enum Change {
     Text(Vec<TextEdit>),
     /// Message will be displayed to the user.
     Message(ShowMessageParams),
+    /// Message will ask question to user and get a response.
+    Question(ShowMessageRequestParams),
     /// Message will be cleared.
     Reset,
 }
@@ -91,7 +93,7 @@ impl Terminal {
                     let end_row = self.get_row(edit.range.end.line);
                     let mut modifications = self.get_modifications(&edit);
 
-                    self.print_at_row(start_row, &modifications.join("\n"))?;
+                    self.print_at_row(start_row, &modifications.join("\n"), None)?;
 
                     if let Some(modified_lines) =
                         self.grid.get_mut(start_row.into()..=end_row.into())
@@ -103,15 +105,15 @@ impl Terminal {
             Change::Message(alert) => {
                 trace!("alert: {:?} {}", alert.typ, alert.message);
                 self.alert_line_count = alert.message.lines().count();
-                self.print_at_row(0, &alert.message)?;
+                self.print_at_row(0, &alert.message, Some(alert.typ))?;
+            }
+            Change::Question(question) => {
+                self.alert_line_count = question.message.lines().count();
+                self.print_at_row(0, &question.message, Some(question.typ))?;
             }
             Change::Reset => {
                 if self.alert_line_count != 0 {
-                    let lines = match self.grid.get(0..self.alert_line_count) {
-                        Some(l) => l.join("\n"),
-                        None => " ".repeat(self.columns.into()),
-                    };
-                    self.print_at_row(0, &lines)?;
+                    self.print_at_row(0, &self.grid.get(0..self.alert_line_count).unwrap_or_default().join("\n"), None)?;
                     self.alert_line_count = 0;
                 }
             }
@@ -123,11 +125,11 @@ impl Terminal {
     /// Returns the row of `line` within the visible grid.
     ///
     /// `0` indicates `line` is either the first line of the grid or above it.
-    /// `u16::max_value()` indicates `line` is either the last line of the grid or below it.
+    /// `self.rows - 1` indicates `line` is either the last line of the grid or below it.
     fn get_row(&self, line: u64) -> u16 {
-        line.saturating_sub(self.first_line)
+        cmp::min(line.saturating_sub(self.first_line)
             .try_into()
-            .unwrap_or(u16::max_value())
+            .unwrap_or(u16::max_value()), self.rows.saturating_sub(1))
     }
 
     /// Returns the lines within `edit` that will modify the user interface.
@@ -141,18 +143,38 @@ impl Terminal {
                     .unwrap_or(usize::max_value()),
             )
             .take(self.rows.into())
-            .map(|text| {
-                let mut line = String::from(text);
-
-                line.push_str(&" ".repeat(usize::from(self.columns).saturating_sub(text.len())));
-                line
-            })
+            .map(String::from)
             .collect::<Vec<String>>()
     }
 
     /// Adds to the queue the commands to print `s` starting at column 0 of `row`.
-    fn print_at_row(&mut self, row: u16, s: &str) -> crossterm::Result<()> {
-        queue!(self.out, MoveTo(0, row), Print(s))
+    fn print_at_row(&mut self, row: u16, s: &str, context: Option<MessageType>) -> crossterm::Result<()> {
+        let mut r = row;
+
+        for line in s.lines() {
+            queue!(self.out, MoveTo(0, r))?;
+
+            if let Some(t) = context {
+                queue!(self.out, SetBackgroundColor(
+                    match t {
+                        MessageType::Error => Color::Red,
+                        MessageType::Warning => Color::Yellow,
+                        MessageType::Info => Color::Blue,
+                        MessageType::Log => Color::Grey,
+                    }
+                ))?;
+            }
+
+            queue!(self.out, Print(line), Clear(ClearType::UntilNewLine))?;
+
+            if context.is_some() {
+                queue!(self.out, ResetColor)?;
+            }
+
+            r += 1;
+        }
+
+        Ok(())
     }
 
     /// Returns the input from the user.
@@ -178,7 +200,7 @@ impl Default for Terminal {
         let mut grid = Vec::default();
 
         for _ in 0..rows {
-            grid.push(" ".repeat(columns.into()));
+            grid.push(String::default());
         }
 
         Self {
@@ -203,7 +225,7 @@ impl Drop for Terminal {
 }
 
 /// Signifies a configuration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Config {
     /// The file path of the document.
     File(String),
