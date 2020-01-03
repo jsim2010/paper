@@ -9,7 +9,7 @@ use {
     serde_json::error::Error as SerdeJsonError,
     std::{
         env,
-        io::{self, BufRead, BufReader, ErrorKind, Read, Write},
+        io::{self, BufRead, BufReader, Read, Write},
         process::{self, Child, ChildStdin, ChildStdout, Command, Stdio},
         sync::{
             mpsc::{self, Receiver, RecvError, SendError, Sender},
@@ -39,6 +39,8 @@ pub enum Error {
     /// serde json `{0}`
     SerdeJson(SerdeJsonError),
 }
+
+impl std::error::Error for Error {}
 
 impl From<SendError<u64>> for Error {
     fn from(value: SendError<u64>) -> Self {
@@ -88,11 +90,11 @@ impl LspProcessor {
         process: &mut Child,
         response_tx: Sender<u64>,
         transmitter: LspTransmitter,
-    ) -> Result<Self, Failure> {
+    ) -> Result<Self, Error> {
         process
             .stdout
             .take()
-            .ok_or_else(|| Error::InvalidIo.into())
+            .ok_or_else(|| Error::InvalidIo)
             .map(|stdout| Self {
                 reader: BufReader::new(stdout),
                 response_tx,
@@ -181,7 +183,7 @@ pub(crate) struct LspServer {
 
 impl LspServer {
     /// Creates a new `LspServer` represented by `process_cmd`.
-    pub(crate) fn new(process_cmd: &str) -> Result<Self, Failure> {
+    pub(crate) fn new(process_cmd: &str) -> Result<Self, Error> {
         let mut process = Command::new(process_cmd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -222,18 +224,14 @@ impl LspServer {
     }
 
     /// Initializes the `LspServer`.
-    pub(crate) fn initialize(&mut self) -> Result<(), Failure> {
+    pub(crate) fn initialize(&mut self) -> Result<(), Error> {
         #[allow(deprecated)] // root_path is a required field.
         self.request(&InitializeParams {
             process_id: Some(u64::from(process::id())),
             root_path: None,
             root_uri: Some(
-                Url::from_directory_path(env::current_dir()?.as_path()).map_err(|_| {
-                    Failure::File(io::Error::new(
-                        ErrorKind::Other,
-                        "cannot convert current_dir to url",
-                    ))
-                })?,
+                Url::from_directory_path(env::current_dir()?.as_path())
+                    .map_err(|_| Error::InvalidIo)?,
             ),
             initialization_options: None,
             capabilities: ClientCapabilities::default(),
@@ -266,7 +264,7 @@ impl LspServer {
     }
 
     /// Sends a request with `params` to the language server process and waits for a response.
-    fn request(&mut self, params: &(impl Request + Serialize)) -> Result<(), Failure> {
+    fn request(&mut self, params: &(impl Request + Serialize)) -> Result<(), Error> {
         self.transmitter.send_request(params)?;
 
         while !self
@@ -278,7 +276,7 @@ impl LspServer {
     }
 
     /// Sends `notification` to the language server process.
-    fn notify(&mut self, notification: &(impl Notification + Serialize)) -> Result<(), Failure> {
+    fn notify(&mut self, notification: &(impl Notification + Serialize)) -> Result<(), Error> {
         self.transmitter.send_notification(notification)
     }
 }
@@ -330,7 +328,7 @@ impl LspTransmitter {
     fn send_notification(
         &mut self,
         notification: &(impl Notification + Serialize),
-    ) -> Result<(), Failure> {
+    ) -> Result<(), Error> {
         self.send_call(&Call::Notification(jsonrpc_core::Notification {
             jsonrpc: Some(Version::V2),
             method: notification.method(),
@@ -341,7 +339,7 @@ impl LspTransmitter {
     }
 
     /// Sends `request` to language server protocol.
-    fn send_request(&mut self, request: &(impl Request + Serialize)) -> Result<(), Failure> {
+    fn send_request(&mut self, request: &(impl Request + Serialize)) -> Result<(), Error> {
         self.send_call(&Call::MethodCall(MethodCall {
             jsonrpc: Some(Version::V2),
             method: request.method(),
@@ -379,7 +377,7 @@ impl LspTransmitter {
 /// Parameters of notification and request messsages.
 trait Callable {
     /// The parameters of the message.
-    fn params(&self) -> Result<Params, Failure>
+    fn params(&self) -> Result<Params, Error>
     where
         Self: Serialize,
     {

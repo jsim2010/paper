@@ -17,36 +17,8 @@ use {
     std::io::{self, Stdout, Write},
 };
 
-/// Signifies a potential modification to the output of the user interface.
-///
-/// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Change {
-    /// Text of the current document was modified.
-    Text(Vec<TextEdit>),
-    /// Message will be displayed to the user.
-    Message(ShowMessageParams),
-    /// Message will ask question to user and get a response.
-    Question(ShowMessageRequestParams),
-    /// Message will be cleared.
-    Reset,
-}
-
-/// Signifies settings of the application.
-#[derive(Debug)]
-pub struct Settings {
-    /// The file to be viewed.
-    file: Option<String>,
-}
-
-impl From<ArgMatches<'_>> for Settings {
-    #[must_use]
-    fn from(value: ArgMatches<'_>) -> Self {
-        Self {
-            file: value.value_of("file").map(str::to_string),
-        }
-    }
-}
+/// The [`Err`] value returned by this module.
+pub(crate) type Error = ErrorKind;
 
 /// The user interface provided by a terminal.
 #[derive(Debug)]
@@ -78,7 +50,7 @@ impl Terminal {
             self.arg_inputs.push(Config::File(file))
         }
 
-        // Ensure all previous terminal output is not lost.
+        // Store all previous terminal output.
         execute!(self.out, EnterAlternateScreen)?;
         self.is_init = true;
         Ok(())
@@ -127,7 +99,7 @@ impl Terminal {
             }
         }
 
-        self.out.flush().map_err(ErrorKind::IoError)
+        self.out.flush().map_err(Error::IoError)
     }
 
     /// Returns the row of `line` within the visible grid.
@@ -237,6 +209,37 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         if self.is_init && execute!(self.out, LeaveAlternateScreen).is_err() {
             warn!("Failed to leave alternate screen");
+        }
+    }
+}
+
+/// Signifies a potential modification to the output of the user interface.
+///
+/// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Change {
+    /// Text of the current document was modified.
+    Text(Vec<TextEdit>),
+    /// Message will be displayed to the user.
+    Message(ShowMessageParams),
+    /// Message will ask question to user and get a response.
+    Question(ShowMessageRequestParams),
+    /// Message will be cleared.
+    Reset,
+}
+
+/// Signifies settings of the application.
+#[derive(Debug, Default)]
+pub struct Settings {
+    /// The file to be viewed.
+    file: Option<String>,
+}
+
+impl From<ArgMatches<'_>> for Settings {
+    #[must_use]
+    fn from(value: ArgMatches<'_>) -> Self {
+        Self {
+            file: value.value_of("file").map(str::to_string),
         }
     }
 }

@@ -168,7 +168,9 @@ impl Sheet {
             Operation::Confirm(action) => Ok(Some(Change::Question(
                 ShowMessageRequestParams::from(action),
             ))),
-            Operation::Quit => Err(Failure::Quit),
+            Operation::Quit => {
+                unreachable!("attempted to execute `Quit` operation");
+            }
             Operation::UpdateConfig(Config::File(file)) => match Document::try_from(file) {
                 Ok(doc) => {
                     if let Some(ext) = doc.extension() {
