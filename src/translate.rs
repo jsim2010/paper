@@ -57,27 +57,6 @@ impl Interpreter for ViewInterpreter {
     }
 }
 
-/// Tests decoding user input while in the View mode.
-#[cfg(test)]
-mod test_view {
-    use super::*;
-    use crossterm::event::{KeyEvent, KeyModifiers};
-
-    /// The `q` key shall confirm the user wants to quit.
-    #[test]
-    fn quit() {
-        let view = ViewInterpreter::new();
-
-        assert_eq!(
-            view.decode(Input::User(Event::Key(KeyEvent::new(
-                KeyCode::Char('q'),
-                KeyModifiers::empty()
-            )))),
-            vec![Operation::Confirm(ConfirmAction::Quit)]
-        );
-    }
-}
-
 /// The [`Interpreter`] for [`Mode::Confirm`].
 #[derive(Clone, Debug)]
 pub(crate) struct ConfirmInterpreter {}
@@ -118,6 +97,27 @@ impl Interpreter for ConfirmInterpreter {
             },
             Input::Config(..) => vec![],
         }
+    }
+}
+
+/// Tests decoding user input while in the View mode.
+#[cfg(test)]
+mod test_view {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    /// The `q` key shall confirm the user wants to quit.
+    #[test]
+    fn quit() {
+        let view = ViewInterpreter::new();
+
+        assert_eq!(
+            view.decode(Input::User(Event::Key(KeyEvent::new(
+                KeyCode::Char('q'),
+                KeyModifiers::empty()
+            )))),
+            vec![Operation::Confirm(ConfirmAction::Quit)]
+        );
     }
 }
 
