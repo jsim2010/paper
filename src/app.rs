@@ -1,16 +1,15 @@
 //! Implements the modality of the application.
 mod lsp;
 
-pub(crate) use lsp::LspError;
+pub(crate) use lsp::Error as LspError;
 
 use {
-    url::{ParseError, Url},
     crate::{ui::Config, Failure},
     core::convert::TryFrom,
     displaydoc::Display as DisplayDoc,
     lsp::LspServer,
-    parse_display::Display as ParseDisplay,
     lsp_types::{MessageType, Position, Range, ShowMessageParams, TextEdit},
+    parse_display::Display as ParseDisplay,
     std::{
         collections::{hash_map::Entry, HashMap},
         env,
@@ -18,6 +17,7 @@ use {
         fs,
         io::{self, ErrorKind},
     },
+    url::{ParseError, Url},
 };
 
 /// A [`Range`] specifying the entire document.

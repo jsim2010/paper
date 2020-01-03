@@ -236,6 +236,7 @@ impl From<SetLoggerError> for Failure {
 }
 
 impl From<LspError> for Failure {
+    #[must_use]
     fn from(value: LspError) -> Self {
         Self::Lsp(value)
     }
