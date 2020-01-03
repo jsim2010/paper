@@ -92,7 +92,7 @@ mod ui;
 pub use ui::Settings;
 
 use {
-    app::{Mode, Operation, Outcome, Sheet},
+    app::{LspError, Mode, Operation, Outcome, Sheet},
     crossterm::ErrorKind,
     displaydoc::Display as DisplayDoc,
     log::SetLoggerError,
@@ -195,7 +195,7 @@ pub enum Failure {
     /// parse error: `{0}`
     Parse(ParseIntError),
     /// language server error: `{0}`
-    Lsp(String),
+    Lsp(LspError),
     /// user quit application
     Quit,
 }
@@ -232,6 +232,13 @@ impl From<SetLoggerError> for Failure {
     #[must_use]
     fn from(value: SetLoggerError) -> Self {
         Self::Logger(value)
+    }
+}
+
+impl From<LspError> for Failure {
+    #[must_use]
+    fn from(value: LspError) -> Self {
+        Self::Lsp(value)
     }
 }
 
