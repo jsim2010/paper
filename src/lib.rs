@@ -83,6 +83,7 @@
     clippy::implicit_return, // Goes against rust convention and requires return calls in places it is not helpful (e.g. closures).
     clippy::suspicious_arithmetic_impl, // Not always valid; issues should be detected by tests or other lints.
     clippy::suspicious_op_assign_impl, // Not always valid; issues should be detected by tests or other lints.
+    clippy::large_enum_variant, // Generally okay.
     variant_size_differences, // Generally okay.
 )]
 // Temporary allows.
@@ -102,7 +103,7 @@ use {
     app::{LspError, Mode, Operation, Sheet},
     log::SetLoggerError,
     simplelog::{Config, LevelFilter, WriteLogger},
-    std::{collections::HashMap, fs::File},
+    std::{collections::HashMap, fs::File, io},
     thiserror::Error,
     translate::{ConfirmInterpreter, Interpreter, ViewInterpreter},
     ui::{Change, Input, Terminal},
@@ -115,7 +116,7 @@ fn init_logger() -> Result<(), LogError> {
     WriteLogger::init(
         LevelFilter::Trace,
         Config::default(),
-        File::create(&log_filename).map_err(|_| LogError::CreateLogFile(log_filename))?,
+        File::create(&log_filename).map_err(|e| LogError::CreateLogFile(log_filename, e))?,
     )?;
     Ok(())
 }
@@ -202,16 +203,14 @@ pub enum Failure {
     /// A failure in the logger.
     #[error("logger: {0}")]
     Log(#[from] LogError),
-    //#[error("logger: `{0}`")]
-    //Logger(#[from]SetLoggerError),
 }
 
 /// A failure in the logger.
 #[derive(Debug, Error)]
 pub enum LogError {
     /// A failure to create the log file.
-    #[error("failed to create log file `{0}`")]
-    CreateLogFile(String),
+    #[error("failed to create log file `{0}`: {1}")]
+    CreateLogFile(String, io::Error),
     /// A failure to initialize the logger.
     #[error("failed to initialize logger: {0}")]
     Init(#[from] SetLoggerError),

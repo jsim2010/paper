@@ -1,7 +1,7 @@
 //! Implements the modality of the application.
 mod lsp;
 
-pub(crate) use lsp::Error as LspError;
+pub(crate) use lsp::Fault as LspError;
 
 use {
     crate::{ui::Config, Change, Failure},
