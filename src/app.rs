@@ -6,7 +6,6 @@ pub(crate) use lsp::Fault as LspError;
 use {
     crate::{ui::Config, Change, Failure},
     core::convert::TryFrom,
-    displaydoc::Display as DisplayDoc,
     lsp::LspServer,
     lsp_types::{
         MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams, TextEdit,
@@ -17,6 +16,7 @@ use {
         env, fmt, fs,
         io::{self, ErrorKind},
     },
+    thiserror::Error,
     url::{ParseError, Url},
 };
 
@@ -55,28 +55,23 @@ impl Default for Mode {
 }
 
 /// Signifies errors associated with [`Document`].
-#[derive(DisplayDoc)]
+#[derive(Debug, Error)]
 enum DocumentError {
-    /// unable to parse file `{0}`
-    Parse(ParseError),
-    /// invalid path
-    InvalidFilePath(),
-    /// cannot find file `{0}`
+    /// Error while parsing url.
+    #[error("unable to parse url: {0}")]
+    Parse(#[from] ParseError),
+    /// Path is invalid.
+    #[error("path `{0}` is invalid")]
+    InvalidPath(String),
+    /// File does not exist.
+    #[error("file `{0}` does not exist")]
     NonExistantFile(String),
-    /// io: {0}
-    Io(io::Error),
-}
-
-impl From<io::Error> for DocumentError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<ParseError> for DocumentError {
-    fn from(value: ParseError) -> Self {
-        Self::Parse(value)
-    }
+    /// Invalid current working directory.
+    #[error("unable to determine current working directory")]
+    InvalidCwd,
+    /// Io error.
+    #[error("io: {0}")]
+    Io(#[from] io::Error),
 }
 
 impl From<DocumentError> for ShowMessageParams {
@@ -111,14 +106,15 @@ impl TryFrom<String> for Document {
     type Error = DocumentError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        let base = Url::from_directory_path(env::current_dir()?)
-            .map_err(|_| DocumentError::InvalidFilePath())?;
+        let cwd = env::current_dir().map_err(|_| DocumentError::InvalidCwd)?;
+        let base = Url::from_directory_path(cwd.clone())
+            .map_err(|_| DocumentError::InvalidPath(cwd.to_string_lossy().to_string()))?;
         let url = base.join(&value)?;
 
         let file_path = url
             .clone()
             .to_file_path()
-            .map_err(|_| DocumentError::InvalidFilePath())?;
+            .map_err(|_| DocumentError::InvalidPath(url.to_string()))?;
         Ok(Self {
             extension: file_path
                 .extension()
@@ -142,7 +138,7 @@ impl TryFrom<String> for Document {
                 | ErrorKind::Interrupted
                 | ErrorKind::Other
                 | ErrorKind::UnexpectedEof
-                | _ => DocumentError::Io(error),
+                | _ => DocumentError::from(error),
             })?,
             url,
         })
