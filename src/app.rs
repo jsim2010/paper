@@ -5,10 +5,9 @@ pub(crate) use lsp::Fault as LspError;
 
 use {
     crate::{ui::Config, Change, Failure},
-    core::convert::TryFrom,
     lsp::LspServer,
     lsp_types::{
-        MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams, TextEdit,
+        TextDocumentItem, MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams, TextEdit,
     },
     parse_display::Display as ParseDisplay,
     std::{
@@ -84,74 +83,53 @@ impl From<DocumentError> for ShowMessageParams {
     }
 }
 
-/// Signifies a text document.
-#[derive(Clone, Debug)]
-struct Document {
-    /// The [`Url`] of the `Document`.
-    url: Url,
-    /// The text of the `Document`.
-    text: String,
-    /// The extension.
-    extension: Option<String>,
-}
+fn document_from_string(path: String) -> Result<TextDocumentItem, DocumentError> {
+    let cwd = env::current_dir().map_err(|_| DocumentError::InvalidCwd)?;
+    let base = Url::from_directory_path(cwd.clone())
+        .map_err(|_| DocumentError::InvalidPath(cwd.to_string_lossy().to_string()))?;
+    let uri = base.join(&path).map_err(DocumentError::from)?;
+    let file_path = uri
+        .clone()
+        .to_file_path()
+        .map_err(|_| DocumentError::InvalidPath(uri.to_string()))?;
 
-impl Document {
-    /// The extension of `self`.
-    const fn extension(&self) -> &Option<String> {
-        &self.extension
-    }
-}
+    let language_id = match file_path.extension().and_then(|ext| ext.to_str()) {
+        Some("rs") => "rust",
+        Some(x) => x,
+        None => "",
+    }.to_string();
+    let text = fs::read_to_string(file_path).map_err(|error| match error.kind() {
+        ErrorKind::NotFound => DocumentError::NonExistantFile(path),
+        ErrorKind::PermissionDenied
+        | ErrorKind::ConnectionRefused
+        | ErrorKind::ConnectionReset
+        | ErrorKind::ConnectionAborted
+        | ErrorKind::NotConnected
+        | ErrorKind::AddrInUse
+        | ErrorKind::AddrNotAvailable
+        | ErrorKind::BrokenPipe
+        | ErrorKind::AlreadyExists
+        | ErrorKind::WouldBlock
+        | ErrorKind::InvalidInput
+        | ErrorKind::InvalidData
+        | ErrorKind::TimedOut
+        | ErrorKind::WriteZero
+        | ErrorKind::Interrupted
+        | ErrorKind::Other
+        | ErrorKind::UnexpectedEof
+        | _ => DocumentError::from(error),
+    })?;
 
-impl TryFrom<String> for Document {
-    type Error = DocumentError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let cwd = env::current_dir().map_err(|_| DocumentError::InvalidCwd)?;
-        let base = Url::from_directory_path(cwd.clone())
-            .map_err(|_| DocumentError::InvalidPath(cwd.to_string_lossy().to_string()))?;
-        let url = base.join(&value)?;
-
-        let file_path = url
-            .clone()
-            .to_file_path()
-            .map_err(|_| DocumentError::InvalidPath(url.to_string()))?;
-        Ok(Self {
-            extension: file_path
-                .extension()
-                .map(|ext| ext.to_string_lossy().into_owned()),
-            text: fs::read_to_string(file_path).map_err(|error| match error.kind() {
-                ErrorKind::NotFound => DocumentError::NonExistantFile(value),
-                ErrorKind::PermissionDenied
-                | ErrorKind::ConnectionRefused
-                | ErrorKind::ConnectionReset
-                | ErrorKind::ConnectionAborted
-                | ErrorKind::NotConnected
-                | ErrorKind::AddrInUse
-                | ErrorKind::AddrNotAvailable
-                | ErrorKind::BrokenPipe
-                | ErrorKind::AlreadyExists
-                | ErrorKind::WouldBlock
-                | ErrorKind::InvalidInput
-                | ErrorKind::InvalidData
-                | ErrorKind::TimedOut
-                | ErrorKind::WriteZero
-                | ErrorKind::Interrupted
-                | ErrorKind::Other
-                | ErrorKind::UnexpectedEof
-                | _ => DocumentError::from(error),
-            })?,
-            url,
-        })
-    }
+    Ok(TextDocumentItem::new(uri, language_id, 0, text))
 }
 
 /// Signfifies display of the current file.
 #[derive(Debug, Default)]
 pub(crate) struct Sheet {
     /// The document being displayed.
-    doc: Option<Document>,
-    /// The number of lines in the document.
-    line_count: usize,
+    doc: Option<TextDocumentItem>,
+    /// The document wraps long lines.
+    is_wrapped: bool,
     /// The [`LspServer`]s managed by this document.
     lsp_servers: HashMap<String, LspServer>,
 }
@@ -167,26 +145,40 @@ impl Sheet {
             Operation::Quit => {
                 unreachable!("attempted to execute `Quit` operation");
             }
-            Operation::UpdateConfig(Config::File(file)) => match Document::try_from(file) {
-                Ok(doc) => {
-                    if let Some(ext) = doc.extension() {
-                        if let Entry::Vacant(entry) = self.lsp_servers.entry(ext.to_string()) {
-                            entry.insert(LspServer::new("rls")?).initialize()?;
+            Operation::UpdateConfig(Config::File(file)) => {
+                match document_from_string(file) {
+                    Ok(doc) => {
+                        if let Entry::Vacant(entry) = self.lsp_servers.entry(doc.language_id.clone()) {
+                            if doc.language_id == "rust" {
+                                entry.insert(LspServer::new("rls")?).initialize()?;
+                            }
                         }
+
+                        self.doc = Some(doc.clone());
+                        Ok(Some(Change::Text{
+                            edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
+                            is_wrapped: self.is_wrapped,
+                        }))
                     }
-
-                    let text = doc.text.clone();
-
-                    self.doc = Some(doc);
-                    Ok(Some(Change::Text(vec![TextEdit::new(
-                        ENTIRE_DOCUMENT,
-                        text,
-                    )])))
+                    Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
                 }
-                Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
-            }, //Operation::Save => {
-               //    fs::write(path, file)
-               //}
+            }
+            Operation::UpdateConfig(Config::Wrap(is_wrapped)) => {
+                if self.is_wrapped != is_wrapped {
+                    self.is_wrapped = is_wrapped;
+                    Ok(self.doc.as_ref().map(|doc|
+                        Change::Text {
+                            edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
+                            is_wrapped,
+                        }
+                    ))
+                } else {
+                    Ok(None)
+                }
+            }
+            Operation::Configure(config) => {
+                Ok(Some(Change::AddConfig(config)))
+            }
         }
     }
 }
@@ -202,6 +194,7 @@ pub(crate) enum Operation {
     Quit,
     /// Updates a configuration.
     UpdateConfig(Config),
+    Configure(Config),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.

@@ -1,11 +1,11 @@
 //! Implements the functionality of converting [`Input`] to [`Operation`]s.
-use std::fmt::Debug;
 use {
     crate::{
         app::{ConfirmAction, Operation},
-        ui::Input,
+        ui::{Config, Input},
     },
     crossterm::event::{Event, KeyCode},
+    std::fmt::Debug,
 };
 
 /// Defines the functionality to convert [`Input`] to [`Operation`]s.
@@ -33,6 +33,8 @@ impl Interpreter for ViewInterpreter {
                 Event::Key(key) => match key.code {
                     KeyCode::Esc => vec![Operation::Reset],
                     KeyCode::Char('q') => vec![Operation::Confirm(ConfirmAction::Quit)],
+                    // Temporary mapping to test wrapping.
+                    KeyCode::Char('.') => vec![Operation::Configure(Config::Wrap(true))],
                     KeyCode::Enter
                     | KeyCode::Backspace
                     | KeyCode::Left
@@ -121,7 +123,7 @@ mod test_view {
     }
 }
 
-/// Tests decoding user input while in the View mode.
+/// Tests decoding user input while in the Confirm mode.
 #[cfg(test)]
 mod test_confirm {
     use super::*;
@@ -141,7 +143,7 @@ mod test_confirm {
         );
     }
 
-    /// Any other key shall cancel the action.
+    /// Any other key shall cancel the action, resetting the application to View mode.
     #[test]
     fn cancel() {
         assert_eq!(

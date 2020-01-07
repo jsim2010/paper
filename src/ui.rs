@@ -3,7 +3,7 @@
 //! The primary output functionality of the user interface is to show the text of a document. Additionally, the user interface may show a message to the user. A message will overlap the upper portion of the document until it has been cleared.
 use {
     clap::ArgMatches,
-    core::{cmp, convert::TryInto, time::Duration},
+    core::{cmp, convert::TryInto, time::Duration, convert::TryFrom},
     crossterm::{
         cursor::MoveTo,
         event::{self, Event},
@@ -30,7 +30,7 @@ pub(crate) struct Terminal {
     /// Inputs from command arguments.
     ///
     /// Command arguments are viewed as input so that all processing of arguments is performed within the main application loop.
-    arg_inputs: Vec<Config>,
+    configs: Vec<Config>,
     /// Number of columns provided by terminal.
     columns: u16,
     /// Number of rows provided by terminal.
@@ -46,8 +46,10 @@ pub(crate) struct Terminal {
 impl Terminal {
     /// Initializes the terminal user interface.
     pub(crate) fn init(&mut self, settings: Settings) -> crossterm::Result<()> {
+        self.configs.push(Config::Wrap(settings.is_wrapped));
+
         if let Some(file) = settings.file {
-            self.arg_inputs.push(Config::File(file))
+            self.configs.push(Config::File(file));
         }
 
         // Store all previous terminal output.
@@ -59,18 +61,32 @@ impl Terminal {
     /// Applies `change` to the output.
     pub(crate) fn apply(&mut self, change: Change) -> crossterm::Result<()> {
         match change {
-            Change::Text(edits) => {
+            Change::Text{edits, is_wrapped} => {
                 for edit in edits {
-                    let start_row = self.get_row(edit.range.start.line);
-                    let end_row = self.get_row(edit.range.end.line);
-                    let mut modifications = self.get_modifications(&edit);
+                    let mut lines = self.get_lines(&edit).into_iter();
+                    let mut row = cmp::min(edit.range.start.line.saturating_sub(self.first_line).try_into().unwrap_or(u16::max_value()), self.rows.saturating_sub(1));
 
-                    self.print_at_row(start_row, &modifications.join("\n"), None)?;
+                    while row < self.rows {
+                        let mut line = lines.next().unwrap();
+                        let rows_printed: usize = if is_wrapped {(line.len() + 1_usize) / usize::from(self.columns) + 1} else {1};
 
-                    if let Some(modified_lines) =
-                        self.grid.get_mut(start_row.into()..=end_row.into())
-                    {
-                        modified_lines.swap_with_slice(&mut modifications);
+                        for r in row..row+u16::try_from(rows_printed).unwrap() {
+                            let printed_line = if line.len() > self.columns.into() {
+                                let split = line.split_at(self.columns.into());
+                                line = split.1;
+                                split.0
+                            } else {
+                                line
+                            };
+
+                            if let Some(l) = self.grid.get_mut(usize::from(row)) {
+                                l.replace_range(.., printed_line.clone())
+                            }
+
+                            self.print_at_row(r, printed_line, None)?;
+                        }
+
+                        row += u16::try_from(rows_printed).unwrap();
                     }
                 }
             }
@@ -97,37 +113,15 @@ impl Terminal {
                     self.alert_line_count = 0;
                 }
             }
+            Change::AddConfig(config) => self.configs.push(config),
         }
 
         self.out.flush().map_err(Error::IoError)
     }
 
-    /// Returns the row of `line` within the visible grid.
-    ///
-    /// `0` indicates `line` is either the first line of the grid or above it.
-    /// `self.rows - 1` indicates `line` is either the last line of the grid or below it.
-    fn get_row(&self, line: u64) -> u16 {
-        cmp::min(
-            line.saturating_sub(self.first_line)
-                .try_into()
-                .unwrap_or(u16::max_value()),
-            self.rows.saturating_sub(1),
-        )
-    }
-
-    /// Returns the lines within `edit` that will modify the user interface.
-    fn get_modifications(&self, edit: &TextEdit) -> Vec<String> {
-        edit.new_text
-            .lines()
-            .skip(
-                self.first_line
-                    .saturating_sub(edit.range.start.line)
-                    .try_into()
-                    .unwrap_or(usize::max_value()),
-            )
-            .take(self.rows.into())
-            .map(String::from)
-            .collect::<Vec<String>>()
+    /// Returns the rows that will modify the user interface.
+    fn get_lines<'a>(&self, edit: &'a TextEdit) -> Vec<&'a str> {
+        edit.new_text.lines().skip(self.first_line.saturating_sub(edit.range.start.line).try_into().unwrap_or(usize::max_value())).take(edit.range.end.line.saturating_sub(edit.range.start.line).try_into().unwrap()).collect()
     }
 
     /// Adds to the queue the commands to print `s` starting at column 0 of `row`.
@@ -171,7 +165,7 @@ impl Terminal {
     /// First checks for arg inputsReturns [`None`] if no input is provided.
     pub(crate) fn input(&mut self) -> crossterm::Result<Option<Input>> {
         // First check arg inputs, then check for key input.
-        match self.arg_inputs.pop() {
+        match self.configs.pop() {
             Some(input) => Ok(Some(Input::Config(input))),
             None => Ok(if event::poll(Duration::from_secs(0))? {
                 Some(Input::User(event::read()?))
@@ -195,7 +189,7 @@ impl Default for Terminal {
         Self {
             out: io::stdout(),
             is_init: false,
-            arg_inputs: Vec::default(),
+            configs: Vec::default(),
             columns,
             rows,
             first_line: 0,
@@ -218,14 +212,20 @@ impl Drop for Terminal {
 /// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Change {
-    /// Text of the current document was modified.
-    Text(Vec<TextEdit>),
+    /// Text of the current document or how it was displayed was modified.
+    Text {
+        /// Text that was modified.
+        edits: Vec<TextEdit>,
+        /// Long lines are wrapped.
+        is_wrapped: bool
+    },
     /// Message will be displayed to the user.
     Message(ShowMessageParams),
     /// Message will ask question to user and get a response.
     Question(ShowMessageRequestParams),
     /// Message will be cleared.
     Reset,
+    AddConfig(Config),
 }
 
 /// Signifies settings of the application.
@@ -233,6 +233,8 @@ pub(crate) enum Change {
 pub struct Settings {
     /// The file to be viewed.
     file: Option<String>,
+    /// If text longer than the width of the view is wrapped.
+    is_wrapped: bool,
 }
 
 impl From<ArgMatches<'_>> for Settings {
@@ -240,15 +242,18 @@ impl From<ArgMatches<'_>> for Settings {
     fn from(value: ArgMatches<'_>) -> Self {
         Self {
             file: value.value_of("file").map(str::to_string),
+            ..Default::default()
         }
     }
 }
 
 /// Signifies a configuration.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Config {
     /// The file path of the document.
     File(String),
+    /// If the document shall wrap long text.
+    Wrap(bool),
 }
 
 /// Signifies input provided by the user.

@@ -170,7 +170,7 @@ impl Paper {
                     }
                     Operation::Reset => self.mode = Mode::View,
                     Operation::Confirm(..) => self.mode = Mode::Confirm,
-                    Operation::UpdateConfig(_) => {}
+                    Operation::UpdateConfig(_) | Operation::Configure(_) => {}
                 }
 
                 if let Some(change) = self.sheet.operate(operation)? {
