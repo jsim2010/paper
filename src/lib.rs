@@ -83,6 +83,7 @@
     clippy::implicit_return, // Goes against rust convention and requires return calls in places it is not helpful (e.g. closures).
     clippy::suspicious_arithmetic_impl, // Not always valid; issues should be detected by tests or other lints.
     clippy::suspicious_op_assign_impl, // Not always valid; issues should be detected by tests or other lints.
+    clippy::large_enum_variant, // Generally okay.
     variant_size_differences, // Generally okay.
 )]
 // Temporary allows.
@@ -100,14 +101,25 @@ pub use ui::Settings;
 
 use {
     app::{LspError, Mode, Operation, Sheet},
-    crossterm::ErrorKind,
-    displaydoc::Display as DisplayDoc,
     log::SetLoggerError,
     simplelog::{Config, LevelFilter, WriteLogger},
-    std::{collections::HashMap, fs::File, io, num::ParseIntError},
+    std::{collections::HashMap, fs::File, io},
+    thiserror::Error,
     translate::{ConfirmInterpreter, Interpreter, ViewInterpreter},
     ui::{Change, Input, Terminal},
 };
+
+/// Initializes the application logger.
+fn init_logger() -> Result<(), LogError> {
+    let log_filename = "paper.log".to_string();
+
+    WriteLogger::init(
+        LevelFilter::Trace,
+        Config::default(),
+        File::create(&log_filename).map_err(|e| LogError::CreateLogFile(log_filename, e))?,
+    )?;
+    Ok(())
+}
 
 /// Describes the paper application.
 #[derive(Debug, Default)]
@@ -129,43 +141,36 @@ impl Paper {
         Self::default()
     }
 
-    /// Configures and runs the application.
+    /// Configures the application and then starts its runtime loop.
     #[inline]
     pub fn run(&mut self, settings: Settings) -> Result<(), Failure> {
-        WriteLogger::init(
-            LevelFilter::Trace,
-            Config::default(),
-            File::create("paper.log")?,
-        )?;
+        init_logger()?;
         self.ui.init(settings)?;
-        let mut result;
 
         loop {
-            result = self.step();
-
-            if let Err(error) = &result {
-                // Quit indicates user requested to end application, which is not a
-                // true Failure.
-                if let Failure::Quit = error {
-                    result = Ok(());
-                }
-
+            if !self.step()? {
                 break;
             }
         }
 
-        result
+        Ok(())
     }
 
-    /// Processes a single event from the user.
+    /// Processes a single event from the user, returning if the application should keep running.
     #[inline]
-    fn step(&mut self) -> Result<(), Failure> {
+    fn step(&mut self) -> Result<bool, Failure> {
+        let mut keep_running = true;
+
         if let Some(input) = self.ui.input()? {
             for operation in self.translate(input)? {
                 match operation {
+                    Operation::Quit => {
+                        keep_running = false;
+                        break;
+                    }
                     Operation::Reset => self.mode = Mode::View,
                     Operation::Confirm(..) => self.mode = Mode::Confirm,
-                    Operation::Quit | Operation::UpdateConfig(_) => {}
+                    Operation::UpdateConfig(_) => {}
                 }
 
                 if let Some(change) = self.sheet.operate(operation)? {
@@ -174,7 +179,7 @@ impl Paper {
             }
         }
 
-        Ok(())
+        Ok(keep_running)
     }
 
     /// Converts `input` to the appropriate [`Vec`] of [`Operation`]s.
@@ -184,66 +189,31 @@ impl Paper {
 }
 
 /// An event that causes the application to stop running.
-#[derive(Debug, DisplayDoc)]
+#[derive(Debug, Error)]
 pub enum Failure {
-    /// user interface: {0}
-    Ui(ErrorKind),
-    /// file error: `{0}`
-    File(io::Error),
-    /// unknown mode: `{0}`
+    /// A failure in the user interface.
+    #[error("user interface: {0}")]
+    Ui(#[from] ui::Error),
+    /// A mode is not stored in [`InterpreterMap`].
+    #[error("mode `{0}` is unknown")]
     UnknownMode(Mode),
-    /// logger error: `{0}`
-    Logger(SetLoggerError),
-    /// serialization error: `{0}`
-    Serde(serde_json::Error),
-    /// parse error: `{0}`
-    Parse(ParseIntError),
-    /// language server error: `{0}`
-    Lsp(LspError),
-    /// user quit application
-    Quit,
+    /// A failure in the language server protocol client.
+    #[error("language server protocol: {0}")]
+    Lsp(#[from] LspError),
+    /// A failure in the logger.
+    #[error("logger: {0}")]
+    Log(#[from] LogError),
 }
 
-impl From<ErrorKind> for Failure {
-    #[must_use]
-    fn from(value: ErrorKind) -> Self {
-        Self::Ui(value)
-    }
-}
-
-impl From<io::Error> for Failure {
-    #[must_use]
-    fn from(value: io::Error) -> Self {
-        Self::File(value)
-    }
-}
-
-impl From<ParseIntError> for Failure {
-    #[must_use]
-    fn from(value: ParseIntError) -> Self {
-        Self::Parse(value)
-    }
-}
-
-impl From<serde_json::Error> for Failure {
-    #[must_use]
-    fn from(value: serde_json::Error) -> Self {
-        Self::Serde(value)
-    }
-}
-
-impl From<SetLoggerError> for Failure {
-    #[must_use]
-    fn from(value: SetLoggerError) -> Self {
-        Self::Logger(value)
-    }
-}
-
-impl From<LspError> for Failure {
-    #[must_use]
-    fn from(value: LspError) -> Self {
-        Self::Lsp(value)
-    }
+/// A failure in the logger.
+#[derive(Debug, Error)]
+pub enum LogError {
+    /// A failure to create the log file.
+    #[error("failed to create log file `{0}`: {1}")]
+    CreateLogFile(String, io::Error),
+    /// A failure to initialize the logger.
+    #[error("failed to initialize logger: {0}")]
+    Init(#[from] SetLoggerError),
 }
 
 /// Maps [`Mode`]s to their respective [`Interpreter`].
