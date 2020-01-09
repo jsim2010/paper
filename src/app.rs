@@ -4,15 +4,17 @@ mod lsp;
 pub(crate) use lsp::Fault as LspError;
 
 use {
-    crate::{ui::Config, Change, Failure},
+    crate::{ui::{Setting, Change}, Failure},
     lsp::LspServer,
     lsp_types::{
-        TextDocumentItem, MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams, TextEdit,
+        MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
+        TextDocumentItem, TextEdit,
     },
-    parse_display::Display as ParseDisplay,
     std::{
         collections::{hash_map::Entry, HashMap},
-        env, fmt, fs,
+        env,
+        ffi::OsStr,
+        fmt, fs,
         io::{self, ErrorKind},
     },
     thiserror::Error,
@@ -30,28 +32,6 @@ const ENTIRE_DOCUMENT: Range = Range {
         character: u64::max_value(),
     },
 };
-
-/// Signifies the mode of the application.
-#[derive(Copy, Clone, Eq, ParseDisplay, PartialEq, Hash, Debug)]
-#[display(style = "CamelCase")]
-// Mode is pub due to being a member of Failure::UnknownMode.
-pub enum Mode {
-    /// Displays the current file.
-    View,
-    /// Confirms the user's action
-    Confirm,
-    /// Displays the current command.
-    Command,
-    /// Displays the current view along with the current edits.
-    Edit,
-}
-
-impl Default for Mode {
-    #[inline]
-    fn default() -> Self {
-        Self::View
-    }
-}
 
 /// Signifies errors associated with [`Document`].
 #[derive(Debug, Error)]
@@ -83,6 +63,7 @@ impl From<DocumentError> for ShowMessageParams {
     }
 }
 
+/// Createse a [`TextDocumentItem`] from `path`.
 fn document_from_string(path: String) -> Result<TextDocumentItem, DocumentError> {
     let cwd = env::current_dir().map_err(|_| DocumentError::InvalidCwd)?;
     let base = Url::from_directory_path(cwd.clone())
@@ -93,11 +74,12 @@ fn document_from_string(path: String) -> Result<TextDocumentItem, DocumentError>
         .to_file_path()
         .map_err(|_| DocumentError::InvalidPath(uri.to_string()))?;
 
-    let language_id = match file_path.extension().and_then(|ext| ext.to_str()) {
+    let language_id = match file_path.extension().and_then(OsStr::to_str) {
         Some("rs") => "rust",
         Some(x) => x,
         None => "",
-    }.to_string();
+    }
+    .to_string();
     let text = fs::read_to_string(file_path).map_err(|error| match error.kind() {
         ErrorKind::NotFound => DocumentError::NonExistantFile(path),
         ErrorKind::PermissionDenied
@@ -145,39 +127,32 @@ impl Sheet {
             Operation::Quit => {
                 unreachable!("attempted to execute `Quit` operation");
             }
-            Operation::UpdateConfig(Config::File(file)) => {
-                match document_from_string(file) {
-                    Ok(doc) => {
-                        if let Entry::Vacant(entry) = self.lsp_servers.entry(doc.language_id.clone()) {
-                            if doc.language_id == "rust" {
-                                entry.insert(LspServer::new("rls")?).initialize()?;
-                            }
+            Operation::UpdateConfig(Setting::File(file)) => match document_from_string(file) {
+                Ok(doc) => {
+                    if let Entry::Vacant(entry) = self.lsp_servers.entry(doc.language_id.clone()) {
+                        if doc.language_id == "rust" {
+                            entry.insert(LspServer::new("rls")?).initialize()?;
                         }
-
-                        self.doc = Some(doc.clone());
-                        Ok(Some(Change::Text{
-                            edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
-                            is_wrapped: self.is_wrapped,
-                        }))
                     }
-                    Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
+
+                    self.doc = Some(doc.clone());
+                    Ok(Some(Change::Text {
+                        edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
+                        is_wrapped: self.is_wrapped,
+                    }))
                 }
-            }
-            Operation::UpdateConfig(Config::Wrap(is_wrapped)) => {
-                if self.is_wrapped != is_wrapped {
-                    self.is_wrapped = is_wrapped;
-                    Ok(self.doc.as_ref().map(|doc|
-                        Change::Text {
-                            edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
-                            is_wrapped,
-                        }
-                    ))
-                } else {
+                Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
+            },
+            Operation::UpdateConfig(Setting::Wrap(is_wrapped)) => {
+                if self.is_wrapped == is_wrapped {
                     Ok(None)
+                } else {
+                    self.is_wrapped = is_wrapped;
+                    Ok(self.doc.as_ref().map(|doc| Change::Text {
+                        edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
+                        is_wrapped,
+                    }))
                 }
-            }
-            Operation::Configure(config) => {
-                Ok(Some(Change::AddConfig(config)))
             }
         }
     }
@@ -193,8 +168,7 @@ pub(crate) enum Operation {
     /// Quits the application.
     Quit,
     /// Updates a configuration.
-    UpdateConfig(Config),
-    Configure(Config),
+    UpdateConfig(Setting),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.

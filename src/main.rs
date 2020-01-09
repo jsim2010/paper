@@ -2,7 +2,7 @@
 use {
     // `app_from_crate` requires using all the macros that it calls.
     clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, Arg},
-    paper::{Failure, Paper, Settings},
+    paper::{Arguments, Failure, Paper},
 };
 
 fn main() -> Result<(), Failure> {
@@ -10,6 +10,6 @@ fn main() -> Result<(), Failure> {
     let _ = include_str!("../Cargo.toml");
     let app = app_from_crate!().arg(Arg::with_name("file").help("the file to be viewed"));
 
-    Paper::new().run(Settings::from(app.get_matches()))?;
+    Paper::new().run(Arguments::from(app.get_matches()))?;
     Ok(())
 }

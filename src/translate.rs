@@ -2,19 +2,92 @@
 use {
     crate::{
         app::{ConfirmAction, Operation},
-        ui::{Config, Input},
+        ui::Input,
+        Failure,
     },
+    core::fmt::Debug,
     crossterm::event::{Event, KeyCode},
-    std::fmt::Debug,
+    parse_display::Display as ParseDisplay,
+    std::collections::HashMap,
+    thiserror::Error,
 };
 
-/// Defines the functionality to convert [`Input`] to [`Operation`]s.
-pub(crate) trait Interpreter: Debug {
-    /// Converts `input` to [`Operation`]s.
-    fn decode(&self, input: Input) -> Vec<Operation>;
+/// Maps [`Mode`]s to their respective [`ModeInterpreter`].
+#[derive(Debug)]
+pub(crate) struct Interpreter {
+    /// Current [`Mode`] of the `Interpreter`.
+    mode: Mode,
+    /// Map of [`ModeInterpreter`]s.
+    map: HashMap<Mode, &'static dyn ModeInterpreter>,
 }
 
-/// The [`Interpreter`] for [`Mode::View`].
+impl Interpreter {
+    /// Returns the [`ModeInterpreter`] associated with `mode`.
+    ///
+    /// Returns [`Err`]([`Failure`]) if `mode` is not in `self.map`.
+    pub(crate) fn translate(&mut self, input: Input) -> Result<Vec<Operation>, Failure> {
+        let (operations, new_mode) = self
+            .map
+            .get(&self.mode)
+            .ok_or(Fault(self.mode))?
+            .decode(input);
+
+        if let Some(mode) = new_mode {
+            self.mode = mode;
+        }
+
+        Ok(operations)
+    }
+}
+
+impl Default for Interpreter {
+    fn default() -> Self {
+        /// The [`ModeInterpreter`] for [`Mode::View`].
+        static VIEW_INTERPRETER: ViewInterpreter = ViewInterpreter::new();
+        /// The [`ModeInterpreter`] for [`Mode::Confirm`].
+        static CONFIRM_INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
+
+        let mut map: HashMap<Mode, &'static dyn ModeInterpreter> = HashMap::new();
+
+        let _ = map.insert(Mode::View, &VIEW_INTERPRETER);
+        let _ = map.insert(Mode::Confirm, &CONFIRM_INTERPRETER);
+        Self {
+            map,
+            mode: Mode::default(),
+        }
+    }
+}
+
+/// Signifies the mode of the application.
+#[derive(Copy, Clone, Eq, ParseDisplay, PartialEq, Hash, Debug)]
+#[display(style = "CamelCase")]
+// Mode is pub due to being a member of Failure::UnknownMode.
+pub(crate) enum Mode {
+    /// Displays the current file.
+    View,
+    /// Confirms the user's action
+    Confirm,
+}
+
+impl Default for Mode {
+    #[inline]
+    fn default() -> Self {
+        Self::View
+    }
+}
+
+/// A mode is not stored in [`Interpreter`].
+#[derive(Clone, Copy, Debug, Error)]
+#[error("mode `{0}` is unknown")]
+pub struct Fault(Mode);
+
+/// Defines the functionality to convert [`Input`] to [`Operation`]s.
+pub(crate) trait ModeInterpreter: Debug {
+    /// Converts `input` to [`Operation`]s.
+    fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>);
+}
+
+/// The [`ModeInterpreter`] for [`Mode::View`].
 #[derive(Clone, Debug)]
 pub(crate) struct ViewInterpreter {}
 
@@ -25,16 +98,17 @@ impl ViewInterpreter {
     }
 }
 
-impl Interpreter for ViewInterpreter {
-    fn decode(&self, input: Input) -> Vec<Operation> {
+impl ModeInterpreter for ViewInterpreter {
+    fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
         match input {
-            Input::Config(config) => vec![Operation::UpdateConfig(config)],
+            Input::Setting(config) => (vec![Operation::UpdateConfig(config)], None),
             Input::User(event) => match event {
                 Event::Key(key) => match key.code {
-                    KeyCode::Esc => vec![Operation::Reset],
-                    KeyCode::Char('q') => vec![Operation::Confirm(ConfirmAction::Quit)],
-                    // Temporary mapping to test wrapping.
-                    KeyCode::Char('.') => vec![Operation::Configure(Config::Wrap(true))],
+                    KeyCode::Esc => (vec![Operation::Reset], None),
+                    KeyCode::Char('q') => (
+                        vec![Operation::Confirm(ConfirmAction::Quit)],
+                        Some(Mode::Confirm),
+                    ),
                     KeyCode::Enter
                     | KeyCode::Backspace
                     | KeyCode::Left
@@ -51,15 +125,15 @@ impl Interpreter for ViewInterpreter {
                     | KeyCode::Insert
                     | KeyCode::F(..)
                     | KeyCode::Char(..)
-                    | KeyCode::Null => vec![],
+                    | KeyCode::Null => (vec![], None),
                 },
-                Event::Mouse(..) | Event::Resize(..) => vec![],
+                Event::Mouse(..) | Event::Resize(..) => (vec![], None),
             },
         }
     }
 }
 
-/// The [`Interpreter`] for [`Mode::Confirm`].
+/// The [`ModeInterpreter`] for [`Mode::Confirm`].
 #[derive(Clone, Debug)]
 pub(crate) struct ConfirmInterpreter {}
 
@@ -70,12 +144,12 @@ impl ConfirmInterpreter {
     }
 }
 
-impl Interpreter for ConfirmInterpreter {
-    fn decode(&self, input: Input) -> Vec<Operation> {
+impl ModeInterpreter for ConfirmInterpreter {
+    fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
         match input {
             Input::User(event) => match event {
                 Event::Key(key) => match key.code {
-                    KeyCode::Char('y') => vec![Operation::Quit],
+                    KeyCode::Char('y') => (vec![Operation::Quit], None),
                     KeyCode::Char(..)
                     | KeyCode::Backspace
                     | KeyCode::Enter
@@ -93,11 +167,11 @@ impl Interpreter for ConfirmInterpreter {
                     | KeyCode::Insert
                     | KeyCode::F(..)
                     | KeyCode::Null
-                    | KeyCode::Esc => vec![Operation::Reset],
+                    | KeyCode::Esc => (vec![Operation::Reset], Some(Mode::View)),
                 },
-                Event::Mouse(..) | Event::Resize(..) => vec![],
+                Event::Mouse(..) | Event::Resize(..) => (vec![], None),
             },
-            Input::Config(..) => vec![],
+            Input::Setting(..) => (vec![], None),
         }
     }
 }
@@ -118,7 +192,10 @@ mod test_view {
                 KeyCode::Char('q'),
                 KeyModifiers::empty()
             )))),
-            vec![Operation::Confirm(ConfirmAction::Quit)]
+            (
+                vec![Operation::Confirm(ConfirmAction::Quit)],
+                Some(Mode::Confirm)
+            )
         );
     }
 }
@@ -139,7 +216,7 @@ mod test_confirm {
                 KeyCode::Char('y'),
                 KeyModifiers::empty()
             )))),
-            vec![Operation::Quit]
+            (vec![Operation::Quit], None)
         );
     }
 
@@ -151,21 +228,21 @@ mod test_confirm {
                 KeyCode::Char('n'),
                 KeyModifiers::empty()
             )))),
-            vec![Operation::Reset]
+            (vec![Operation::Reset], Some(Mode::View))
         );
         assert_eq!(
             INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
                 KeyCode::Char('c'),
                 KeyModifiers::empty()
             )))),
-            vec![Operation::Reset]
+            (vec![Operation::Reset], Some(Mode::View))
         );
         assert_eq!(
             INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
                 KeyCode::Char('1'),
                 KeyModifiers::empty()
             )))),
-            vec![Operation::Reset]
+            (vec![Operation::Reset], Some(Mode::View))
         );
     }
 }
