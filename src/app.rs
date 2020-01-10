@@ -157,6 +157,7 @@ impl Sheet {
                     }))
                 }
             }
+            Operation::Alert(alert) => Ok(Some(Change::Message(alert))),
         }
     }
 }
@@ -172,6 +173,8 @@ pub(crate) enum Operation {
     Quit,
     /// Updates a configuration.
     UpdateConfig(Setting),
+    /// Alerts the user with a message.
+    Alert(ShowMessageParams),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.

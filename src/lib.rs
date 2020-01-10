@@ -56,6 +56,7 @@
     clippy::missing_inline_in_public_items, // Flags methods in derived traits.
     clippy::multiple_crate_versions, // Requires redox_users update to avoid multiple versions of rand_core.
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
+    clippy::unreachable, // Added by derive(Enum).
 )]
 
 mod app;
@@ -133,7 +134,7 @@ impl Paper {
         let mut keep_running = true;
 
         if let Some(input) = self.ui.input()? {
-            for operation in self.interpreter.translate(input)? {
+            for operation in self.interpreter.translate(input) {
                 if let Operation::Quit = operation {
                     keep_running = false;
                     break;

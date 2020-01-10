@@ -16,7 +16,12 @@ pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
     clap::ArgMatches,
-    core::{fmt::{self, Debug}, convert::TryFrom, convert::TryInto, time::Duration},
+    core::{
+        convert::TryFrom,
+        convert::TryInto,
+        fmt::{self, Debug},
+        time::Duration,
+    },
     crossterm::{
         cursor::MoveTo,
         event::{self, Event},
@@ -80,6 +85,8 @@ pub(crate) struct Terminal {
     ///
     /// Command arguments are viewed as config input so that all processing of arguments is performed within the main application loop.
     changed_settings: Vec<Setting>,
+    /// A list of the glitches that have occurred in the user interface.
+    glitches: Vec<Fault>,
     /// Number of columns provided by terminal.
     columns: u16,
     /// Number of rows provided by terminal.
@@ -281,7 +288,15 @@ impl Terminal {
 
     /// Checks for updates to [`Config`] and adds any changes the changed settings list.
     fn add_config_updates(&mut self) -> Outcome<()> {
-        self.changed_settings.append(&mut self.config.update()?);
+        match self.config.update() {
+            Ok(mut settings) => {
+                self.changed_settings.append(&mut settings);
+            }
+            Err(fault) => {
+                self.glitches.push(fault);
+            }
+        }
+
         Ok(())
     }
 
@@ -297,14 +312,17 @@ impl Terminal {
             }
         }
 
-        // First check arg inputs, then check for key input.
-        match self.changed_settings.pop() {
-            Some(input) => Ok(Some(Input::Setting(input))),
-            None => Ok(if event::poll(Duration::from_secs(0))? {
+        // First check errors, then settings, then terminal input.
+        if let Some(fault) = self.glitches.pop() {
+            Ok(Some(Input::Glitch(fault)))
+        } else if let Some(setting) = self.changed_settings.pop() {
+            Ok(Some(Input::Setting(setting)))
+        } else {
+            Ok(if event::poll(Duration::from_secs(0))? {
                 Some(event::read()?.into())
             } else {
                 None
-            }),
+            })
         }
     }
 }
@@ -321,6 +339,7 @@ impl Default for Terminal {
             out: io::stdout(),
             is_init: false,
             changed_settings: Vec::default(),
+            glitches: Vec::default(),
             columns: 0,
             rows: 0,
             first_line: 0,
@@ -433,19 +452,30 @@ pub(crate) enum Setting {
 }
 
 /// Signifies input provided by the user.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) enum Input {
-    Resize{
+    /// Signifies a new terminal size.
+    #[allow(dead_code)] // This lint has an error.
+    Resize {
+        /// The new number of rows.
         rows: u16,
+        /// The new number of columns.
         columns: u16,
     },
+    /// Signifies a mouse action.
     Mouse,
+    /// Signifies a key being pressed.
+    #[allow(dead_code)] // This lint has an error.
     Key {
+        /// The `key` that was pressed.
         key: Key,
+        /// Modifier keys pressed at the same time as `key`.
         modifiers: Modifiers,
     },
-    /// Configuration.
+    /// Signifies a changed [`Setting`].
     Setting(Setting),
+    /// Signifies an error that is recoverable.
+    Glitch(Fault),
 }
 
 impl From<Event> for Input {
@@ -453,7 +483,10 @@ impl From<Event> for Input {
         match value {
             Event::Resize(columns, rows) => Self::Resize { rows, columns },
             Event::Mouse(..) => Self::Mouse,
-            Event::Key(key) => Self::Key{ key: key.code, modifiers: key.modifiers},
+            Event::Key(key) => Self::Key {
+                key: key.code,
+                modifiers: key.modifiers,
+            },
         }
     }
 }

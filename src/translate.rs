@@ -3,11 +3,12 @@ use {
     crate::{
         app::{ConfirmAction, Operation},
         ui::{Input, Key},
-        Failure,
     },
     core::fmt::Debug,
+    enum_map::{enum_map, Enum, EnumMap},
+    lsp_types::{MessageType, ShowMessageParams},
     parse_display::Display as ParseDisplay,
-    std::collections::HashMap,
+    std::rc::Rc,
     thiserror::Error,
 };
 
@@ -17,50 +18,38 @@ pub(crate) struct Interpreter {
     /// Current [`Mode`] of the `Interpreter`.
     mode: Mode,
     /// Map of [`ModeInterpreter`]s.
-    map: HashMap<Mode, &'static dyn ModeInterpreter>,
+    map: EnumMap<Mode, ConcreteInterpreter>,
 }
 
 impl Interpreter {
-    /// Returns the [`ModeInterpreter`] associated with `mode`.
-    ///
-    /// Returns [`Err`]([`Failure`]) if `mode` is not in `self.map`.
-    pub(crate) fn translate(&mut self, input: Input) -> Result<Vec<Operation>, Failure> {
-        let (operations, new_mode) = self
-            .map
-            .get(&self.mode)
-            .ok_or(Fault(self.mode))?
-            .decode(input);
+    /// Returns the [`Operation`]s that map to `input` given the current [`Mode`].
+    pub(crate) fn translate(&mut self, input: Input) -> Vec<Operation> {
+        #[allow(clippy::indexing_slicing)] // EnumMap guarantees indexing will not panic.
+        let (operations, new_mode) = self.map[self.mode].decode(input);
 
         if let Some(mode) = new_mode {
             self.mode = mode;
         }
 
-        Ok(operations)
+        operations
     }
 }
 
 impl Default for Interpreter {
     fn default() -> Self {
-        /// The [`ModeInterpreter`] for [`Mode::View`].
-        static VIEW_INTERPRETER: ViewInterpreter = ViewInterpreter::new();
-        /// The [`ModeInterpreter`] for [`Mode::Confirm`].
-        static CONFIRM_INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
-
-        let mut map: HashMap<Mode, &'static dyn ModeInterpreter> = HashMap::new();
-
-        let _ = map.insert(Mode::View, &VIEW_INTERPRETER);
-        let _ = map.insert(Mode::Confirm, &CONFIRM_INTERPRETER);
         Self {
-            map,
+            map: enum_map! {
+                Mode::View => ConcreteInterpreter(Rc::new(ViewInterpreter::new())),
+                Mode::Confirm => ConcreteInterpreter(Rc::new(ConfirmInterpreter::new())),
+            },
             mode: Mode::default(),
         }
     }
 }
 
 /// Signifies the mode of the application.
-#[derive(Copy, Clone, Eq, ParseDisplay, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Debug, Enum, Eq, ParseDisplay, PartialEq, Hash)]
 #[display(style = "CamelCase")]
-// Mode is pub due to being a member of Failure::UnknownMode.
 pub(crate) enum Mode {
     /// Displays the current file.
     View,
@@ -72,6 +61,17 @@ impl Default for Mode {
     #[inline]
     fn default() -> Self {
         Self::View
+    }
+}
+
+/// A concrete representation of a [`ModeInterpreter`].
+#[derive(Debug)]
+struct ConcreteInterpreter(Rc<dyn ModeInterpreter>);
+
+impl ConcreteInterpreter {
+    /// Translates `input` into [`Operation`]s also returning the new [`Mode`].
+    fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
+        self.0.decode(input)
     }
 }
 
@@ -92,7 +92,7 @@ pub(crate) struct ViewInterpreter {}
 
 impl ViewInterpreter {
     /// Creates a `ViewInterpreter`.
-    pub(crate) const fn new() -> Self {
+    const fn new() -> Self {
         Self {}
     }
 }
@@ -101,9 +101,22 @@ impl ModeInterpreter for ViewInterpreter {
     fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
         match input {
             Input::Setting(config) => (vec![Operation::UpdateConfig(config)], None),
-            Input::Key {key: Key::Esc, modifiers: _} => (vec![Operation::Reset], None),
-            Input::Key {key: Key::Char('q'), modifiers: _} => (vec![Operation::Confirm(ConfirmAction::Quit)], Some(Mode::Confirm)),
-            Input::Key {..} | Input::Mouse | Input::Resize {..} => (vec![], None),
+            Input::Key { key: Key::Esc, .. } => (vec![Operation::Reset], None),
+            Input::Key {
+                key: Key::Char('q'),
+                ..
+            } => (
+                vec![Operation::Confirm(ConfirmAction::Quit)],
+                Some(Mode::Confirm),
+            ),
+            Input::Glitch(fault) => (
+                vec![Operation::Alert(ShowMessageParams {
+                    typ: MessageType::Error,
+                    message: format!("{}", fault),
+                })],
+                None,
+            ),
+            Input::Key { .. } | Input::Mouse | Input::Resize { .. } => (vec![], None),
         }
     }
 }
@@ -114,7 +127,7 @@ pub(crate) struct ConfirmInterpreter {}
 
 impl ConfirmInterpreter {
     /// Creates a new `ConfirmInterpreter`.
-    pub(crate) const fn new() -> Self {
+    const fn new() -> Self {
         Self {}
     }
 }
@@ -122,9 +135,15 @@ impl ConfirmInterpreter {
 impl ModeInterpreter for ConfirmInterpreter {
     fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
         match input {
-            Input::Key {key: Key::Char('y'), modifiers: _} => (vec![Operation::Quit], None),
-            Input::Key {..} |
-            Input::Mouse | Input::Resize{..} | Input::Setting(..) => (vec![Operation::Reset], Some(Mode::View)),
+            Input::Key {
+                key: Key::Char('y'),
+                ..
+            } => (vec![Operation::Quit], None),
+            Input::Key { .. }
+            | Input::Mouse
+            | Input::Resize { .. }
+            | Input::Setting(..)
+            | Input::Glitch(..) => (vec![Operation::Reset], Some(Mode::View)),
         }
     }
 }
