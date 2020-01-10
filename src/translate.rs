@@ -1,12 +1,11 @@
-//! Implements the functionality of converting [`Input`] to [`Operation`]s.
+//! Implements the functionality of converting an [`Input`] to [`Operation`]s.
 use {
     crate::{
         app::{ConfirmAction, Operation},
-        ui::Input,
+        ui::{Input, Key},
         Failure,
     },
     core::fmt::Debug,
-    crossterm::event::{Event, KeyCode},
     parse_display::Display as ParseDisplay,
     std::collections::HashMap,
     thiserror::Error,
@@ -102,33 +101,9 @@ impl ModeInterpreter for ViewInterpreter {
     fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
         match input {
             Input::Setting(config) => (vec![Operation::UpdateConfig(config)], None),
-            Input::User(event) => match event {
-                Event::Key(key) => match key.code {
-                    KeyCode::Esc => (vec![Operation::Reset], None),
-                    KeyCode::Char('q') => (
-                        vec![Operation::Confirm(ConfirmAction::Quit)],
-                        Some(Mode::Confirm),
-                    ),
-                    KeyCode::Enter
-                    | KeyCode::Backspace
-                    | KeyCode::Left
-                    | KeyCode::Right
-                    | KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::Home
-                    | KeyCode::End
-                    | KeyCode::PageUp
-                    | KeyCode::PageDown
-                    | KeyCode::Tab
-                    | KeyCode::BackTab
-                    | KeyCode::Delete
-                    | KeyCode::Insert
-                    | KeyCode::F(..)
-                    | KeyCode::Char(..)
-                    | KeyCode::Null => (vec![], None),
-                },
-                Event::Mouse(..) | Event::Resize(..) => (vec![], None),
-            },
+            Input::Key {key: Key::Esc, modifiers: _} => (vec![Operation::Reset], None),
+            Input::Key {key: Key::Char('q'), modifiers: _} => (vec![Operation::Confirm(ConfirmAction::Quit)], Some(Mode::Confirm)),
+            Input::Key {..} | Input::Mouse | Input::Resize {..} => (vec![], None),
         }
     }
 }
@@ -147,31 +122,9 @@ impl ConfirmInterpreter {
 impl ModeInterpreter for ConfirmInterpreter {
     fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
         match input {
-            Input::User(event) => match event {
-                Event::Key(key) => match key.code {
-                    KeyCode::Char('y') => (vec![Operation::Quit], None),
-                    KeyCode::Char(..)
-                    | KeyCode::Backspace
-                    | KeyCode::Enter
-                    | KeyCode::Left
-                    | KeyCode::Right
-                    | KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::Home
-                    | KeyCode::End
-                    | KeyCode::PageUp
-                    | KeyCode::PageDown
-                    | KeyCode::Tab
-                    | KeyCode::BackTab
-                    | KeyCode::Delete
-                    | KeyCode::Insert
-                    | KeyCode::F(..)
-                    | KeyCode::Null
-                    | KeyCode::Esc => (vec![Operation::Reset], Some(Mode::View)),
-                },
-                Event::Mouse(..) | Event::Resize(..) => (vec![], None),
-            },
-            Input::Setting(..) => (vec![], None),
+            Input::Key {key: Key::Char('y'), modifiers: _} => (vec![Operation::Quit], None),
+            Input::Key {..} |
+            Input::Mouse | Input::Resize{..} | Input::Setting(..) => (vec![Operation::Reset], Some(Mode::View)),
         }
     }
 }
@@ -180,7 +133,7 @@ impl ModeInterpreter for ConfirmInterpreter {
 #[cfg(test)]
 mod test_view {
     use super::*;
-    use crossterm::event::{KeyEvent, KeyModifiers};
+    use crate::ui::Modifiers;
 
     /// The `q` key shall confirm the user wants to quit.
     #[test]
@@ -188,10 +141,10 @@ mod test_view {
         let view = ViewInterpreter::new();
 
         assert_eq!(
-            view.decode(Input::User(Event::Key(KeyEvent::new(
-                KeyCode::Char('q'),
-                KeyModifiers::empty()
-            )))),
+            view.decode(Input::Key {
+                key: Key::Char('q'),
+                modifiers: Modifiers::empty()
+            }),
             (
                 vec![Operation::Confirm(ConfirmAction::Quit)],
                 Some(Mode::Confirm)
@@ -204,7 +157,7 @@ mod test_view {
 #[cfg(test)]
 mod test_confirm {
     use super::*;
-    use crossterm::event::{KeyEvent, KeyModifiers};
+    use crate::ui::Modifiers;
 
     static INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
 
@@ -212,10 +165,10 @@ mod test_confirm {
     #[test]
     fn confirm() {
         assert_eq!(
-            INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
-                KeyCode::Char('y'),
-                KeyModifiers::empty()
-            )))),
+            INTERPRETER.decode(Input::Key {
+                key: Key::Char('y'),
+                modifiers: Modifiers::empty()
+            }),
             (vec![Operation::Quit], None)
         );
     }
@@ -224,24 +177,24 @@ mod test_confirm {
     #[test]
     fn cancel() {
         assert_eq!(
-            INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
-                KeyCode::Char('n'),
-                KeyModifiers::empty()
-            )))),
+            INTERPRETER.decode(Input::Key {
+                key: Key::Char('n'),
+                modifiers: Modifiers::empty()
+            }),
             (vec![Operation::Reset], Some(Mode::View))
         );
         assert_eq!(
-            INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
-                KeyCode::Char('c'),
-                KeyModifiers::empty()
-            )))),
+            INTERPRETER.decode(Input::Key {
+                key: Key::Char('c'),
+                modifiers: Modifiers::empty()
+            }),
             (vec![Operation::Reset], Some(Mode::View))
         );
         assert_eq!(
-            INTERPRETER.decode(Input::User(Event::Key(KeyEvent::new(
-                KeyCode::Char('1'),
-                KeyModifiers::empty()
-            )))),
+            INTERPRETER.decode(Input::Key {
+                key: Key::Char('1'),
+                modifiers: Modifiers::empty()
+            }),
             (vec![Operation::Reset], Some(Mode::View))
         );
     }

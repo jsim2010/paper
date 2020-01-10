@@ -4,7 +4,10 @@ mod lsp;
 pub(crate) use lsp::Fault as LspError;
 
 use {
-    crate::{ui::{Setting, Change}, Failure},
+    crate::{
+        ui::{Change, Setting},
+        Failure,
+    },
     lsp::LspServer,
     lsp_types::{
         MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,

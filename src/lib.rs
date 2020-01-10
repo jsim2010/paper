@@ -5,7 +5,6 @@
 //! 2) All input shall be modal, i.e. keys shall implement different functionality depending on the current mode of the application.
 //! 3) Paper shall support the Language Server Protocol.
 //!
-//!
 //! - Text manipulation shall involve a 3-step process of identifying the location should occur, marking that location, and then performing the desired edit.
 //! - Paper shall reuse already implemented tools wherever possible.
 //! - Paper shall follow all cargo-format conventions.
@@ -54,7 +53,6 @@
 )]
 // Temporary allows.
 #![allow(
-    clippy::use_debug, // Flags using debug formatting in impl Debug.
     clippy::missing_inline_in_public_items, // Flags methods in derived traits.
     clippy::multiple_crate_versions, // Requires redox_users update to avoid multiple versions of rand_core.
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
@@ -68,7 +66,6 @@ pub use ui::Arguments;
 
 use {
     app::{LspError, Operation, Sheet},
-    core::fmt::{self, Debug},
     log::SetLoggerError,
     simplelog::{Config, LevelFilter, WriteLogger},
     std::{fs::File, io},
@@ -78,25 +75,33 @@ use {
 };
 
 /// Initializes the application logger.
-fn init_logger() -> Result<(), LogError> {
+///
+/// The logger writes all logs to the file `paper.log`.
+fn init_logger() -> Result<(), Failure> {
     let log_filename = "paper.log".to_string();
 
     WriteLogger::init(
         LevelFilter::Trace,
         Config::default(),
-        File::create(&log_filename).map_err(|e| LogError::CreateLogFile(log_filename, e))?,
+        File::create(&log_filename).map_err(|e| Failure::CreateLogFile(log_filename, e))?,
     )?;
     Ok(())
 }
 
-/// Describes the paper application.
-#[derive(Default)]
+/// Manages the execution of the application.
+///
+/// The runtime loop of the application is as follows:
+/// 1. Receive input.
+/// 2. Translate input into operations.
+/// 3. Execute operations and determine the appropriate changes.
+/// 4. Output the changes.
+#[derive(Debug, Default)]
 pub struct Paper {
-    /// [`Interpreter`]s supported by the application.
+    /// Translates input into operations.
     interpreter: Interpreter,
     /// Interface between the application and the user.
     ui: Terminal,
-    /// The [`Sheet`] of the application.
+    /// Processes application operations.
     sheet: Sheet,
 }
 
@@ -122,7 +127,7 @@ impl Paper {
         Ok(())
     }
 
-    /// Processes a single event from the user, returning if the application should keep running.
+    /// Processes a single input, returning if the application should keep running.
     #[inline]
     fn step(&mut self) -> Result<bool, Failure> {
         let mut keep_running = true;
@@ -144,16 +149,6 @@ impl Paper {
     }
 }
 
-impl Debug for Paper {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Paper{{interpreter: {:?}, sheet: {:?}}}",
-            self.interpreter, self.sheet
-        )
-    }
-}
-
 /// An event that causes the application to stop running.
 #[derive(Debug, Error)]
 pub enum Failure {
@@ -166,18 +161,10 @@ pub enum Failure {
     /// A failure in the language server protocol client.
     #[error("language server protocol: {0}")]
     Lsp(#[from] LspError),
-    /// A failure in the logger.
-    #[error("logger: {0}")]
-    Log(#[from] LogError),
-}
-
-/// A failure in the logger.
-#[derive(Debug, Error)]
-pub enum LogError {
     /// A failure to create the log file.
     #[error("failed to create log file `{0}`: {1}")]
-    CreateLogFile(String, io::Error),
+    CreateLogFile(String, #[source] io::Error),
     /// A failure to initialize the logger.
     #[error("failed to initialize logger: {0}")]
-    Init(#[from] SetLoggerError),
+    InitLogger(#[from] SetLoggerError),
 }
