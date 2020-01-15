@@ -1,6 +1,5 @@
 //! Implements management and use of language servers.
 use {
-    crate::Failure,
     jsonrpc_core::{Call, Id, MethodCall, Output, Params, Success, Value, Version},
     log::{error, trace, warn},
     lsp_types::{ClientCapabilities, InitializeParams, InitializedParams, Url},
@@ -236,7 +235,7 @@ impl LspServer {
     }
 
     /// Attempts to cleanly kill the language server process.
-    fn shutdown_and_exit(&mut self) -> Result<(), Failure> {
+    fn shutdown_and_exit(&mut self) -> Result<(), Fault> {
         self.transmitter()?.request(&ShutdownParams(()).into())?;
         self.terminate_stderr_thread()?;
         self.transmitter()?.notify(&ExitParams {}.into())?;

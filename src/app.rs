@@ -1,14 +1,15 @@
 //! Implements the modality of the application.
+mod logging;
 mod lsp;
-
-pub(crate) use lsp::Fault as LspError;
 
 use {
     crate::{
         ui::{Change, Setting},
-        Failure,
     },
-    log::{trace, LevelFilter, Log, Metadata, Record},
+    clap::ArgMatches,
+    core::convert::TryFrom,
+    logging::LogConfig,
+    log::trace,
     lsp::LspServer,
     lsp_types::{
         MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
@@ -20,12 +21,10 @@ use {
         env,
         ffi::OsStr,
         fmt,
-        fs::{self, File},
-        io::{self, ErrorKind, Write},
-        sync::{Arc, RwLock, RwLockWriteGuard},
+        fs,
+        io::{self, ErrorKind},
     },
     thiserror::Error,
-    time::PrimitiveDateTime,
     url::{ParseError, Url},
 };
 
@@ -121,104 +120,25 @@ fn document_from_string(path: String) -> Result<TextDocumentItem, DocumentError>
     Ok(TextDocumentItem::new(uri, language_id, 0, text))
 }
 
-/// Provides a handle to dynamically configure the [`Logger`].
-#[derive(Debug)]
-struct LogConfig {
-    /// A pointer to the [`Writer`] used by the [`Logger`].
-    writer: Arc<RwLock<Writer>>,
+/// Signifies settings of the application.
+///
+/// Using a custom struct rather than [`ArgMatches`] allows for external code to easily configure use of the application as a library.
+#[derive(Clone, Debug)]
+pub struct Arguments {
+    /// The file to be viewed.
+    pub file: Option<String>,
+    /// The handle to configure the logger.
+    pub log_config: LogConfig,
 }
 
-impl LogConfig {
-    fn new(writer: Arc<RwLock<Writer>>) -> Self {
-        Self { writer }
-    }
+impl TryFrom<ArgMatches<'_>> for Arguments {
+    type Error = Fault;
 
-    fn writer(&self) -> Result<RwLockWriteGuard<'_, Writer>, Failure> {
-        self.writer.write().map_err(|_| Failure::LogWriter)
-    }
-}
-
-/// Implements writing logs to a file.
-#[derive(Debug)]
-struct Writer {
-    /// Defines the file that stores logs.
-    file: File,
-    /// Defines the level at which logs from starship are allowed.
-    starship_level: LevelFilter,
-}
-
-impl Writer {
-    fn new() -> Result<Self, Failure> {
-        let log_filename = "paper.log".to_string();
-        
+    fn try_from(value: ArgMatches<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
-            file: File::create(&log_filename).map_err(|e| Failure::CreateLogFile(log_filename, e))?,
-            starship_level: LevelFilter::Off,
+            file: value.value_of("file").map(str::to_string),
+            log_config: LogConfig::new()?,
         })
-    }
-
-    /// Writes `record` to the file of `self`.
-    fn write(&mut self, record: &Record<'_>) {
-        let _ = writeln!(
-            self.file,
-            "{} [{}] {}: {}",
-            PrimitiveDateTime::now().format("%F %T"),
-            record.level(),
-            record.target(),
-            record.args()
-        );
-    }
-
-    /// Flushes the buffer of the writer.
-    fn flush(&mut self) {
-        let _ = self.file.flush();
-    }
-}
-
-/// Implements the logger of the application.
-struct Logger {
-    /// The [`Writer`] of the logger.
-    writer: Arc<RwLock<Writer>>,
-}
-
-impl Logger {
-    /// Creates a new [`Logger`].
-    fn new() -> Result<Self, Failure> {
-        Ok(Self {
-            writer: Arc::new(RwLock::new(Writer::new()?)),
-        })
-    }
-
-    fn writer(&self) -> &Arc<RwLock<Writer>> {
-        &self.writer
-    }
-}
-
-impl Log for Logger {
-    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        if let Ok(writer) = self.writer.read() {
-            if metadata.target().starts_with("starship") {
-                metadata.level() <= writer.starship_level
-            } else {
-                true
-            }
-        } else {
-            false
-        }
-    }
-
-    fn log(&self, record: &Record<'_>) {
-        if self.enabled(record.metadata()) {
-            if let Ok(mut writer) = self.writer.write() {
-                writer.write(record);
-            }
-        }
-    }
-
-    fn flush(&self) {
-        if let Ok(mut writer) = self.writer.write() {
-            writer.flush();
-        }
     }
 }
 
@@ -236,24 +156,17 @@ pub(crate) struct Sheet {
 }
 
 impl Sheet {
-    pub(crate) fn new() -> Result<Self, Failure> {
-        let logger = Logger::new()?;
-        let log_config = LogConfig::new(Arc::clone(logger.writer()));
-
-        log::set_boxed_logger(Box::new(logger))?;
-        log::set_max_level(LevelFilter::Trace);
-        trace!("logger initialized");
-
-        Ok(Self {
+    pub(crate) fn new(log_config: LogConfig) -> Self {
+        Self {
             doc: None,
             is_wrapped: false,
             lsp_servers: HashMap::default(),
             log_config,
-        })
+        }
     }
 
     /// Performs `operation`.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Failure> {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Fault> {
         match operation {
             Operation::Reset => Ok(Some(Change::Reset)),
             Operation::Confirm(action) => Ok(Some(Change::Question(
@@ -343,4 +256,12 @@ impl From<ConfirmAction> for ShowMessageRequestParams {
             actions: None,
         }
     }
+}
+
+#[derive(Debug, Error)]
+pub enum Fault {
+    #[error("logger: {0}")]
+    Log(#[from] logging::Fault),
+    #[error("language server protocol: {0}")]
+    Lsp(#[from] lsp::Fault),
 }

@@ -6,6 +6,7 @@
 //! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the Language Server Protocol.
 //! 4) Paper shall adapt to rustfmt and as many clippy lints as reasonably possible.
 //!
+//! ### Upcoming
 //! - Text manipulation shall involve a 3-step process of identifying the location should occur, marking that location, and then performing the desired edit.
 #![warn(
     absolute_paths_not_starting_with_crate,
@@ -62,24 +63,16 @@ mod app;
 mod translate;
 mod ui;
 
-pub use ui::Arguments;
+pub use app::Arguments;
 
 use {
-    app::{LspError, Operation, Sheet},
-    log::SetLoggerError,
-    std::io,
+    app::{Operation, Sheet},
     thiserror::Error,
     translate::Interpreter,
     ui::Terminal,
 };
 
 /// Manages the execution of the application.
-///
-/// The runtime loop of the application is as follows:
-/// 1. Receive input.
-/// 2. Translate input into operations.
-/// 3. Execute operations and determine the appropriate changes.
-/// 4. Output the changes.
 #[derive(Debug)]
 pub struct Paper {
     /// Translates input into operations.
@@ -95,14 +88,13 @@ impl Paper {
     #[must_use]
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
-            // Sheet must be created first in order to create logger early.
-            sheet: Sheet::new()?,
+            sheet: Sheet::new(arguments.log_config.clone()),
             interpreter: Interpreter::default(),
             ui: Terminal::new(arguments)?,
         })
     }
 
-    /// Configures the application and then starts its runtime loop.
+    /// Executes the runtime loop of the application.
     #[inline]
     pub fn run(&mut self) -> Result<(), Failure> {
         loop {
@@ -114,7 +106,12 @@ impl Paper {
         Ok(())
     }
 
-    /// Processes a single input, returning if the application should keep running.
+    /// Implements a single run of the runtime loop and returns if the application should keep running.
+    ///
+    /// A single run is as follows:
+    /// 1. Receive input.
+    /// 2. Translate input into operations.
+    /// 3. For each operation, execute the operation and output the resulting changes.
     #[inline]
     fn step(&mut self) -> Result<bool, Failure> {
         let mut keep_running = true;
@@ -136,25 +133,16 @@ impl Paper {
     }
 }
 
-/// An event that causes the application to stop running.
+/// Signifies an event that caused the application to stop running.
 #[derive(Debug, Error)]
 pub enum Failure {
-    /// A failure in the user interface.
+    /// Signifies a failure in the user interface.
     #[error("user interface: {0}")]
     Ui(#[from] ui::Fault),
-    /// A failure in the translator.
+    /// Signifies a failure in the translator.
     #[error("translator: {0}")]
     Translator(#[from] translate::Fault),
-    /// A failure in the language server protocol client.
-    #[error("language server protocol: {0}")]
-    Lsp(#[from] LspError),
-    /// A failure to create the log file.
-    #[error("failed to create log file `{0}`: {1}")]
-    CreateLogFile(String, #[source] io::Error),
-    /// A failure to initialize the logger.
-    #[error("failed to initialize logger: {0}")]
-    InitLogger(#[from] SetLoggerError),
-    /// Failed to lock the [`Writer`] of the [`Logger`].
-    #[error("log writer is poisoned")]
-    LogWriter,
+    /// Signifies a failure in the application.
+    #[error("{0}")]
+    App(#[from] app::Fault),
 }

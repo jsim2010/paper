@@ -16,6 +16,7 @@
 pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
+    crate::Arguments,
     clap::ArgMatches,
     core::{
         convert::{TryFrom, TryInto},
@@ -125,7 +126,8 @@ impl Terminal {
     fn init_size(&mut self) -> Outcome<()> {
         let (columns, rows) = terminal::size()?;
 
-        self.changed_settings.push_back(Setting::Size(TerminalSize { rows, columns } ));
+        self.changed_settings
+            .push_back(Setting::Size(TerminalSize { rows, columns }));
         Ok(())
     }
 
@@ -313,10 +315,7 @@ impl ConfigWatcher {
             .watch(Config::path()?, notify::RecursiveMode::NonRecursive)
             .map_err(Fault::Watch)?;
 
-        Ok(Self {
-            watcher,
-            notify,
-        })
+        Ok(Self { watcher, notify })
     }
 }
 
@@ -536,24 +535,6 @@ pub(crate) enum Change {
     Size(TerminalSize),
     /// Add a char to the input box.
     InputChar(char),
-}
-
-/// Signifies settings of the application.
-///
-/// Using a custom struct rather than [`ArgMatches`] allows for external code to easily configure use of the application as a library.
-#[derive(Debug, Default)]
-pub struct Arguments {
-    /// The file to be viewed.
-    file: Option<String>,
-}
-
-impl From<ArgMatches<'_>> for Arguments {
-    #[must_use]
-    fn from(value: ArgMatches<'_>) -> Self {
-        Self {
-            file: value.value_of("file").map(str::to_string),
-        }
-    }
 }
 
 /// Signifies a configuration.
