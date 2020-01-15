@@ -1,4 +1,4 @@
-//! Implements the modality of the application.
+//! Implements the business logic of the application.
 mod logging;
 mod lsp;
 
@@ -28,7 +28,7 @@ use {
     url::{ParseError, Url},
 };
 
-/// A [`Range`] specifying the entire document.
+/// Defines a [`Range`] covering the entire document.
 const ENTIRE_DOCUMENT: Range = Range {
     start: Position {
         line: 0,
@@ -39,6 +39,127 @@ const ENTIRE_DOCUMENT: Range = Range {
         character: u64::max_value(),
     },
 };
+
+/// Signifies the configuration of the application initialization.
+///
+/// Using a custom struct rather than [`ArgMatches`] allows for external code to easily configure use of the application as a library.
+#[derive(Clone, Debug)]
+pub struct Arguments {
+    /// Signifies the file to be viewed.
+    pub file: Option<String>,
+    /// Signifies the handle to configure the application logger.
+    pub log_config: LogConfig,
+}
+
+impl TryFrom<ArgMatches<'_>> for Arguments {
+    type Error = Fault;
+
+    fn try_from(value: ArgMatches<'_>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            file: value.value_of("file").map(str::to_string),
+            log_config: LogConfig::new()?,
+        })
+    }
+}
+
+/// Signifies the business logic of the application.
+#[derive(Debug)]
+pub(crate) struct Sheet {
+    /// Signifies the document being viewed.
+    doc: Option<TextDocumentItem>,
+    /// The document wraps long lines.
+    is_wrapped: bool,
+    /// The [`LspServer`]s managed by this document.
+    lsp_servers: HashMap<String, LspServer>,
+    /// Provides handle to be able to modify logger settings.
+    log_config: LogConfig,
+    input: String,
+    command: Option<Command>,
+}
+
+impl Sheet {
+    pub(crate) fn new(log_config: LogConfig) -> Self {
+        Self {
+            doc: None,
+            is_wrapped: false,
+            lsp_servers: HashMap::default(),
+            input: String::new(),
+            log_config,
+            command: None,
+        }
+    }
+
+    /// Performs `operation` and returns the appropriate [`Change`]s.
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Fault> {
+        match operation {
+            Operation::Reset => Ok(Some(Change::Reset)),
+            Operation::Confirm(action) => Ok(Some(Change::Question(
+                ShowMessageRequestParams::from(action),
+            ))),
+            Operation::Quit => {
+                unreachable!("attempted to execute `Quit` operation");
+            }
+            Operation::UpdateConfig(Setting::File(file)) => self.open_file(file),
+            Operation::UpdateConfig(Setting::Wrap(is_wrapped)) => {
+                if self.is_wrapped == is_wrapped {
+                    Ok(None)
+                } else {
+                    self.is_wrapped = is_wrapped;
+                    Ok(self.doc.as_ref().map(|doc| Change::Text {
+                        edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
+                        is_wrapped,
+                    }))
+                }
+            }
+            Operation::UpdateConfig(Setting::Size(size)) => Ok(Some(Change::Size(size))),
+            Operation::UpdateConfig(Setting::StarshipLog(log_level)) => {
+                trace!("Updating config of starship level");
+                self.log_config.writer()?.starship_level = log_level;
+                Ok(None)
+            }
+            Operation::Alert(alert) => Ok(Some(Change::Message(alert))),
+            Operation::StartCommand(command) => {
+                let prompt = command.to_string();
+
+                self.command = Some(command);
+                Ok(Some(Change::Input(prompt)))
+            }
+            Operation::Collect(c) => {
+                self.input.push(c);
+                Ok(Some(Change::InputChar(c)))
+            }
+            Operation::Execute => {
+                if let Some(_) = self.command {
+                    let file = self.input.clone();
+
+                    self.input.clear();
+                    self.open_file(file)
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
+        match document_from_string(file) {
+            Ok(doc) => {
+                if let Entry::Vacant(entry) = self.lsp_servers.entry(doc.language_id.clone()) {
+                    if doc.language_id == "rust" {
+                        entry.insert(LspServer::new("rls")?).initialize()?;
+                    }
+                }
+
+                self.doc = Some(doc.clone());
+                Ok(Some(Change::Text {
+                    edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
+                    is_wrapped: self.is_wrapped,
+                }))
+            }
+            Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
+        }
+    }
+}
 
 /// Signifies a command that a user can give to the application.
 #[derive(Debug, ParseDisplay, PartialEq)]
@@ -120,101 +241,6 @@ fn document_from_string(path: String) -> Result<TextDocumentItem, DocumentError>
     Ok(TextDocumentItem::new(uri, language_id, 0, text))
 }
 
-/// Signifies settings of the application.
-///
-/// Using a custom struct rather than [`ArgMatches`] allows for external code to easily configure use of the application as a library.
-#[derive(Clone, Debug)]
-pub struct Arguments {
-    /// The file to be viewed.
-    pub file: Option<String>,
-    /// The handle to configure the logger.
-    pub log_config: LogConfig,
-}
-
-impl TryFrom<ArgMatches<'_>> for Arguments {
-    type Error = Fault;
-
-    fn try_from(value: ArgMatches<'_>) -> Result<Self, Self::Error> {
-        Ok(Self {
-            file: value.value_of("file").map(str::to_string),
-            log_config: LogConfig::new()?,
-        })
-    }
-}
-
-/// Signfifies display of the current file.
-#[derive(Debug)]
-pub(crate) struct Sheet {
-    /// The document being displayed.
-    doc: Option<TextDocumentItem>,
-    /// The document wraps long lines.
-    is_wrapped: bool,
-    /// The [`LspServer`]s managed by this document.
-    lsp_servers: HashMap<String, LspServer>,
-    /// Provides handle to be able to modify logger settings.
-    log_config: LogConfig,
-}
-
-impl Sheet {
-    pub(crate) fn new(log_config: LogConfig) -> Self {
-        Self {
-            doc: None,
-            is_wrapped: false,
-            lsp_servers: HashMap::default(),
-            log_config,
-        }
-    }
-
-    /// Performs `operation`.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Fault> {
-        match operation {
-            Operation::Reset => Ok(Some(Change::Reset)),
-            Operation::Confirm(action) => Ok(Some(Change::Question(
-                ShowMessageRequestParams::from(action),
-            ))),
-            Operation::Quit => {
-                unreachable!("attempted to execute `Quit` operation");
-            }
-            Operation::UpdateConfig(Setting::File(file)) => match document_from_string(file) {
-                Ok(doc) => {
-                    if let Entry::Vacant(entry) = self.lsp_servers.entry(doc.language_id.clone()) {
-                        if doc.language_id == "rust" {
-                            entry.insert(LspServer::new("rls")?).initialize()?;
-                        }
-                    }
-
-                    self.doc = Some(doc.clone());
-                    Ok(Some(Change::Text {
-                        edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
-                        is_wrapped: self.is_wrapped,
-                    }))
-                }
-                Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
-            },
-            Operation::UpdateConfig(Setting::Wrap(is_wrapped)) => {
-                if self.is_wrapped == is_wrapped {
-                    Ok(None)
-                } else {
-                    self.is_wrapped = is_wrapped;
-                    Ok(self.doc.as_ref().map(|doc| Change::Text {
-                        edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
-                        is_wrapped,
-                    }))
-                }
-            }
-            Operation::UpdateConfig(Setting::Size(size)) => Ok(Some(Change::Size(size))),
-            Operation::UpdateConfig(Setting::StarshipLog(log_level)) => {
-                trace!("Updating config of starship level");
-                self.log_config.writer()?.starship_level = log_level;
-                Ok(None)
-            }
-            Operation::Alert(alert) => Ok(Some(Change::Message(alert))),
-            Operation::StartCommand(command) => Ok(Some(Change::Input(command.to_string()))),
-            Operation::Collect(c) => Ok(Some(Change::InputChar(c))),
-        }
-    }
-}
-
 /// Signifies actions that can be performed by the application.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Operation {
@@ -232,6 +258,7 @@ pub(crate) enum Operation {
     StartCommand(Command),
     /// Input to input box.
     Collect(char),
+    Execute,
 }
 
 /// Signifies actions that require a confirmation prior to their execution.

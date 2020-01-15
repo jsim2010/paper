@@ -89,10 +89,14 @@ impl Output {
         self.operations.push(operation);
     }
 
+    fn set_mode(&mut self, mode: Mode) {
+        self.new_mode = Some(mode);
+    }
+
     /// Modifies to the [`Operation::Reset`].
     fn reset(&mut self) {
         self.add_op(Operation::Reset);
-        self.new_mode = Some(Mode::View);
+        self.set_mode(Mode::View);
     }
 }
 
@@ -145,14 +149,14 @@ impl ModeInterpreter for ViewInterpreter {
                 ..
             } => {
                 output.add_op(Operation::Confirm(ConfirmAction::Quit));
-                output.new_mode = Some(Mode::Confirm);
+                output.set_mode(Mode::Confirm);
             }
             Input::Key {
                 key: Key::Char('o'),
                 ..
             } => {
                 output.add_op(Operation::StartCommand(Command::Open));
-                output.new_mode = Some(Mode::Collect);
+                output.set_mode(Mode::Collect);
             }
             Input::Glitch(fault) => {
                 output.add_op(Operation::Alert(ShowMessageParams {
@@ -220,6 +224,10 @@ impl ModeInterpreter for CollectInterpreter {
         match input {
             Input::Key { key: Key::Esc, .. } => {
                 output.reset();
+            }
+            Input::Key { key: Key::Enter, .. } => {
+                output.add_op(Operation::Execute);
+                output.set_mode(Mode::View);
             }
             Input::Key {
                 key: Key::Char(c), ..
@@ -358,6 +366,12 @@ mod test_collect {
                 new_mode: None
             },
         );
+    }
+
+    /// The `Enter` key shall execute the command and return to [`Mode::View`].
+    #[test]
+    fn execute() {
+        assert_eq!(INTERPRETER.decode(helpers::key_input(Key::Enter)), Output {operations: vec![Operation::Execute], new_mode: Some(Mode::View)});
     }
 }
 
