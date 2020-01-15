@@ -8,19 +8,24 @@ use {
         ui::{Change, Setting},
         Failure,
     },
+    log::{trace, LevelFilter, Log, Metadata, Record},
     lsp::LspServer,
     lsp_types::{
         MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
         TextDocumentItem, TextEdit,
     },
+    parse_display::Display as ParseDisplay,
     std::{
         collections::{hash_map::Entry, HashMap},
         env,
         ffi::OsStr,
-        fmt, fs,
-        io::{self, ErrorKind},
+        fmt,
+        fs::{self, File},
+        io::{self, ErrorKind, Write},
+        sync::{Arc, RwLock},
     },
     thiserror::Error,
+    time::PrimitiveDateTime,
     url::{ParseError, Url},
 };
 
@@ -35,6 +40,14 @@ const ENTIRE_DOCUMENT: Range = Range {
         character: u64::max_value(),
     },
 };
+
+/// Signifies a command that a user can give to the application.
+#[derive(Debug, ParseDisplay, PartialEq)]
+pub(crate) enum Command {
+    /// Opens a given file.
+    #[display("Open <file>")]
+    Open,
+}
 
 /// Signifies errors associated with [`Document`].
 #[derive(Debug, Error)]
@@ -108,6 +121,119 @@ fn document_from_string(path: String) -> Result<TextDocumentItem, DocumentError>
     Ok(TextDocumentItem::new(uri, language_id, 0, text))
 }
 
+/// Provides a handle to dynamically configure the [`Logger`].
+#[derive(Debug, Default)]
+struct LogHandle {
+    /// A pointer to the [`Writer`] used by the [`Logger`].
+    writer: Arc<RwLock<Writer>>,
+}
+
+impl LogHandle {
+    /// Sets the level at which starship records are logged.
+    fn set_starship_level(&self, level: LevelFilter) -> Result<(), Failure> {
+        trace!("set starship_level {}", level);
+        // TODO: Replace Failure.
+        self.writer
+            .write()
+            .map_err(|_| Failure::LogWriter)?
+            .starship_level = level;
+        Ok(())
+    }
+}
+
+/// Implements writing logs to a file.
+#[derive(Debug)]
+struct Writer {
+    /// Defines the file that stores logs.
+    file: Option<File>,
+    /// Defines the level at which logs from starship are allowed.
+    starship_level: LevelFilter,
+}
+
+impl Writer {
+    /// Creates the file to store logs.
+    fn init(&mut self) -> Result<(), Failure> {
+        let log_filename = "paper.log".to_string();
+
+        self.file =
+            Some(File::create(&log_filename).map_err(|e| Failure::CreateLogFile(log_filename, e))?);
+        Ok(())
+    }
+
+    /// Writes `record` to the file of `self`.
+    fn write(&self, record: &Record<'_>) {
+        if let Some(mut file) = self.file.as_ref() {
+            let _ = writeln!(
+                file,
+                "{} [{}] {}: {}",
+                PrimitiveDateTime::now().format("%F %T"),
+                record.level(),
+                record.target(),
+                record.args()
+            );
+        }
+    }
+
+    /// Flushes the buffer of the writer.
+    fn flush(&self) {
+        if let Some(mut file) = self.file.as_ref() {
+            let _ = file.flush();
+        }
+    }
+}
+
+impl Default for Writer {
+    fn default() -> Self {
+        Self {
+            file: None,
+            starship_level: LevelFilter::Off,
+        }
+    }
+}
+
+/// Implements the logger of the application.
+struct Logger {
+    /// The [`Writer`] of the logger.
+    writer: Arc<RwLock<Writer>>,
+}
+
+impl Logger {
+    /// Creates a new [`Logger`].
+    fn new(writer: &Arc<RwLock<Writer>>) -> Self {
+        Self {
+            writer: Arc::clone(writer),
+        }
+    }
+}
+
+impl Log for Logger {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        if let Ok(writer) = self.writer.read() {
+            if metadata.target().starts_with("starship") {
+                metadata.level() <= writer.starship_level
+            } else {
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+    fn log(&self, record: &Record<'_>) {
+        if self.enabled(record.metadata()) {
+            if let Ok(writer) = self.writer.read() {
+                writer.write(record);
+            }
+        }
+    }
+
+    fn flush(&self) {
+        if let Ok(writer) = self.writer.read() {
+            writer.flush();
+        }
+    }
+}
+
 /// Signfifies display of the current file.
 #[derive(Debug, Default)]
 pub(crate) struct Sheet {
@@ -117,9 +243,24 @@ pub(crate) struct Sheet {
     is_wrapped: bool,
     /// The [`LspServer`]s managed by this document.
     lsp_servers: HashMap<String, LspServer>,
+    /// Provides handle to be able to modify logger settings.
+    log_handle: LogHandle,
 }
 
 impl Sheet {
+    /// Initizlies logger of application.
+    pub(crate) fn init(&mut self) -> Result<(), Failure> {
+        self.log_handle
+            .writer
+            .write()
+            .map_err(|_| Failure::LogWriter)?
+            .init()?;
+        log::set_boxed_logger(Box::new(Logger::new(&self.log_handle.writer)))?;
+        log::set_max_level(LevelFilter::Trace);
+        trace!("Logger Initialized");
+        Ok(())
+    }
+
     /// Performs `operation`.
     pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Failure> {
         match operation {
@@ -157,7 +298,15 @@ impl Sheet {
                     }))
                 }
             }
+            Operation::UpdateConfig(Setting::Size(size)) => Ok(Some(Change::Size(size))),
+            Operation::UpdateConfig(Setting::StarshipLog(log_level)) => {
+                trace!("Updating config of starship level");
+                self.log_handle.set_starship_level(log_level)?;
+                Ok(None)
+            }
             Operation::Alert(alert) => Ok(Some(Change::Message(alert))),
+            Operation::StartCommand(command) => Ok(Some(Change::Input(command.to_string()))),
+            Operation::Collect(c) => Ok(Some(Change::InputChar(c))),
         }
     }
 }
@@ -175,6 +324,10 @@ pub(crate) enum Operation {
     UpdateConfig(Setting),
     /// Alerts the user with a message.
     Alert(ShowMessageParams),
+    /// Open input box for a command.
+    StartCommand(Command),
+    /// Input to input box.
+    Collect(char),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.

@@ -49,6 +49,7 @@
     clippy::large_enum_variant, // Seems to be the same as variant_size_differences.
     clippy::suspicious_arithmetic_impl, // Not always valid; issues should be detected by tests or other lints.
     clippy::suspicious_op_assign_impl, // Not always valid; issues should be detected by tests or other lints.
+    box_pointers, // Generally okay.
     variant_size_differences, // Generally okay.
 )]
 // Temporary allows.
@@ -68,26 +69,11 @@ pub use ui::Arguments;
 use {
     app::{LspError, Operation, Sheet},
     log::SetLoggerError,
-    simplelog::{Config, LevelFilter, WriteLogger},
-    std::{fs::File, io},
+    std::io,
     thiserror::Error,
     translate::Interpreter,
     ui::Terminal,
 };
-
-/// Initializes the application logger.
-///
-/// The logger writes all logs to the file `paper.log`.
-fn init_logger() -> Result<(), Failure> {
-    let log_filename = "paper.log".to_string();
-
-    WriteLogger::init(
-        LevelFilter::Trace,
-        Config::default(),
-        File::create(&log_filename).map_err(|e| Failure::CreateLogFile(log_filename, e))?,
-    )?;
-    Ok(())
-}
 
 /// Manages the execution of the application.
 ///
@@ -116,7 +102,7 @@ impl Paper {
     /// Configures the application and then starts its runtime loop.
     #[inline]
     pub fn run(&mut self, arguments: Arguments) -> Result<(), Failure> {
-        init_logger()?;
+        self.sheet.init()?;
         self.ui.init(arguments)?;
 
         loop {
@@ -168,4 +154,7 @@ pub enum Failure {
     /// A failure to initialize the logger.
     #[error("failed to initialize logger: {0}")]
     InitLogger(#[from] SetLoggerError),
+    /// Failed to lock the [`Writer`] of the [`Logger`].
+    #[error("log writer is poisoned")]
+    LogWriter,
 }
