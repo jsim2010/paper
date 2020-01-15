@@ -3,12 +3,10 @@
 //! ## Functional Overview
 //! 1) All functionality shall be able to be performed via the keys reachable from the home row. Where it makes sense, functionality may additionally be performed via the mouse and other keys.
 //! 2) All input shall be modal, i.e. keys shall implement different functionality depending on the current mode of the application.
-//! 3) Paper shall support the Language Server Protocol.
+//! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the Language Server Protocol.
+//! 4) Paper shall adapt to rustfmt and as many clippy lints as reasonably possible.
 //!
 //! - Text manipulation shall involve a 3-step process of identifying the location should occur, marking that location, and then performing the desired edit.
-//! - Paper shall reuse already implemented tools wherever possible.
-//! - Paper shall follow all cargo-format conventions.
-//! - Paper shall follow as many clippy lints as reasonably possible.
 #![warn(
     absolute_paths_not_starting_with_crate,
     anonymous_parameters,
@@ -82,7 +80,7 @@ use {
 /// 2. Translate input into operations.
 /// 3. Execute operations and determine the appropriate changes.
 /// 4. Output the changes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Paper {
     /// Translates input into operations.
     interpreter: Interpreter,
@@ -95,16 +93,18 @@ pub struct Paper {
 impl Paper {
     /// Creates a new instance of the application.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(arguments: Arguments) -> Result<Self, Failure> {
+        Ok(Self {
+            // Sheet must be created first in order to create logger early.
+            sheet: Sheet::new()?,
+            interpreter: Interpreter::default(),
+            ui: Terminal::new(arguments)?,
+        })
     }
 
     /// Configures the application and then starts its runtime loop.
     #[inline]
-    pub fn run(&mut self, arguments: Arguments) -> Result<(), Failure> {
-        self.sheet.init()?;
-        self.ui.init(arguments)?;
-
+    pub fn run(&mut self) -> Result<(), Failure> {
         loop {
             if !self.step()? {
                 break;

@@ -10,6 +10,6 @@ fn main() -> Result<(), Failure> {
     let _ = include_str!("../Cargo.toml");
     let app = app_from_crate!().arg(Arg::with_name("file").help("the file to be viewed"));
 
-    Paper::new().run(Arguments::from(app.get_matches()))?;
+    Paper::new(Arguments::from(app.get_matches()))?.run()?;
     Ok(())
 }

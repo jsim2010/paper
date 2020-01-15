@@ -22,7 +22,7 @@ use {
         fmt,
         fs::{self, File},
         io::{self, ErrorKind, Write},
-        sync::{Arc, RwLock},
+        sync::{Arc, RwLock, RwLockWriteGuard},
     },
     thiserror::Error,
     time::PrimitiveDateTime,
@@ -79,7 +79,7 @@ impl From<DocumentError> for ShowMessageParams {
     }
 }
 
-/// Createse a [`TextDocumentItem`] from `path`.
+/// Creates a [`TextDocumentItem`] from `path`.
 fn document_from_string(path: String) -> Result<TextDocumentItem, DocumentError> {
     let cwd = env::current_dir().map_err(|_| DocumentError::InvalidCwd)?;
     let base = Url::from_directory_path(cwd.clone())
@@ -122,22 +122,19 @@ fn document_from_string(path: String) -> Result<TextDocumentItem, DocumentError>
 }
 
 /// Provides a handle to dynamically configure the [`Logger`].
-#[derive(Debug, Default)]
-struct LogHandle {
+#[derive(Debug)]
+struct LogConfig {
     /// A pointer to the [`Writer`] used by the [`Logger`].
     writer: Arc<RwLock<Writer>>,
 }
 
-impl LogHandle {
-    /// Sets the level at which starship records are logged.
-    fn set_starship_level(&self, level: LevelFilter) -> Result<(), Failure> {
-        trace!("set starship_level {}", level);
-        // TODO: Replace Failure.
-        self.writer
-            .write()
-            .map_err(|_| Failure::LogWriter)?
-            .starship_level = level;
-        Ok(())
+impl LogConfig {
+    fn new(writer: Arc<RwLock<Writer>>) -> Self {
+        Self { writer }
+    }
+
+    fn writer(&self) -> Result<RwLockWriteGuard<'_, Writer>, Failure> {
+        self.writer.write().map_err(|_| Failure::LogWriter)
     }
 }
 
@@ -145,49 +142,36 @@ impl LogHandle {
 #[derive(Debug)]
 struct Writer {
     /// Defines the file that stores logs.
-    file: Option<File>,
+    file: File,
     /// Defines the level at which logs from starship are allowed.
     starship_level: LevelFilter,
 }
 
 impl Writer {
-    /// Creates the file to store logs.
-    fn init(&mut self) -> Result<(), Failure> {
+    fn new() -> Result<Self, Failure> {
         let log_filename = "paper.log".to_string();
-
-        self.file =
-            Some(File::create(&log_filename).map_err(|e| Failure::CreateLogFile(log_filename, e))?);
-        Ok(())
+        
+        Ok(Self {
+            file: File::create(&log_filename).map_err(|e| Failure::CreateLogFile(log_filename, e))?,
+            starship_level: LevelFilter::Off,
+        })
     }
 
     /// Writes `record` to the file of `self`.
-    fn write(&self, record: &Record<'_>) {
-        if let Some(mut file) = self.file.as_ref() {
-            let _ = writeln!(
-                file,
-                "{} [{}] {}: {}",
-                PrimitiveDateTime::now().format("%F %T"),
-                record.level(),
-                record.target(),
-                record.args()
-            );
-        }
+    fn write(&mut self, record: &Record<'_>) {
+        let _ = writeln!(
+            self.file,
+            "{} [{}] {}: {}",
+            PrimitiveDateTime::now().format("%F %T"),
+            record.level(),
+            record.target(),
+            record.args()
+        );
     }
 
     /// Flushes the buffer of the writer.
-    fn flush(&self) {
-        if let Some(mut file) = self.file.as_ref() {
-            let _ = file.flush();
-        }
-    }
-}
-
-impl Default for Writer {
-    fn default() -> Self {
-        Self {
-            file: None,
-            starship_level: LevelFilter::Off,
-        }
+    fn flush(&mut self) {
+        let _ = self.file.flush();
     }
 }
 
@@ -199,10 +183,14 @@ struct Logger {
 
 impl Logger {
     /// Creates a new [`Logger`].
-    fn new(writer: &Arc<RwLock<Writer>>) -> Self {
-        Self {
-            writer: Arc::clone(writer),
-        }
+    fn new() -> Result<Self, Failure> {
+        Ok(Self {
+            writer: Arc::new(RwLock::new(Writer::new()?)),
+        })
+    }
+
+    fn writer(&self) -> &Arc<RwLock<Writer>> {
+        &self.writer
     }
 }
 
@@ -221,21 +209,21 @@ impl Log for Logger {
 
     fn log(&self, record: &Record<'_>) {
         if self.enabled(record.metadata()) {
-            if let Ok(writer) = self.writer.read() {
+            if let Ok(mut writer) = self.writer.write() {
                 writer.write(record);
             }
         }
     }
 
     fn flush(&self) {
-        if let Ok(writer) = self.writer.read() {
+        if let Ok(mut writer) = self.writer.write() {
             writer.flush();
         }
     }
 }
 
 /// Signfifies display of the current file.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Sheet {
     /// The document being displayed.
     doc: Option<TextDocumentItem>,
@@ -244,21 +232,24 @@ pub(crate) struct Sheet {
     /// The [`LspServer`]s managed by this document.
     lsp_servers: HashMap<String, LspServer>,
     /// Provides handle to be able to modify logger settings.
-    log_handle: LogHandle,
+    log_config: LogConfig,
 }
 
 impl Sheet {
-    /// Initizlies logger of application.
-    pub(crate) fn init(&mut self) -> Result<(), Failure> {
-        self.log_handle
-            .writer
-            .write()
-            .map_err(|_| Failure::LogWriter)?
-            .init()?;
-        log::set_boxed_logger(Box::new(Logger::new(&self.log_handle.writer)))?;
+    pub(crate) fn new() -> Result<Self, Failure> {
+        let logger = Logger::new()?;
+        let log_config = LogConfig::new(Arc::clone(logger.writer()));
+
+        log::set_boxed_logger(Box::new(logger))?;
         log::set_max_level(LevelFilter::Trace);
-        trace!("Logger Initialized");
-        Ok(())
+        trace!("logger initialized");
+
+        Ok(Self {
+            doc: None,
+            is_wrapped: false,
+            lsp_servers: HashMap::default(),
+            log_config,
+        })
     }
 
     /// Performs `operation`.
@@ -301,7 +292,7 @@ impl Sheet {
             Operation::UpdateConfig(Setting::Size(size)) => Ok(Some(Change::Size(size))),
             Operation::UpdateConfig(Setting::StarshipLog(log_level)) => {
                 trace!("Updating config of starship level");
-                self.log_handle.set_starship_level(log_level)?;
+                self.log_config.writer()?.starship_level = log_level;
                 Ok(None)
             }
             Operation::Alert(alert) => Ok(Some(Change::Message(alert))),
