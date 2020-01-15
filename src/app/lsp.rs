@@ -2,7 +2,7 @@
 use {
     jsonrpc_core::{Call, Id, MethodCall, Output, Params, Success, Value, Version},
     log::{error, trace, warn},
-    lsp_types::{ClientCapabilities, InitializeParams, InitializedParams, Url},
+    lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncKind, ClientCapabilities, InitializeParams, InitializedParams, Url},
     serde::Serialize,
     serde_json::error::Error as SerdeJsonError,
     std::{
@@ -56,11 +56,11 @@ pub enum Fault {
 /// Processes data from the language server.
 struct LspProcessor {
     /// Transmits data to the language server process.
-    transmitter: Arc<Mutex<LspTransmitter>>,
+    transmitter: LspTransmitter,
     /// Reads data from the language server process.
     reader: BufReader<ChildStdout>,
     /// Sends data to the [`LspServer`].
-    response_tx: Sender<u64>,
+    response_tx: Sender<Message>,
     /// Signifies if the thread is quitting.
     is_quitting: bool,
 }
@@ -69,8 +69,8 @@ impl LspProcessor {
     /// Creates a new `LspProcessor`.
     fn new(
         process: &mut Child,
-        response_tx: Sender<u64>,
-        transmitter: Arc<Mutex<LspTransmitter>>,
+        response_tx: Sender<Message>,
+        transmitter: LspTransmitter,
     ) -> Result<Self, Fault> {
         process
             .stdout
@@ -105,33 +105,37 @@ impl LspProcessor {
                                     trace!("Received: {}", json_string);
                                     if let Ok(message) = serde_json::from_str::<Value>(&json_string)
                                     {
-                                        if let Some(_result) = message.get("result") {
-                                            if let Some(id) = message.get("id") {
-                                                if let Ok(response_id) =
-                                                    serde_json::from_value(id.clone())
+                                        if let Some(id) = message.get("id") {
+                                            if let Some(result) = message.get("result") {
+                                                // Success response
+                                                let response_id = serde_json::from_value(id.clone())?;
+                                                let response_result = serde_json::from_value(result.clone())?;
+
+                                                self.response_tx.send(Message::Response{
+                                                    id: response_id,
+                                                    outcome: Outcome::Success(response_result),
+                                                }).map_err(
+                                                    |_| {
+                                                        Fault::DisconnectedReceiver(
+                                                            "response".to_string(),
+                                                        )
+                                                    },
+                                                )?;
+                                            } else if message.get("error").is_some() {
+                                                // Error response
+                                            } else {
+                                                // Request
+                                                if let Ok(message_id) =
+                                                    serde_json::from_value::<u64>(id.clone())
                                                 {
-                                                    self.response_tx.send(response_id).map_err(
-                                                        |_| {
-                                                            Fault::DisconnectedReceiver(
-                                                                "response".to_string(),
-                                                            )
-                                                        },
-                                                    )?;
+                                                    self.transmitter
+                                                        .respond(&Response {
+                                                            id: Id::Num(message_id),
+                                                        })?;
                                                 }
                                             }
-                                        } else if let Some(id) = message.get("id") {
-                                            if let Ok(message_id) =
-                                                serde_json::from_value::<u64>(id.clone())
-                                            {
-                                                self.transmitter
-                                                    .lock()
-                                                    .map_err(|_| Fault::Mutex)?
-                                                    .respond(&Response {
-                                                        id: Id::Num(message_id),
-                                                    })?;
-                                            }
                                         } else {
-                                            // Do nothing for now.
+                                            // Notification
                                         }
                                     }
                                 }
@@ -154,15 +158,79 @@ impl Drop for LspProcessor {
     }
 }
 
+enum Message {
+    Response {
+        id: u64,
+        outcome: Outcome,
+    },
+}
+
+enum Outcome {
+    Success(Value),
+}
+
+#[derive(Debug)]
+struct LspReceiver(Receiver<Message>);
+
+impl LspReceiver {
+    fn new(server_process: &mut Child, transmitter: &LspTransmitter) -> Result<Self, Fault> {
+        let (tx, rx) = mpsc::channel();
+        let mut processor = LspProcessor::new(server_process, tx, transmitter.clone())?;
+
+        let _ = thread::spawn(move || {
+            if let Err(error) = processor.process() {
+                error!("processing language server output: {}", error);
+            }
+        });
+
+        Ok(Self(rx))
+    }
+
+    fn recv(&self) -> Result<Message, Fault> {
+        self.0.recv().map_err(|_| Fault::DisconnectedSender("language server stdout".to_string()))
+    }
+}
+
+#[derive(Debug)]
+struct LspErrorProcessor(Sender<()>);
+
+impl LspErrorProcessor {
+    fn new(server_process: &mut Child) -> Result<Self, Fault> {
+        let stderr = server_process.stderr.take().ok_or_else(|| Fault::UnaccessableIo("stderr".to_string()))?;
+        let (tx, rx) = mpsc::channel();
+        let _ = thread::spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+
+            while rx.try_recv().is_err() {
+                // Rust's language server (rls) seems to send empty lines over stderr after shutdown request so skip those.
+                if reader.read_line(&mut line).is_ok() && !line.is_empty() {
+                    error!("{}", line);
+                    line.clear();
+                }
+            }
+        });
+
+        Ok(Self(tx))
+    }
+
+    fn terminate(&self) -> Result<(), Fault> {
+        self.0
+            .send(())
+            .map_err(|_| Fault::DisconnectedReceiver("language server stderr".to_string()))
+    }
+}
+
 /// Represents a language server process.
 #[derive(Debug)]
 pub(crate) struct LspServer {
     /// The language server process.
     process: Child,
     /// Transmits messages to the language server process.
-    transmitter: Arc<Mutex<LspTransmitter>>,
-    /// The [`Sender`] to stderr processing.
-    stderr_tx: Sender<()>,
+    transmitter: LspTransmitter,
+    error_processor: LspErrorProcessor,
+    notify_open_close: bool,
+    receiver: LspReceiver,
 }
 
 impl LspServer {
@@ -174,45 +242,12 @@ impl LspServer {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|_| Fault::InvalidCommand)?;
-        let (response_tx, response_rx) = mpsc::channel();
-        let transmitter = Arc::new(Mutex::new(LspTransmitter::new(&mut process, response_rx)?));
-        let mut processor = LspProcessor::new(&mut process, response_tx, Arc::clone(&transmitter))?;
+        let mut transmitter = LspTransmitter::new(&mut process)?;
+        let receiver = LspReceiver::new(&mut process, &transmitter)?;
+        let error_processor = LspErrorProcessor::new(&mut process)?;
 
-        let _ = thread::spawn(move || {
-            if let Err(error) = processor.process() {
-                error!("Error in LspProcessor: {}", error);
-            }
-        });
-
-        let stderr = process
-            .stderr
-            .take()
-            .ok_or_else(|| Fault::UnaccessableIo("stderr".to_string()))?;
-        let (stderr_tx, stderr_rx) = mpsc::channel();
-        let _ = thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut line = String::new();
-
-            while stderr_rx.try_recv().is_err() {
-                // Rust's language server (rls) seems to send empty lines over stderr after shutdown request so skip those.
-                if reader.read_line(&mut line).is_ok() && !line.is_empty() {
-                    error!("{}", line);
-                    line.clear();
-                }
-            }
-        });
-
-        Ok(Self {
-            process,
-            transmitter,
-            stderr_tx,
-        })
-    }
-
-    /// Initializes the `LspServer`.
-    pub(crate) fn initialize(&mut self) -> Result<(), Fault> {
         #[allow(deprecated)] // root_path is a required field.
-        self.transmitter()?.request(
+        let server = transmitter.request(
             &InitializeParams {
                 process_id: Some(u64::from(process::id())),
                 root_path: None,
@@ -229,34 +264,58 @@ impl LspServer {
                 client_info: None,
             }
             .into(),
+            &receiver,
         )?;
 
-        self.transmitter()?.notify(&InitializedParams {}.into())
+        let mut notify_open_close = false;
+
+        if let Some(text_document_sync) = server.capabilities.text_document_sync {
+            match text_document_sync {
+                TextDocumentSyncCapability::Kind(kind) => {
+                    if kind != TextDocumentSyncKind::None {
+                        notify_open_close = true;
+                    }
+                }
+                TextDocumentSyncCapability::Options(options) => {
+                    if let Some(open_close) = options.open_close {
+                        notify_open_close = open_close;
+                    }
+                }
+            }
+        }
+
+        transmitter.notify(&InitializedParams {}.into())?;
+
+        Ok(Self {
+            process,
+            transmitter,
+            error_processor,
+            notify_open_close,
+            receiver,
+        })
+    }
+
+    pub(crate) fn did_open(&mut self, text_document: &TextDocumentItem) -> Result<(), Fault> {
+        if self.notify_open_close {
+            self.transmitter.notify(&DidOpenTextDocumentParams {
+                text_document: text_document.clone(),
+            }.into())?;
+        }
+
+        Ok(())
     }
 
     /// Attempts to cleanly kill the language server process.
     fn shutdown_and_exit(&mut self) -> Result<(), Fault> {
-        self.transmitter()?.request(&ShutdownParams(()).into())?;
-        self.terminate_stderr_thread()?;
-        self.transmitter()?.notify(&ExitParams {}.into())?;
+        self.transmitter.request(&ShutdownParams(()).into(), &self.receiver)?;
+        self.error_processor.terminate()?;
+        self.transmitter.notify(&ExitParams {}.into())?;
 
         if let Err(e) = self.process.wait() {
             warn!("Unable to wait on language server process exit: {}", e);
         }
 
         Ok(())
-    }
-
-    /// Terminates the thread processing stderr output.
-    fn terminate_stderr_thread(&self) -> Result<(), Fault> {
-        self.stderr_tx
-            .send(())
-            .map_err(|_| Fault::DisconnectedReceiver("stderr".to_string()))
-    }
-
-    /// Returns the transmitter, blocking until it is available.
-    fn transmitter(&mut self) -> Result<MutexGuard<'_, LspTransmitter>, Fault> {
-        self.transmitter.lock().map_err(|_| Fault::Mutex)
     }
 }
 
@@ -272,64 +331,22 @@ impl Drop for LspServer {
     }
 }
 
-/// Transmits messages to the language server process.
-#[derive(Debug)]
-struct LspTransmitter {
-    /// The input of the language server process.
-    stdin: ChildStdin,
-    /// Current request id.
-    id: u64,
-    /// Receives responses from the language server process.
-    response_rx: Receiver<u64>,
-}
+#[derive(Clone, Debug)]
+struct LspTransmitter(Arc<Mutex<AtomicTransmitter>>);
 
 impl LspTransmitter {
     /// Creates a new `LspTransmitter`.
-    fn new(process: &mut Child, response_rx: Receiver<u64>) -> Result<Self, Fault> {
-        Ok(Self {
+    fn new(process: &mut Child) -> Result<Self, Fault> {
+        Ok(Self(Arc::new(Mutex::new(AtomicTransmitter {
             id: 0,
-            stdin: process
-                .stdin
-                .take()
-                .ok_or_else(|| Fault::UnaccessableIo("stdin".to_string()))?,
-            response_rx,
-        })
-    }
+            stdin: process.stdin.take().ok_or_else(|| Fault::UnaccessableIo("stdin".to_string()))?,
+        }))))
 
-    /// Waits to receive a response id.
-    fn recv_response(&self) -> Result<u64, Fault> {
-        self.response_rx
-            .recv()
-            .map_err(|_| Fault::DisconnectedSender("response".to_string()))
-    }
-
-    /// Sends `response` to the lsp server.
-    fn respond(&mut self, response: &Response) -> Result<(), Fault> {
-        self.send_message(Content::Response(Output::Success(Success {
-            jsonrpc: Some(Version::V2),
-            result: Value::Null,
-            id: response.id().clone(),
-        })))
-    }
-
-    /// Sends `request` to the lsp server and waits for the response.
-    fn request(&mut self, request: &Request) -> Result<(), Fault> {
-        self.send_message(Content::Request(Call::MethodCall(MethodCall {
-            jsonrpc: Some(Version::V2),
-            method: request.method().clone(),
-            params: request.params()?,
-            id: Id::Num(self.id),
-        })))?;
-
-        while self.recv_response()? != self.id {}
-
-        self.id = self.id.wrapping_add(1);
-        Ok(())
     }
 
     /// Sends `notification` to the lsp server.
     fn notify(&mut self, notification: &Notification) -> Result<(), Fault> {
-        self.send_message(Content::Request(Call::Notification(
+        self.lock()?.send_message(Content::Request(Call::Notification(
             jsonrpc_core::Notification {
                 jsonrpc: Some(Version::V2),
                 method: notification.method().clone(),
@@ -338,18 +355,72 @@ impl LspTransmitter {
         )))
     }
 
+    /// Sends `response` to the lsp server.
+    fn respond(&mut self, response: &Response) -> Result<(), Fault> {
+        self.lock()?.send_message(Content::Response(Output::Success(Success {
+            jsonrpc: Some(Version::V2),
+            result: Value::Null,
+            id: response.id().clone(),
+        })))
+    }
+
+    /// Sends `request` to the lsp server and waits for the response.
+    #[allow(single_use_lifetimes)] // 'de is needed to compile.
+    fn request<T>(&mut self, request: &Request<T>, receiver: &LspReceiver) -> Result<T::Result, Fault>
+    where
+        T: lsp_types::request::Request,
+        <T as lsp_types::request::Request>::Params: Serialize,
+        for <'de> <T as lsp_types::request::Request>::Result: serde::Deserialize<'de> + core::fmt::Debug,
+    {
+        let mut transmitter = self.lock()?;
+        let id = transmitter.id;
+
+        transmitter.send_message(Content::Request(Call::MethodCall(MethodCall {
+            jsonrpc: Some(Version::V2),
+            method: request.method().clone(),
+            params: request.params()?,
+            id: Id::Num(id),
+        })))?;
+
+        loop {
+            let Message::Response{id, outcome} = receiver.recv()?;
+
+            if transmitter.id == id {
+                transmitter.id = transmitter.id.wrapping_add(1);
+
+                let Outcome::Success(value) = outcome;
+                return serde_json::from_value::<T::Result>(value).map_err(Fault::from);
+            }
+        }
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, AtomicTransmitter>, Fault> {
+        self.0.lock().map_err(|_| Fault::Mutex)
+    }
+}
+
+/// Transmits messages to the language server process.
+#[derive(Debug)]
+struct AtomicTransmitter {
+    /// The input of the language server process.
+    stdin: ChildStdin,
+    /// Current request id.
+    id: u64,
+}
+
+impl AtomicTransmitter {
     /// Sends `content` as a LSP message.
     fn send_message(&mut self, content: Content) -> Result<(), Fault> {
         trace!("Sending: {:?}", content);
-        write!(self.stdin, "{}", Message(content)).map_err(Fault::LanguageServerWrite)?;
+        write!(self.stdin, "{}", Msg(content)).map_err(Fault::LanguageServerWrite)?;
         Ok(())
     }
 }
 
 /// Represents a LSP message.
-struct Message(Content);
+struct Msg(Content);
 
-impl fmt::Display for Message {
+impl fmt::Display for Msg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let content = serde_json::to_string(&self.0).map_err(|_| fmt::Error)?;
         write!(f, "Content-Length: {}\r\n\r\n{}", content.len(), content)
@@ -380,16 +451,23 @@ impl Response {
 }
 
 /// Represents a request.
-struct Request {
+struct Request<T>
+where
+    T: lsp_types::request::Request,
+{
     /// Method of request.
     method: String,
     /// Params of request.
-    params: RequestParams,
+    params: T::Params,
 }
 
-impl Request {
+impl<T> Request<T> 
+where
+    T: lsp_types::request::Request,
+    <T as lsp_types::request::Request>::Params: Serialize,
+{
     /// Returns method of `self`.
-    const fn method(&self) -> &String {
+    fn method(&self) -> &String {
         &self.method
     }
 
@@ -399,32 +477,22 @@ impl Request {
     }
 }
 
-impl From<InitializeParams> for Request {
+impl From<InitializeParams> for Request<lsp_types::request::Initialize> {
     fn from(value: InitializeParams) -> Self {
         Self {
             method: "initialize".to_string(),
-            params: RequestParams::Initialize(value),
+            params: value,
         }
     }
 }
 
-impl From<ShutdownParams> for Request {
-    fn from(value: ShutdownParams) -> Self {
+impl From<ShutdownParams> for Request<lsp_types::request::Shutdown> {
+    fn from(_: ShutdownParams) -> Self {
         Self {
             method: "shutdown".to_string(),
-            params: RequestParams::Shutdown(value),
+            params: (),
         }
     }
-}
-
-/// Parameters for a request.
-#[derive(Serialize)]
-#[serde(untagged)]
-enum RequestParams {
-    /// Parameters for the initialize request.
-    Initialize(InitializeParams),
-    /// Parameters for the shutdown request.
-    Shutdown(ShutdownParams),
 }
 
 /// Represents a notification.
@@ -443,7 +511,7 @@ impl Notification {
 
     /// Returns the [`Params`] of `self`.
     fn params(&self) -> Result<Params, Fault> {
-        to_params(serde_json::to_value(self.params)?)
+        to_params(serde_json::to_value(self.params.clone())?)
     }
 }
 
@@ -476,14 +544,24 @@ impl From<ExitParams> for Notification {
     }
 }
 
+impl From<DidOpenTextDocumentParams> for Notification {
+    fn from(value: DidOpenTextDocumentParams) -> Self {
+        Self {
+            method: "textDocument/didOpen".to_string(),
+            params: NotificationParams::DidOpen(value),
+        }
+    }
+}
+
 /// Parameters for notifications.
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(untagged)]
 enum NotificationParams {
     /// The parameters for the Initialized notification.
     Initialized(InitializedParams),
     /// The parameters for the Exit notification.
     Exit(ExitParams),
+    DidOpen(DidOpenTextDocumentParams),
 }
 
 /// Params field for the exit notification.

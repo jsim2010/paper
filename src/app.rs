@@ -17,7 +17,7 @@ use {
     },
     parse_display::Display as ParseDisplay,
     std::{
-        collections::{hash_map::Entry, HashMap},
+        collections::HashMap,
         env,
         ffi::OsStr,
         fmt,
@@ -144,12 +144,13 @@ impl Sheet {
     fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
         match document_from_string(file) {
             Ok(doc) => {
-                if let Entry::Vacant(entry) = self.lsp_servers.entry(doc.language_id.clone()) {
-                    if doc.language_id == "rust" {
-                        entry.insert(LspServer::new("rls")?).initialize()?;
-                    }
-                }
+                let process = match doc.language_id.as_str() {
+                    "rust" => Ok("rls"),
+                    _ => Err(Fault::MissingLanguage(doc.language_id.clone())),
+                }?;
+                let lsp_server = self.lsp_servers.entry(doc.language_id.clone()).or_insert(LspServer::new(process)?);
 
+                lsp_server.did_open(&doc)?;
                 self.doc = Some(doc.clone());
                 Ok(Some(Change::Text {
                     edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
@@ -291,4 +292,6 @@ pub enum Fault {
     Log(#[from] logging::Fault),
     #[error("language server protocol: {0}")]
     Lsp(#[from] lsp::Fault),
+    #[error("paper does not currently implement language server protocol for `{0}`")]
+    MissingLanguage(String),
 }
