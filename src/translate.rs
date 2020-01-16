@@ -1,7 +1,7 @@
 //! Implements the functionality of converting an [`Input`] to [`Operation`]s.
 use {
     crate::{
-        app::{ConfirmAction, Operation},
+        app::{Command, ConfirmAction, Operation},
         ui::{Input, Key},
     },
     core::fmt::Debug,
@@ -25,13 +25,13 @@ impl Interpreter {
     /// Returns the [`Operation`]s that map to `input` given the current [`Mode`].
     pub(crate) fn translate(&mut self, input: Input) -> Vec<Operation> {
         #[allow(clippy::indexing_slicing)] // EnumMap guarantees indexing will not panic.
-        let (operations, new_mode) = self.map[self.mode].decode(input);
+        let output = self.map[self.mode].decode(input);
 
-        if let Some(mode) = new_mode {
+        if let Some(mode) = output.new_mode {
             self.mode = mode;
         }
 
-        operations
+        output.operations
     }
 }
 
@@ -41,6 +41,7 @@ impl Default for Interpreter {
             map: enum_map! {
                 Mode::View => ConcreteInterpreter(Rc::new(ViewInterpreter::new())),
                 Mode::Confirm => ConcreteInterpreter(Rc::new(ConfirmInterpreter::new())),
+                Mode::Collect => ConcreteInterpreter(Rc::new(CollectInterpreter::new())),
             },
             mode: Mode::default(),
         }
@@ -55,6 +56,8 @@ pub(crate) enum Mode {
     View,
     /// Confirms the user's action
     Confirm,
+    /// Collects input from the user.
+    Collect,
 }
 
 impl Default for Mode {
@@ -64,13 +67,47 @@ impl Default for Mode {
     }
 }
 
+/// Signifies the data gleaned from user input.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Output {
+    /// The operations to be run.
+    operations: Vec<Operation>,
+    /// The mode to switch to.
+    ///
+    /// If None, interpreter should not switch modes.
+    new_mode: Option<Mode>,
+}
+
+impl Output {
+    /// Creates a new `Output`.
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds `operation` to `self`.
+    fn add_op(&mut self, operation: Operation) {
+        self.operations.push(operation);
+    }
+
+    /// Sets the mode of `self` to `mode`.
+    fn set_mode(&mut self, mode: Mode) {
+        self.new_mode = Some(mode);
+    }
+
+    /// Modifies to the [`Operation::Reset`].
+    fn reset(&mut self) {
+        self.add_op(Operation::Reset);
+        self.set_mode(Mode::View);
+    }
+}
+
 /// A concrete representation of a [`ModeInterpreter`].
 #[derive(Debug)]
 struct ConcreteInterpreter(Rc<dyn ModeInterpreter>);
 
 impl ConcreteInterpreter {
-    /// Translates `input` into [`Operation`]s also returning the new [`Mode`].
-    fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
+    /// Translates `input` into [`Output`].
+    fn decode(&self, input: Input) -> Output {
         self.0.decode(input)
     }
 }
@@ -80,10 +117,10 @@ impl ConcreteInterpreter {
 #[error("mode `{0}` is unknown")]
 pub struct Fault(Mode);
 
-/// Defines the functionality to convert [`Input`] to [`Operation`]s.
+/// Defines the functionality to convert [`Input`] to [`Output`].
 pub(crate) trait ModeInterpreter: Debug {
     /// Converts `input` to [`Operation`]s.
-    fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>);
+    fn decode(&self, input: Input) -> Output;
 }
 
 /// The [`ModeInterpreter`] for [`Mode::View`].
@@ -98,26 +135,40 @@ impl ViewInterpreter {
 }
 
 impl ModeInterpreter for ViewInterpreter {
-    fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
+    fn decode(&self, input: Input) -> Output {
+        let mut output = Output::new();
+
         match input {
-            Input::Setting(config) => (vec![Operation::UpdateConfig(config)], None),
-            Input::Key { key: Key::Esc, .. } => (vec![Operation::Reset], None),
+            Input::Setting(config) => {
+                output.add_op(Operation::UpdateConfig(config));
+            }
+            Input::Key { key: Key::Esc, .. } => {
+                output.add_op(Operation::Reset);
+            }
             Input::Key {
                 key: Key::Char('q'),
                 ..
-            } => (
-                vec![Operation::Confirm(ConfirmAction::Quit)],
-                Some(Mode::Confirm),
-            ),
-            Input::Glitch(fault) => (
-                vec![Operation::Alert(ShowMessageParams {
+            } => {
+                output.add_op(Operation::Confirm(ConfirmAction::Quit));
+                output.set_mode(Mode::Confirm);
+            }
+            Input::Key {
+                key: Key::Char('o'),
+                ..
+            } => {
+                output.add_op(Operation::StartCommand(Command::Open));
+                output.set_mode(Mode::Collect);
+            }
+            Input::Glitch(fault) => {
+                output.add_op(Operation::Alert(ShowMessageParams {
                     typ: MessageType::Error,
                     message: format!("{}", fault),
-                })],
-                None,
-            ),
-            Input::Key { .. } | Input::Mouse | Input::Resize { .. } => (vec![], None),
+                }));
+            }
+            Input::Key { .. } | Input::Mouse | Input::Resize { .. } => {}
         }
+
+        output
     }
 }
 
@@ -133,18 +184,67 @@ impl ConfirmInterpreter {
 }
 
 impl ModeInterpreter for ConfirmInterpreter {
-    fn decode(&self, input: Input) -> (Vec<Operation>, Option<Mode>) {
+    fn decode(&self, input: Input) -> Output {
+        let mut output = Output::new();
+
         match input {
             Input::Key {
                 key: Key::Char('y'),
                 ..
-            } => (vec![Operation::Quit], None),
+            } => {
+                output.add_op(Operation::Quit);
+            }
             Input::Key { .. }
             | Input::Mouse
             | Input::Resize { .. }
             | Input::Setting(..)
-            | Input::Glitch(..) => (vec![Operation::Reset], Some(Mode::View)),
+            | Input::Glitch(..) => {
+                output.reset();
+            }
         }
+
+        output
+    }
+}
+
+/// The [`ModeInterpreter`] for [`Mode::Collect`].
+#[derive(Clone, Debug)]
+struct CollectInterpreter {}
+
+impl CollectInterpreter {
+    /// Creates a new `CollectInterpreter`.
+    const fn new() -> Self {
+        Self {}
+    }
+}
+
+impl ModeInterpreter for CollectInterpreter {
+    fn decode(&self, input: Input) -> Output {
+        let mut output = Output::new();
+
+        match input {
+            Input::Key { key: Key::Esc, .. } => {
+                output.reset();
+            }
+            Input::Key {
+                key: Key::Enter, ..
+            } => {
+                output.add_op(Operation::Execute);
+                output.set_mode(Mode::View);
+            }
+            Input::Key {
+                key: Key::Char(c), ..
+            } => {
+                output.add_op(Operation::Collect(c));
+            }
+            Input::Key { .. }
+            | Input::Mouse
+            | Input::Resize { .. }
+            | Input::Setting(..)
+            | Input::Glitch(..) => {}
+        }
+
+        output
     }
 }
 
@@ -152,22 +252,30 @@ impl ModeInterpreter for ConfirmInterpreter {
 #[cfg(test)]
 mod test_view {
     use super::*;
-    use crate::ui::Modifiers;
+
+    static INTERPRETER: ViewInterpreter = ViewInterpreter::new();
 
     /// The `q` key shall confirm the user wants to quit.
     #[test]
     fn quit() {
-        let view = ViewInterpreter::new();
-
         assert_eq!(
-            view.decode(Input::Key {
-                key: Key::Char('q'),
-                modifiers: Modifiers::empty()
-            }),
-            (
-                vec![Operation::Confirm(ConfirmAction::Quit)],
-                Some(Mode::Confirm)
-            )
+            INTERPRETER.decode(helpers::key_input(Key::Char('q'))),
+            Output {
+                operations: vec![Operation::Confirm(ConfirmAction::Quit)],
+                new_mode: Some(Mode::Confirm)
+            }
+        );
+    }
+
+    /// The `o` key shall request the name of the document to be opened.
+    #[test]
+    fn open() {
+        assert_eq!(
+            INTERPRETER.decode(helpers::key_input(Key::Char('o'))),
+            Output {
+                operations: vec![Operation::StartCommand(Command::Open)],
+                new_mode: Some(Mode::Collect)
+            }
         );
     }
 }
@@ -176,7 +284,6 @@ mod test_view {
 #[cfg(test)]
 mod test_confirm {
     use super::*;
-    use crate::ui::Modifiers;
 
     static INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
 
@@ -184,11 +291,11 @@ mod test_confirm {
     #[test]
     fn confirm() {
         assert_eq!(
-            INTERPRETER.decode(Input::Key {
-                key: Key::Char('y'),
-                modifiers: Modifiers::empty()
-            }),
-            (vec![Operation::Quit], None)
+            INTERPRETER.decode(helpers::key_input(Key::Char('y'))),
+            Output {
+                operations: vec![Operation::Quit],
+                new_mode: None
+            }
         );
     }
 
@@ -196,25 +303,97 @@ mod test_confirm {
     #[test]
     fn cancel() {
         assert_eq!(
-            INTERPRETER.decode(Input::Key {
-                key: Key::Char('n'),
-                modifiers: Modifiers::empty()
-            }),
-            (vec![Operation::Reset], Some(Mode::View))
+            INTERPRETER.decode(helpers::key_input(Key::Char('n'))),
+            Output {
+                operations: vec![Operation::Reset],
+                new_mode: Some(Mode::View)
+            }
         );
         assert_eq!(
-            INTERPRETER.decode(Input::Key {
-                key: Key::Char('c'),
-                modifiers: Modifiers::empty()
-            }),
-            (vec![Operation::Reset], Some(Mode::View))
+            INTERPRETER.decode(helpers::key_input(Key::Char('c'))),
+            Output {
+                operations: vec![Operation::Reset],
+                new_mode: Some(Mode::View)
+            }
         );
         assert_eq!(
-            INTERPRETER.decode(Input::Key {
-                key: Key::Char('1'),
-                modifiers: Modifiers::empty()
-            }),
-            (vec![Operation::Reset], Some(Mode::View))
+            INTERPRETER.decode(helpers::key_input(Key::Char('1'))),
+            Output {
+                operations: vec![Operation::Reset],
+                new_mode: Some(Mode::View)
+            }
         );
+    }
+}
+
+/// Tests decoding user input while mode is [`Mode::Collect`].
+#[cfg(test)]
+mod test_collect {
+    use super::*;
+
+    static INTERPRETER: CollectInterpreter = CollectInterpreter::new();
+
+    /// The `Esc` key shall return to [`Mode::View`].
+    #[test]
+    fn reset() {
+        assert_eq!(
+            INTERPRETER.decode(helpers::key_input(Key::Esc)),
+            Output {
+                operations: vec![Operation::Reset],
+                new_mode: Some(Mode::View)
+            },
+        );
+    }
+
+    /// All char keys shall be collected.
+    #[test]
+    fn collect() {
+        assert_eq!(
+            INTERPRETER.decode(helpers::key_input(Key::Char('a'))),
+            Output {
+                operations: vec![Operation::Collect('a')],
+                new_mode: None
+            },
+        );
+        assert_eq!(
+            INTERPRETER.decode(helpers::key_input(Key::Char('.'))),
+            Output {
+                operations: vec![Operation::Collect('.')],
+                new_mode: None
+            },
+        );
+        assert_eq!(
+            INTERPRETER.decode(helpers::key_input(Key::Char('1'))),
+            Output {
+                operations: vec![Operation::Collect('1')],
+                new_mode: None
+            },
+        );
+    }
+
+    /// The `Enter` key shall execute the command and return to [`Mode::View`].
+    #[test]
+    fn execute() {
+        assert_eq!(
+            INTERPRETER.decode(helpers::key_input(Key::Enter)),
+            Output {
+                operations: vec![Operation::Execute],
+                new_mode: Some(Mode::View)
+            }
+        );
+    }
+}
+
+/// Helper functions for testing.
+#[cfg(test)]
+mod helpers {
+    use super::*;
+    use crate::ui::Modifiers;
+
+    pub(crate) fn key_input(key: Key) -> Input {
+        Input::Key {
+            key,
+            modifiers: Modifiers::empty(),
+        }
     }
 }

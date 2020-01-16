@@ -3,12 +3,11 @@
 //! ## Functional Overview
 //! 1) All functionality shall be able to be performed via the keys reachable from the home row. Where it makes sense, functionality may additionally be performed via the mouse and other keys.
 //! 2) All input shall be modal, i.e. keys shall implement different functionality depending on the current mode of the application.
-//! 3) Paper shall support the Language Server Protocol.
+//! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the Language Server Protocol.
+//! 4) Paper shall adapt to rustfmt and as many clippy lints as reasonably possible.
 //!
+//! ### Upcoming
 //! - Text manipulation shall involve a 3-step process of identifying the location should occur, marking that location, and then performing the desired edit.
-//! - Paper shall reuse already implemented tools wherever possible.
-//! - Paper shall follow all cargo-format conventions.
-//! - Paper shall follow as many clippy lints as reasonably possible.
 #![warn(
     absolute_paths_not_starting_with_crate,
     anonymous_parameters,
@@ -49,6 +48,7 @@
     clippy::large_enum_variant, // Seems to be the same as variant_size_differences.
     clippy::suspicious_arithmetic_impl, // Not always valid; issues should be detected by tests or other lints.
     clippy::suspicious_op_assign_impl, // Not always valid; issues should be detected by tests or other lints.
+    box_pointers, // Generally okay.
     variant_size_differences, // Generally okay.
 )]
 // Temporary allows.
@@ -57,46 +57,24 @@
     clippy::multiple_crate_versions, // Requires redox_users update to avoid multiple versions of rand_core.
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
     clippy::unreachable, // Added by derive(Enum).
+    clippy::use_debug, // Flags debug formatting in Debug trait.
 )]
 
 mod app;
 mod translate;
 mod ui;
 
-pub use ui::Arguments;
+pub use app::Arguments;
 
 use {
-    app::{LspError, Operation, Sheet},
-    log::SetLoggerError,
-    simplelog::{Config, LevelFilter, WriteLogger},
-    std::{fs::File, io},
+    app::{Operation, Sheet},
     thiserror::Error,
     translate::Interpreter,
     ui::Terminal,
 };
 
-/// Initializes the application logger.
-///
-/// The logger writes all logs to the file `paper.log`.
-fn init_logger() -> Result<(), Failure> {
-    let log_filename = "paper.log".to_string();
-
-    WriteLogger::init(
-        LevelFilter::Trace,
-        Config::default(),
-        File::create(&log_filename).map_err(|e| Failure::CreateLogFile(log_filename, e))?,
-    )?;
-    Ok(())
-}
-
 /// Manages the execution of the application.
-///
-/// The runtime loop of the application is as follows:
-/// 1. Receive input.
-/// 2. Translate input into operations.
-/// 3. Execute operations and determine the appropriate changes.
-/// 4. Output the changes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Paper {
     /// Translates input into operations.
     interpreter: Interpreter,
@@ -108,17 +86,17 @@ pub struct Paper {
 
 impl Paper {
     /// Creates a new instance of the application.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(arguments: Arguments) -> Result<Self, Failure> {
+        Ok(Self {
+            sheet: Sheet::new(&arguments)?,
+            interpreter: Interpreter::default(),
+            ui: Terminal::new(arguments)?,
+        })
     }
 
-    /// Configures the application and then starts its runtime loop.
+    /// Executes the runtime loop of the application.
     #[inline]
-    pub fn run(&mut self, arguments: Arguments) -> Result<(), Failure> {
-        init_logger()?;
-        self.ui.init(arguments)?;
-
+    pub fn run(&mut self) -> Result<(), Failure> {
         loop {
             if !self.step()? {
                 break;
@@ -128,7 +106,12 @@ impl Paper {
         Ok(())
     }
 
-    /// Processes a single input, returning if the application should keep running.
+    /// Implements a single run of the runtime loop and returns if the application should keep running.
+    ///
+    /// A single run is as follows:
+    /// 1. Receive input.
+    /// 2. Translate input into operations.
+    /// 3. For each operation, execute the operation and output the resulting changes.
     #[inline]
     fn step(&mut self) -> Result<bool, Failure> {
         let mut keep_running = true;
@@ -150,22 +133,16 @@ impl Paper {
     }
 }
 
-/// An event that causes the application to stop running.
+/// Signifies an event that caused the application to stop running.
 #[derive(Debug, Error)]
 pub enum Failure {
-    /// A failure in the user interface.
+    /// Signifies a failure in the user interface.
     #[error("user interface: {0}")]
     Ui(#[from] ui::Fault),
-    /// A failure in the translator.
+    /// Signifies a failure in the translator.
     #[error("translator: {0}")]
     Translator(#[from] translate::Fault),
-    /// A failure in the language server protocol client.
-    #[error("language server protocol: {0}")]
-    Lsp(#[from] LspError),
-    /// A failure to create the log file.
-    #[error("failed to create log file `{0}`: {1}")]
-    CreateLogFile(String, #[source] io::Error),
-    /// A failure to initialize the logger.
-    #[error("failed to initialize logger: {0}")]
-    InitLogger(#[from] SetLoggerError),
+    /// Signifies a failure in the application.
+    #[error("{0}")]
+    App(#[from] app::Fault),
 }
