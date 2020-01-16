@@ -3,13 +3,11 @@ mod logging;
 mod lsp;
 
 use {
-    crate::{
-        ui::{Change, Setting},
-    },
+    crate::ui::{Change, Setting},
     clap::ArgMatches,
     core::convert::TryFrom,
-    logging::LogConfig,
     log::{error, trace},
+    logging::LogConfig,
     lsp::LspServer,
     lsp_types::{
         MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
@@ -20,10 +18,9 @@ use {
         collections::HashMap,
         env,
         ffi::OsStr,
-        fmt,
-        fs,
-        path::PathBuf,
+        fmt, fs,
         io::{self, ErrorKind},
+        path::PathBuf,
     },
     thiserror::Error,
     url::{ParseError, Url},
@@ -77,12 +74,16 @@ pub(crate) struct Sheet {
     lsp_servers: HashMap<String, LspServer>,
     /// Provides handle to be able to modify logger settings.
     log_config: LogConfig,
+    /// The input for `command`.
     input: String,
+    /// The current command to be implemented.
     command: Option<Command>,
+    /// The working directory of the application.
     working_dir: Url,
 }
 
 impl Sheet {
+    /// Creates a new [`Sheet`].
     pub(crate) fn new(arguments: &Arguments) -> Result<Self, Fault> {
         Ok(Self {
             doc: None,
@@ -91,7 +92,8 @@ impl Sheet {
             input: String::new(),
             log_config: arguments.log_config.clone(),
             command: None,
-            working_dir: Url::from_directory_path(arguments.working_dir.clone()).map_err(|_| Fault::InvalidPath)?,
+            working_dir: Url::from_directory_path(arguments.working_dir.clone())
+                .map_err(|_| Fault::InvalidPath)?,
         })
     }
 
@@ -135,7 +137,7 @@ impl Sheet {
                 Ok(Some(Change::InputChar(c)))
             }
             Operation::Execute => {
-                if let Some(_) = self.command {
+                if self.command.is_some() {
                     let file = self.input.clone();
 
                     self.input.clear();
@@ -147,6 +149,7 @@ impl Sheet {
         }
     }
 
+    /// Opens `file` as a [`Document`].
     fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
         match self.get_document(file) {
             Ok(doc) => {
@@ -154,7 +157,10 @@ impl Sheet {
                     "rust" => Ok("rls"),
                     _ => Err(Fault::MissingLanguage(doc.language_id.clone())),
                 }?;
-                let lsp_server = self.lsp_servers.entry(doc.language_id.clone()).or_insert(LspServer::new(process, &self.working_dir)?);
+                let lsp_server = self
+                    .lsp_servers
+                    .entry(doc.language_id.clone())
+                    .or_insert(LspServer::new(process, &self.working_dir)?);
 
                 lsp_server.did_open(&doc)?;
                 self.doc = Some(doc.clone());
@@ -211,8 +217,11 @@ impl Drop for Sheet {
     fn drop(&mut self) {
         if let Some(doc) = &self.doc {
             if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.language_id) {
-                if let Err(e) = lsp_server.did_close(&doc) {
-                    error!("failed to inform language server process about closing {}", e);
+                if let Err(e) = lsp_server.did_close(doc) {
+                    error!(
+                        "failed to inform language server process about closing {}",
+                        e
+                    );
                 }
             }
         }
@@ -271,6 +280,7 @@ pub(crate) enum Operation {
     StartCommand(Command),
     /// Input to input box.
     Collect(char),
+    /// Executes the current command.
     Execute,
 }
 
@@ -298,12 +308,16 @@ impl From<ConfirmAction> for ShowMessageRequestParams {
     }
 }
 
+/// An error in the application.
 #[derive(Debug, Error)]
 pub enum Fault {
+    /// An error in the log.
     #[error("logger: {0}")]
     Log(#[from] logging::Fault),
+    /// An error in the language server protocol.
     #[error("language server protocol: {0}")]
     Lsp(#[from] lsp::Fault),
+    /// Application does not support language.
     #[error("paper does not currently implement language server protocol for `{0}`")]
     MissingLanguage(String),
     /// An error while attempting to retrieve the current working directory.

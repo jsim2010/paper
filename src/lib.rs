@@ -57,6 +57,7 @@
     clippy::multiple_crate_versions, // Requires redox_users update to avoid multiple versions of rand_core.
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
     clippy::unreachable, // Added by derive(Enum).
+    clippy::use_debug, // Flags debug formatting in Debug trait.
 )]
 
 mod app;
@@ -85,7 +86,6 @@ pub struct Paper {
 
 impl Paper {
     /// Creates a new instance of the application.
-    #[must_use]
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
             sheet: Sheet::new(&arguments)?,

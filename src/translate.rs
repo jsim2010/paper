@@ -89,6 +89,7 @@ impl Output {
         self.operations.push(operation);
     }
 
+    /// Sets the mode of `self` to `mode`.
     fn set_mode(&mut self, mode: Mode) {
         self.new_mode = Some(mode);
     }
@@ -225,7 +226,9 @@ impl ModeInterpreter for CollectInterpreter {
             Input::Key { key: Key::Esc, .. } => {
                 output.reset();
             }
-            Input::Key { key: Key::Enter, .. } => {
+            Input::Key {
+                key: Key::Enter, ..
+            } => {
                 output.add_op(Operation::Execute);
                 output.set_mode(Mode::View);
             }
@@ -371,7 +374,13 @@ mod test_collect {
     /// The `Enter` key shall execute the command and return to [`Mode::View`].
     #[test]
     fn execute() {
-        assert_eq!(INTERPRETER.decode(helpers::key_input(Key::Enter)), Output {operations: vec![Operation::Execute], new_mode: Some(Mode::View)});
+        assert_eq!(
+            INTERPRETER.decode(helpers::key_input(Key::Enter)),
+            Output {
+                operations: vec![Operation::Execute],
+                new_mode: Some(Mode::View)
+            }
+        );
     }
 }
 

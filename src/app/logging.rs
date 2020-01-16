@@ -1,6 +1,11 @@
+//! Implements the logging functionality of the application.
 use {
-    log::{Log, Metadata, Record, LevelFilter, SetLoggerError, trace},
-    std::{fs::File, sync::{Arc, RwLock, RwLockWriteGuard}, io::{self, Write}},
+    log::{trace, LevelFilter, Log, Metadata, Record, SetLoggerError},
+    std::{
+        fs::File,
+        io::{self, Write},
+        sync::{Arc, RwLock, RwLockWriteGuard},
+    },
     thiserror::Error,
     time::PrimitiveDateTime,
 };
@@ -13,6 +18,7 @@ pub struct LogConfig {
 }
 
 impl LogConfig {
+    /// Creates a new [`LogConfig`].
     pub(crate) fn new() -> Result<Self, Fault> {
         let logger = Logger::new()?;
         let writer = Arc::clone(logger.writer());
@@ -24,6 +30,7 @@ impl LogConfig {
         Ok(Self { writer })
     }
 
+    /// Returns the writer.
     pub(crate) fn writer(&self) -> Result<RwLockWriteGuard<'_, Writer>, Fault> {
         self.writer.write().map_err(|_| Fault::WriterLock)
     }
@@ -39,12 +46,12 @@ pub(crate) struct Writer {
 }
 
 impl Writer {
+    /// Creates a new [`Writer`].
     fn new() -> Result<Self, Fault> {
         let log_filename = "paper.log".to_string();
 
         Ok(Self {
-            file: File::create(&log_filename)
-                .map_err(|e| Fault::CreateFile(log_filename, e))?,
+            file: File::create(&log_filename).map_err(|e| Fault::CreateFile(log_filename, e))?,
             starship_level: LevelFilter::Off,
         })
     }
@@ -81,7 +88,8 @@ impl Logger {
         })
     }
 
-    pub(crate) fn writer(&self) -> &Arc<RwLock<Writer>> {
+    /// Returns the writer.
+    pub(crate) const fn writer(&self) -> &Arc<RwLock<Writer>> {
         &self.writer
     }
 }
@@ -114,6 +122,7 @@ impl Log for Logger {
     }
 }
 
+/// An error that occurs within the logger.
 #[derive(Debug, Error)]
 pub enum Fault {
     /// A failure to initialize the logger.
