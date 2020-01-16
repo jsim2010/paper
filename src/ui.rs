@@ -38,7 +38,7 @@ use {
     starship::{context::Context, print},
     std::{
         collections::VecDeque,
-        env, fs,
+        fs,
         io::{self, Stdout, Write},
         path::PathBuf,
         sync::mpsc::{self, Receiver},
@@ -64,9 +64,6 @@ pub enum Fault {
     /// An error while attempting to process the config file.
     #[error("unable to parse config file: {0}")]
     InvalidConfig(#[from] toml::de::Error),
-    /// An error while attempting to retrieve the current working directory.
-    #[error("invalid working directory: {0}")]
-    WorkingDir(#[source] io::Error),
     /// An error while attempting to watch a path.
     #[error("unable to watch path: {0}")]
     Watch(#[source] notify::Error),
@@ -110,7 +107,7 @@ impl Terminal {
             first_line: 0,
             watcher,
             config: Config::default(),
-            working_dir: env::current_dir().map_err(Fault::WorkingDir)?,
+            working_dir: arguments.working_dir.clone(),
             grid: Grid::default(),
         };
 

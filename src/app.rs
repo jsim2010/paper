@@ -9,7 +9,7 @@ use {
     clap::ArgMatches,
     core::convert::TryFrom,
     logging::LogConfig,
-    log::trace,
+    log::{error, trace},
     lsp::LspServer,
     lsp_types::{
         MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
@@ -22,6 +22,7 @@ use {
         ffi::OsStr,
         fmt,
         fs,
+        path::PathBuf,
         io::{self, ErrorKind},
     },
     thiserror::Error,
@@ -49,6 +50,8 @@ pub struct Arguments {
     pub file: Option<String>,
     /// Signifies the handle to configure the application logger.
     pub log_config: LogConfig,
+    /// Signifies the current working directory of the application.
+    pub working_dir: PathBuf,
 }
 
 impl TryFrom<ArgMatches<'_>> for Arguments {
@@ -58,6 +61,7 @@ impl TryFrom<ArgMatches<'_>> for Arguments {
         Ok(Self {
             file: value.value_of("file").map(str::to_string),
             log_config: LogConfig::new()?,
+            working_dir: env::current_dir().map_err(Fault::WorkingDir)?,
         })
     }
 }
@@ -75,18 +79,20 @@ pub(crate) struct Sheet {
     log_config: LogConfig,
     input: String,
     command: Option<Command>,
+    working_dir: Url,
 }
 
 impl Sheet {
-    pub(crate) fn new(log_config: LogConfig) -> Self {
-        Self {
+    pub(crate) fn new(arguments: &Arguments) -> Result<Self, Fault> {
+        Ok(Self {
             doc: None,
             is_wrapped: false,
             lsp_servers: HashMap::default(),
             input: String::new(),
-            log_config,
+            log_config: arguments.log_config.clone(),
             command: None,
-        }
+            working_dir: Url::from_directory_path(arguments.working_dir.clone()).map_err(|_| Fault::InvalidPath)?,
+        })
     }
 
     /// Performs `operation` and returns the appropriate [`Change`]s.
@@ -113,7 +119,7 @@ impl Sheet {
             }
             Operation::UpdateConfig(Setting::Size(size)) => Ok(Some(Change::Size(size))),
             Operation::UpdateConfig(Setting::StarshipLog(log_level)) => {
-                trace!("Updating config of starship level");
+                trace!("updating starship log level to `{}`", log_level);
                 self.log_config.writer()?.starship_level = log_level;
                 Ok(None)
             }
@@ -142,13 +148,13 @@ impl Sheet {
     }
 
     fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
-        match document_from_string(file) {
+        match self.get_document(file) {
             Ok(doc) => {
                 let process = match doc.language_id.as_str() {
                     "rust" => Ok("rls"),
                     _ => Err(Fault::MissingLanguage(doc.language_id.clone())),
                 }?;
-                let lsp_server = self.lsp_servers.entry(doc.language_id.clone()).or_insert(LspServer::new(process)?);
+                let lsp_server = self.lsp_servers.entry(doc.language_id.clone()).or_insert(LspServer::new(process, &self.working_dir)?);
 
                 lsp_server.did_open(&doc)?;
                 self.doc = Some(doc.clone());
@@ -158,6 +164,57 @@ impl Sheet {
                 }))
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
+        }
+    }
+
+    /// Creates a [`TextDocumentItem`] from `path`.
+    fn get_document(&self, path: String) -> Result<TextDocumentItem, DocumentError> {
+        let uri = self.working_dir.join(&path).map_err(DocumentError::from)?;
+        let file_path = uri
+            .clone()
+            .to_file_path()
+            .map_err(|_| DocumentError::InvalidPath(uri.to_string()))?;
+
+        let language_id = match file_path.extension().and_then(OsStr::to_str) {
+            Some("rs") => "rust",
+            Some(x) => x,
+            None => "",
+        }
+        .to_string();
+        let text = fs::read_to_string(file_path).map_err(|error| match error.kind() {
+            ErrorKind::NotFound => DocumentError::NonExistantFile(path),
+            ErrorKind::PermissionDenied
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::AddrInUse
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::BrokenPipe
+            | ErrorKind::AlreadyExists
+            | ErrorKind::WouldBlock
+            | ErrorKind::InvalidInput
+            | ErrorKind::InvalidData
+            | ErrorKind::TimedOut
+            | ErrorKind::WriteZero
+            | ErrorKind::Interrupted
+            | ErrorKind::Other
+            | ErrorKind::UnexpectedEof
+            | _ => DocumentError::from(error),
+        })?;
+
+        Ok(TextDocumentItem::new(uri, language_id, 0, text))
+    }
+}
+
+impl Drop for Sheet {
+    fn drop(&mut self) {
+        if let Some(doc) = &self.doc {
+            if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.language_id) {
+                if let Err(e) = lsp_server.did_close(&doc) {
+                    error!("failed to inform language server process about closing {}", e);
+                }
+            }
         }
     }
 }
@@ -182,9 +239,6 @@ enum DocumentError {
     /// File does not exist.
     #[error("file `{0}` does not exist")]
     NonExistantFile(String),
-    /// Invalid current working directory.
-    #[error("unable to determine current working directory")]
-    InvalidCwd,
     /// Io error.
     #[error("io: {0}")]
     Io(#[from] io::Error),
@@ -198,48 +252,6 @@ impl From<DocumentError> for ShowMessageParams {
             message: value.to_string(),
         }
     }
-}
-
-/// Creates a [`TextDocumentItem`] from `path`.
-fn document_from_string(path: String) -> Result<TextDocumentItem, DocumentError> {
-    let cwd = env::current_dir().map_err(|_| DocumentError::InvalidCwd)?;
-    let base = Url::from_directory_path(cwd.clone())
-        .map_err(|_| DocumentError::InvalidPath(cwd.to_string_lossy().to_string()))?;
-    let uri = base.join(&path).map_err(DocumentError::from)?;
-    let file_path = uri
-        .clone()
-        .to_file_path()
-        .map_err(|_| DocumentError::InvalidPath(uri.to_string()))?;
-
-    let language_id = match file_path.extension().and_then(OsStr::to_str) {
-        Some("rs") => "rust",
-        Some(x) => x,
-        None => "",
-    }
-    .to_string();
-    let text = fs::read_to_string(file_path).map_err(|error| match error.kind() {
-        ErrorKind::NotFound => DocumentError::NonExistantFile(path),
-        ErrorKind::PermissionDenied
-        | ErrorKind::ConnectionRefused
-        | ErrorKind::ConnectionReset
-        | ErrorKind::ConnectionAborted
-        | ErrorKind::NotConnected
-        | ErrorKind::AddrInUse
-        | ErrorKind::AddrNotAvailable
-        | ErrorKind::BrokenPipe
-        | ErrorKind::AlreadyExists
-        | ErrorKind::WouldBlock
-        | ErrorKind::InvalidInput
-        | ErrorKind::InvalidData
-        | ErrorKind::TimedOut
-        | ErrorKind::WriteZero
-        | ErrorKind::Interrupted
-        | ErrorKind::Other
-        | ErrorKind::UnexpectedEof
-        | _ => DocumentError::from(error),
-    })?;
-
-    Ok(TextDocumentItem::new(uri, language_id, 0, text))
 }
 
 /// Signifies actions that can be performed by the application.
@@ -294,4 +306,10 @@ pub enum Fault {
     Lsp(#[from] lsp::Fault),
     #[error("paper does not currently implement language server protocol for `{0}`")]
     MissingLanguage(String),
+    /// An error while attempting to retrieve the current working directory.
+    #[error("invalid working directory: {0}")]
+    WorkingDir(#[source] io::Error),
+    /// Invalid path.
+    #[error("invalid path")]
+    InvalidPath,
 }

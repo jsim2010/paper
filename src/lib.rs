@@ -88,7 +88,7 @@ impl Paper {
     #[must_use]
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
-            sheet: Sheet::new(arguments.log_config.clone()),
+            sheet: Sheet::new(&arguments)?,
             interpreter: Interpreter::default(),
             ui: Terminal::new(arguments)?,
         })
