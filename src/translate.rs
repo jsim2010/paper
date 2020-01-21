@@ -1,4 +1,4 @@
-//! Implements the functionality of converting an [`Input`] to [`Operation`]s.
+//! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
     crate::{
         app::{Command, ConfirmAction, Operation},
@@ -8,17 +8,17 @@ use {
     enum_map::{enum_map, Enum, EnumMap},
     lsp_types::{MessageType, ShowMessageParams},
     parse_display::Display as ParseDisplay,
-    std::rc::Rc,
-    thiserror::Error,
 };
 
-/// Maps [`Mode`]s to their respective [`ModeInterpreter`].
+/// Manages interpretation for the application.
+///
+/// How an [`Input`] maps to [`Operation`]s is determined by the [`Mode`] of the [`Interpreter`]. Each mode defines a struct to implement [`ModeInterpreter`].
 #[derive(Debug)]
 pub(crate) struct Interpreter {
-    /// Current [`Mode`] of the `Interpreter`.
+    /// Signifies the current [`Mode`] of the [`Interpreter`].
     mode: Mode,
     /// Map of [`ModeInterpreter`]s.
-    map: EnumMap<Mode, ConcreteInterpreter>,
+    map: EnumMap<Mode, &'static dyn ModeInterpreter>,
 }
 
 impl Interpreter {
@@ -37,11 +37,21 @@ impl Interpreter {
 
 impl Default for Interpreter {
     fn default() -> Self {
+        /// The [`ModeInterpreter`] for [`Mode::View`].
+        static VIEW_INTERPRETER: ViewInterpreter = ViewInterpreter::new();
+        /// The [`ModeInterpreter`] for [`Mode::Confirm`].
+        static CONFIRM_INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
+        /// The [`ModeInterpreter`] for [`Mode::Collect`].
+        static COLLECT_INTERPRETER: CollectInterpreter = CollectInterpreter::new();
+
+        // Required to establish value type in enum_map.
+        let view_interpreter: &dyn ModeInterpreter = &VIEW_INTERPRETER;
+
         Self {
             map: enum_map! {
-                Mode::View => ConcreteInterpreter(Rc::new(ViewInterpreter::new())),
-                Mode::Confirm => ConcreteInterpreter(Rc::new(ConfirmInterpreter::new())),
-                Mode::Collect => ConcreteInterpreter(Rc::new(CollectInterpreter::new())),
+                Mode::View => view_interpreter,
+                Mode::Confirm => &CONFIRM_INTERPRETER,
+                Mode::Collect => &COLLECT_INTERPRETER,
             },
             mode: Mode::default(),
         }
@@ -100,22 +110,6 @@ impl Output {
         self.set_mode(Mode::View);
     }
 }
-
-/// A concrete representation of a [`ModeInterpreter`].
-#[derive(Debug)]
-struct ConcreteInterpreter(Rc<dyn ModeInterpreter>);
-
-impl ConcreteInterpreter {
-    /// Translates `input` into [`Output`].
-    fn decode(&self, input: Input) -> Output {
-        self.0.decode(input)
-    }
-}
-
-/// A mode is not stored in [`Interpreter`].
-#[derive(Clone, Copy, Debug, Error)]
-#[error("mode `{0}` is unknown")]
-pub struct Fault(Mode);
 
 /// Defines the functionality to convert [`Input`] to [`Output`].
 pub(crate) trait ModeInterpreter: Debug {
@@ -248,152 +242,131 @@ impl ModeInterpreter for CollectInterpreter {
     }
 }
 
-/// Tests decoding user input while in the View mode.
+/// Testing of the translate module.
 #[cfg(test)]
-mod test_view {
-    use super::*;
-
-    static INTERPRETER: ViewInterpreter = ViewInterpreter::new();
-
-    /// The `q` key shall confirm the user wants to quit.
-    #[test]
-    fn quit() {
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Char('q'))),
-            Output {
-                operations: vec![Operation::Confirm(ConfirmAction::Quit)],
-                new_mode: Some(Mode::Confirm)
-            }
-        );
-    }
-
-    /// The `o` key shall request the name of the document to be opened.
-    #[test]
-    fn open() {
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Char('o'))),
-            Output {
-                operations: vec![Operation::StartCommand(Command::Open)],
-                new_mode: Some(Mode::Collect)
-            }
-        );
-    }
-}
-
-/// Tests decoding user input while in the Confirm mode.
-#[cfg(test)]
-mod test_confirm {
-    use super::*;
-
-    static INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
-
-    /// The `y` key shall confirm the action.
-    #[test]
-    fn confirm() {
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Char('y'))),
-            Output {
-                operations: vec![Operation::Quit],
-                new_mode: None
-            }
-        );
-    }
-
-    /// Any other key shall cancel the action, resetting the application to View mode.
-    #[test]
-    fn cancel() {
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Char('n'))),
-            Output {
-                operations: vec![Operation::Reset],
-                new_mode: Some(Mode::View)
-            }
-        );
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Char('c'))),
-            Output {
-                operations: vec![Operation::Reset],
-                new_mode: Some(Mode::View)
-            }
-        );
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Char('1'))),
-            Output {
-                operations: vec![Operation::Reset],
-                new_mode: Some(Mode::View)
-            }
-        );
-    }
-}
-
-/// Tests decoding user input while mode is [`Mode::Collect`].
-#[cfg(test)]
-mod test_collect {
-    use super::*;
-
-    static INTERPRETER: CollectInterpreter = CollectInterpreter::new();
-
-    /// The `Esc` key shall return to [`Mode::View`].
-    #[test]
-    fn reset() {
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Esc)),
-            Output {
-                operations: vec![Operation::Reset],
-                new_mode: Some(Mode::View)
-            },
-        );
-    }
-
-    /// All char keys shall be collected.
-    #[test]
-    fn collect() {
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Char('a'))),
-            Output {
-                operations: vec![Operation::Collect('a')],
-                new_mode: None
-            },
-        );
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Char('.'))),
-            Output {
-                operations: vec![Operation::Collect('.')],
-                new_mode: None
-            },
-        );
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Char('1'))),
-            Output {
-                operations: vec![Operation::Collect('1')],
-                new_mode: None
-            },
-        );
-    }
-
-    /// The `Enter` key shall execute the command and return to [`Mode::View`].
-    #[test]
-    fn execute() {
-        assert_eq!(
-            INTERPRETER.decode(helpers::key_input(Key::Enter)),
-            Output {
-                operations: vec![Operation::Execute],
-                new_mode: Some(Mode::View)
-            }
-        );
-    }
-}
-
-/// Helper functions for testing.
-#[cfg(test)]
-mod helpers {
+mod test {
     use super::*;
     use crate::ui::Modifiers;
 
-    pub(crate) fn key_input(key: Key) -> Input {
+    fn key_input(key: Key) -> Input {
         Input::Key {
             key,
             modifiers: Modifiers::empty(),
+        }
+    }
+
+    fn output(operation: Operation, mode: Mode) -> Output {
+        Output {
+            operations: vec![operation],
+            new_mode: Some(mode),
+        }
+    }
+
+    fn keep_mode(operation: Operation) -> Output {
+        Output {
+            operations: vec![operation],
+            new_mode: None,
+        }
+    }
+
+    /// Tests decoding user input while in the View mode.
+    mod view {
+        use super::*;
+
+        static INTERPRETER: ViewInterpreter = ViewInterpreter::new();
+
+        /// The `q` key shall confirm the user wants to quit.
+        #[test]
+        fn quit() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('q'))),
+                output(Operation::Confirm(ConfirmAction::Quit), Mode::Confirm)
+            );
+        }
+
+        /// The `o` key shall request the name of the document to be opened.
+        #[test]
+        fn open() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('o'))),
+                output(Operation::StartCommand(Command::Open), Mode::Collect)
+            );
+        }
+    }
+
+    /// Tests decoding user input while in the Confirm mode.
+    mod confirm {
+        use super::*;
+
+        static INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
+
+        /// The `y` key shall confirm the action.
+        #[test]
+        fn confirm() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('y'))),
+                keep_mode(Operation::Quit)
+            );
+        }
+
+        /// Any other key shall cancel the action, resetting the application to View mode.
+        #[test]
+        fn cancel() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('n'))),
+                output(Operation::Reset, Mode::View)
+            );
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('c'))),
+                output(Operation::Reset, Mode::View)
+            );
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('1'))),
+                output(Operation::Reset, Mode::View)
+            );
+        }
+    }
+
+    /// Tests decoding user input while mode is [`Mode::Collect`].
+    #[cfg(test)]
+    mod collect {
+        use super::*;
+
+        static INTERPRETER: CollectInterpreter = CollectInterpreter::new();
+
+        /// The `Esc` key shall return to [`Mode::View`].
+        #[test]
+        fn reset() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Esc)),
+                output(Operation::Reset, Mode::View)
+            );
+        }
+
+        /// All char keys shall be collected.
+        #[test]
+        fn collect() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('a'))),
+                keep_mode(Operation::Collect('a'))
+            );
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('.'))),
+                keep_mode(Operation::Collect('.'))
+            );
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('1'))),
+                keep_mode(Operation::Collect('1'))
+            );
+        }
+
+        /// The `Enter` key shall execute the command and return to [`Mode::View`].
+        #[test]
+        fn execute() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Enter)),
+                output(Operation::Execute, Mode::View)
+            );
         }
     }
 }

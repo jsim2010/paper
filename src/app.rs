@@ -1,6 +1,6 @@
-//! Implements the business logic of the application.
-mod logging;
-mod lsp;
+//! Implements the application logic of `paper`.
+pub mod logging;
+pub mod lsp;
 
 use {
     crate::ui::{Change, Setting},
@@ -38,16 +38,22 @@ const ENTIRE_DOCUMENT: Range = Range {
     },
 };
 
-/// Signifies the configuration of the application initialization.
-///
-/// Using a custom struct rather than [`ArgMatches`] allows for external code to easily configure use of the application as a library.
-#[derive(Clone, Debug)]
+/// Configures the initialization of `paper`.
+#[derive(Clone, Debug, Default)]
 pub struct Arguments {
-    /// Signifies the file to be viewed.
+    /// The file to be viewed.
+    ///
+    /// [`None`] indicates that the display should be empty.
+    ///
+    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     pub file: Option<String>,
-    /// Signifies the handle to configure the application logger.
-    pub log_config: LogConfig,
-    /// Signifies the current working directory of the application.
+    /// Configures the logger.
+    ///
+    /// [`None`] indicates that `paper` will not configure logging during runtime.
+    ///
+    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
+    pub log_config: Option<LogConfig>,
+    /// The working directory of `paper`.
     pub working_dir: PathBuf,
 }
 
@@ -57,10 +63,43 @@ impl TryFrom<ArgMatches<'_>> for Arguments {
     fn try_from(value: ArgMatches<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
             file: value.value_of("file").map(str::to_string),
-            log_config: LogConfig::new()?,
-            working_dir: env::current_dir().map_err(Fault::WorkingDir)?,
+            log_config: Some(LogConfig::new()?),
+            working_dir: env::current_dir().map_err(|e| Fault::WorkingDir(e.into()))?,
         })
     }
+}
+
+/// An error from which the application was unable to recover.
+#[derive(Debug, Error)]
+pub enum Fault {
+    /// An error from [`logging`].
+    ///
+    /// [`logging`]: logging/index.html
+    #[error("{0}")]
+    Log(#[from] logging::Fault),
+    /// An error from [`lsp`].
+    ///
+    /// [`lsp`]: lsp/index.html
+    #[error("{0}")]
+    Lsp(#[from] lsp::Fault),
+    /// An error while determining the current working directory.
+    #[error("while determining working directory: {0}")]
+    WorkingDir(#[from] WorkingDirFault),
+}
+
+/// An error while determining the working directory.
+#[derive(Debug, Error)]
+pub enum WorkingDirFault {
+    /// An io error.
+    #[error("{0}")]
+    Io(#[from] io::Error),
+    /// An error converting working directory to [`Url`].
+    ///
+    /// The argument is the working directory path.
+    ///
+    /// [`Url`]: ../../url/struct.Url.html
+    #[error("unable to convert path `{0}` to url")]
+    Path(String),
 }
 
 /// Signifies the business logic of the application.
@@ -73,7 +112,7 @@ pub(crate) struct Sheet {
     /// The [`LspServer`]s managed by this document.
     lsp_servers: HashMap<String, LspServer>,
     /// Provides handle to be able to modify logger settings.
-    log_config: LogConfig,
+    log_config: Option<LogConfig>,
     /// The input for `command`.
     input: String,
     /// The current command to be implemented.
@@ -92,8 +131,9 @@ impl Sheet {
             input: String::new(),
             log_config: arguments.log_config.clone(),
             command: None,
-            working_dir: Url::from_directory_path(arguments.working_dir.clone())
-                .map_err(|_| Fault::InvalidPath)?,
+            working_dir: Url::from_directory_path(arguments.working_dir.clone()).map_err(|_| {
+                WorkingDirFault::Path(arguments.working_dir.to_string_lossy().to_string())
+            })?,
         })
     }
 
@@ -122,7 +162,11 @@ impl Sheet {
             Operation::UpdateConfig(Setting::Size(size)) => Ok(Some(Change::Size(size))),
             Operation::UpdateConfig(Setting::StarshipLog(log_level)) => {
                 trace!("updating starship log level to `{}`", log_level);
-                self.log_config.writer()?.starship_level = log_level;
+
+                if let Some(log_config) = &self.log_config {
+                    log_config.writer()?.starship_level = log_level;
+                }
+
                 Ok(None)
             }
             Operation::Alert(alert) => Ok(Some(Change::Message(alert))),
@@ -153,16 +197,20 @@ impl Sheet {
     fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
         match self.get_document(file) {
             Ok(doc) => {
-                let process = match doc.language_id.as_str() {
-                    "rust" => Ok("rls"),
-                    _ => Err(Fault::MissingLanguage(doc.language_id.clone())),
-                }?;
-                let lsp_server = self
-                    .lsp_servers
-                    .entry(doc.language_id.clone())
-                    .or_insert(LspServer::new(process, &self.working_dir)?);
+                let cmd = match doc.language_id.as_str() {
+                    "rust" => Some("rls"),
+                    _ => None,
+                };
 
-                lsp_server.did_open(&doc)?;
+                if let Some(process) = cmd {
+                    let lsp_server = self
+                        .lsp_servers
+                        .entry(doc.language_id.clone())
+                        .or_insert(LspServer::new(process, &self.working_dir)?);
+
+                    lsp_server.did_open(&doc)?;
+                }
+
                 self.doc = Some(doc.clone());
                 Ok(Some(Change::Text {
                     edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
@@ -306,24 +354,4 @@ impl From<ConfirmAction> for ShowMessageRequestParams {
             actions: None,
         }
     }
-}
-
-/// An error in the application.
-#[derive(Debug, Error)]
-pub enum Fault {
-    /// An error in the log.
-    #[error("logger: {0}")]
-    Log(#[from] logging::Fault),
-    /// An error in the language server protocol.
-    #[error("language server protocol: {0}")]
-    Lsp(#[from] lsp::Fault),
-    /// Application does not support language.
-    #[error("paper does not currently implement language server protocol for `{0}`")]
-    MissingLanguage(String),
-    /// An error while attempting to retrieve the current working directory.
-    #[error("invalid working directory: {0}")]
-    WorkingDir(#[source] io::Error),
-    /// Invalid path.
-    #[error("invalid path")]
-    InvalidPath,
 }

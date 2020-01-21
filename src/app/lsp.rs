@@ -3,7 +3,7 @@ use {
     jsonrpc_core::{Id, Value, Version},
     log::{error, trace, warn},
     lsp_types::{
-        notification::{DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized},
+        notification::{Notification, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized},
         request::{Initialize, RegisterCapability, Shutdown},
         ClientCapabilities, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
         InitializeParams, InitializeResult, InitializedParams, TextDocumentIdentifier,
@@ -18,7 +18,6 @@ use {
         fmt,
         io::{self, BufRead, BufReader, Read, Write},
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
-        string::FromUtf8Error,
         sync::{
             mpsc::{self, Receiver, Sender},
             Arc, Mutex, MutexGuard,
@@ -31,48 +30,36 @@ use {
 /// The header field name that maps to the length of the content.
 static HEADER_CONTENT_LENGTH: &str = "Content-Length";
 
-/// An LSP Error.
+/// An error from which the language server was unable to recover.
 #[derive(Debug, Error)]
 pub enum Fault {
-    /// Receiver of channel is disconnected.
-    #[error("{0} receiver disconnected")]
-    DisconnectedReceiver(String),
-    /// Sender of channel is disconnected.
-    #[error("{0} sender disconnected")]
-    DisconnectedSender(String),
-    /// Io of language server is unaccessable.
+    /// An error while sending data over a channel.
+    #[error("unable to send over {0} channel, receiver disconnected")]
+    Send(String),
+    /// An error while receiving data over a channel.
+    #[error("unable to receive from {0} channel, sender disconnected")]
+    Receive(String),
+    /// An error while accessing an IO of the language server process.
     #[error("unable to access {0} of language server")]
-    UnaccessableIo(String),
-    /// Command unable to run.
-    #[error("command failed to run")]
-    InvalidCommand,
-    /// Invalid current working directory.
-    #[error("current working directory is invalid: {0}")]
-    InvalidCwd(#[source] io::Error),
-    /// Failure writing to language server process.
+    Io(String),
+    /// An error while spawning a language server process.
+    #[error("unable to spawn language server process `{0}`: {1}")]
+    Spawn(String, #[source] io::Error),
+    /// An error while writing input to a language server process.
     #[error("unable to write to language server process: {0}")]
-    LanguageServerWrite(#[source] io::Error),
-    /// Invalid [`Params`].
-    #[error("invalid params")]
-    InvalidParams,
-    /// Error while acquiring mutex.
-    #[error("mutex")]
+    Input(#[source] io::Error),
+    /// An error while acquiring the mutex protecting the stdin of a language server process.
+    #[error("unable to acquire mutex of language server stdin")]
     Mutex,
-    /// Serde json error.
-    #[error("serde json: {0}")]
-    SerdeJson(#[from] SerdeJsonError),
-    /// Could not wait for language server process.
+    /// An error while serializing a language server message.
+    #[error("unable to serialize language server message: {0}")]
+    Serialize(#[from] SerdeJsonError),
+    /// An error while waiting for a language server process.
     #[error("unable to wait for language server process exit: {0}")]
-    ProcessWait(#[source] io::Error),
-    /// Could not kill language server process.
+    Wait(#[source] io::Error),
+    /// An error while killing a language server process.
     #[error("unable to kill language server process: {0}")]
-    ProcessKill(#[source] io::Error),
-    /// Error reading server output.
-    #[error("unable to read output of language server process: {0}")]
-    ServerRead(#[source] io::Error),
-    /// That language server output data that was not UTF-8.
-    #[error("output of language server process was not UTF-8: {0}")]
-    UTF8(#[from] FromUtf8Error),
+    Kill(#[source] io::Error),
 }
 
 /// Represents a language server process.
@@ -182,7 +169,7 @@ impl ServerProcess {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|_| Fault::InvalidCommand)?,
+                .map_err(|e| Fault::Spawn(process_cmd.to_string(), e))?,
         ))
     }
 
@@ -191,7 +178,7 @@ impl ServerProcess {
         self.0
             .stderr
             .take()
-            .ok_or_else(|| Fault::UnaccessableIo("stderr".to_string()))
+            .ok_or_else(|| Fault::Io("stderr".to_string()))
     }
 
     /// Returns the stdin of the process.
@@ -199,7 +186,7 @@ impl ServerProcess {
         self.0
             .stdin
             .take()
-            .ok_or_else(|| Fault::UnaccessableIo("stdin".to_string()))
+            .ok_or_else(|| Fault::Io("stdin".to_string()))
     }
 
     /// Returns the stdout of the process.
@@ -207,17 +194,17 @@ impl ServerProcess {
         self.0
             .stdout
             .take()
-            .ok_or_else(|| Fault::UnaccessableIo("stdout".to_string()))
+            .ok_or_else(|| Fault::Io("stdout".to_string()))
     }
 
     /// Kills the process.
     fn kill(&mut self) -> Result<(), Fault> {
-        self.0.kill().map_err(Fault::ProcessKill)
+        self.0.kill().map_err(Fault::Kill)
     }
 
     /// Blocks until the proccess ends.
     fn wait(&mut self) -> Result<(), Fault> {
-        self.0.wait().map(|_| ()).map_err(Fault::ProcessWait)
+        self.0.wait().map(|_| ()).map_err(Fault::Wait)
     }
 }
 
@@ -232,14 +219,17 @@ impl LspTransmitter {
     }
 
     /// Sends a notification with `params`.
-    fn notify<T: lsp_types::notification::Notification>(
+    fn notify<T: Notification>(
         &mut self,
         params: T::Params,
     ) -> Result<(), Fault>
     where
         T::Params: Serialize,
     {
-        self.lock()?.send(&Message::notification::<T>(params)?)
+        self.lock()?.send(&Message::Notification{
+            method: T::METHOD,
+            params: serde_json::to_value(params)?,
+        })
     }
 
     /// Sends a response with `id` and `result`.
@@ -251,7 +241,10 @@ impl LspTransmitter {
     where
         T::Result: Serialize,
     {
-        self.lock()?.send(&Message::response::<T>(id, result)?)
+        self.lock()?.send(&Message::Response {
+            id,
+            outcome: Outcome::Success(serde_json::to_value(result)?),
+        })
     }
 
     /// Sends `request` to the lsp server and waits for the response.
@@ -267,7 +260,12 @@ impl LspTransmitter {
     {
         let mut transmitter = self.lock()?;
         let current_id = transmitter.id;
-        transmitter.send(&Message::request::<T>(current_id, params)?)?;
+
+        transmitter.send(&Message::Request(MessageRequest {
+            id: current_id,
+            method: T::METHOD.to_string(),
+            params: serde_json::to_value(params)?,
+        }))?;
 
         let response: T::Result;
 
@@ -279,8 +277,15 @@ impl LspTransmitter {
             {
                 if transmitter.id == id {
                     transmitter.id = transmitter.id.wrapping_add(1);
-                    response = serde_json::from_value(value)?;
-                    break;
+                    match serde_json::from_value(value.clone()) {
+                        Ok(result) => {
+                            response = result;
+                            break;
+                        }
+                        Err(e) => {
+                            warn!("Failed to convert `{}` to result: {}", value, e);
+                        }
+                    }
                 }
             }
         }
@@ -307,7 +312,7 @@ impl AtomicTransmitter {
     /// Sends `message` to the language server process.
     fn send(&mut self, message: &Message) -> Result<(), Fault> {
         trace!("sending: {:?}", message);
-        write!(self.stdin, "{}", message.to_protocol()?).map_err(Fault::LanguageServerWrite)
+        write!(self.stdin, "{}", message.to_protocol()?).map_err(Fault::Input)
     }
 }
 
@@ -334,7 +339,7 @@ impl LspReceiver {
     fn recv(&self) -> Result<Message, Fault> {
         self.0
             .recv()
-            .map_err(|_| Fault::DisconnectedSender("language server stdout".to_string()))
+            .map_err(|_| Fault::Receive("response message".to_string()))
     }
 }
 
@@ -364,14 +369,14 @@ impl LspProcessor {
     /// Processes data from the language server.
     fn process(&mut self) -> Result<(), Fault> {
         while !self.is_quitting {
-            if let Some(message) = self.read_message()? {
+            if let Some(message) = self.read_message() {
                 trace!("received: {:?}", message);
 
                 match message {
                     Message::Response { .. } => self
                         .response_tx
                         .send(message)
-                        .map_err(|_| Fault::DisconnectedReceiver("response".to_string()))?,
+                        .map_err(|_| Fault::Send("response message".to_string()))?,
                     Message::Request(MessageRequest { id, .. }) => {
                         self.transmitter.respond::<RegisterCapability>(id, ())?
                     }
@@ -384,64 +389,68 @@ impl LspProcessor {
     }
 
     /// Reads a message.
-    fn read_message(&mut self) -> Result<Option<Message>, Fault> {
-        let length = self.read_header()?;
-        let content = self.read_content(length)?;
+    fn read_message(&mut self) -> Option<Message> {
+        let length = self.read_header();
 
-        let value = serde_json::from_str::<Value>(&content)?;
-
-        Ok(
-            if let Some(id) = value
-                .get("id")
-                .and_then(|id_value| serde_json::from_value(id_value.to_owned()).ok())
-            {
-                if let Some(result) = value.get("result") {
-                    // Success response
-                    Some(Message::Response {
-                        id,
-                        outcome: Outcome::Success(result.to_owned()),
-                    })
-                } else if value.get("error").is_some() {
-                    // Error response
-                    None
-                } else if let Some(method) = value
-                    .get("method")
-                    .and_then(|method_value| serde_json::from_value(method_value.to_owned()).ok())
-                {
-                    if let Some(params) = value.get("params").and_then(|params_value| {
-                        serde_json::from_value(params_value.to_owned()).ok()
-                    }) {
-                        // Request
-                        Some(Message::Request(MessageRequest { id, method, params }))
+        if let Some(content) = self.read_content(length) {
+            match serde_json::from_str::<Value>(&content) {
+                Ok(value) => if let Some(id) = value
+                        .get("id")
+                        .and_then(|id_value| serde_json::from_value(id_value.to_owned()).ok())
+                    {
+                        if let Some(result) = value.get("result") {
+                            // Success response
+                            Some(Message::Response {
+                                id,
+                                outcome: Outcome::Success(result.to_owned()),
+                            })
+                        } else if value.get("error").is_some() {
+                            // Error response
+                            None
+                        } else if let Some(method) = value.get("method").and_then(|method_value| {
+                            serde_json::from_value(method_value.to_owned()).ok()
+                        }) {
+                            if let Some(params) = value.get("params").and_then(|params_value| {
+                                serde_json::from_value(params_value.to_owned()).ok()
+                            }) {
+                                // Request
+                                Some(Message::Request(MessageRequest { id, method, params }))
+                            } else {
+                                // Invalid
+                                None
+                            }
+                        } else {
+                            // Invalid
+                            None
+                        }
                     } else {
-                        // Invalid
+                        // Notification
                         None
-                    }
-                } else {
-                    // Invalid
+                    },
+                Err(e) => {
+                    warn!("failed to convert `{}` to json value: {}", content, e);
                     None
                 }
-            } else {
-                // Notification
-                None
-            },
-        )
+            }
+        } else {
+            None
+        }
     }
 
-    /// Reads through the header of a message and returns the length of the content.
-    fn read_header(&mut self) -> Result<usize, Fault> {
+    /// Finds the first valid message header and returns the length of the content.
+    fn read_header(&mut self) -> usize {
         let mut length = None;
 
         loop {
             let mut line = String::new();
-            let _ = self
-                .reader
-                .read_line(&mut line)
-                .map_err(Fault::ServerRead)?;
+
+            if let Err(e) = self.reader.read_line(&mut line) {
+                warn!("failed to read line from language server process: {}", e);
+            }
 
             if line == "\r\n" {
                 if let Some(len) = length {
-                    return Ok(len);
+                    return len;
                 }
             } else {
                 let mut split = line.trim().split(": ");
@@ -454,13 +463,20 @@ impl LspProcessor {
     }
 
     /// Reads the content of a message with known `length`.
-    fn read_content(&mut self, length: usize) -> Result<String, Fault> {
+    fn read_content(&mut self, length: usize) -> Option<String> {
         let mut content = vec![0; length];
 
-        self.reader
-            .read_exact(&mut content)
-            .map_err(Fault::ServerRead)?;
-        Ok(String::from_utf8(content)?)
+        if let Err(e) = self.reader.read_exact(&mut content) {
+            warn!("failed to read message content: {}", e);
+        }
+
+        match String::from_utf8(content) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                warn!("received message that is not valid UTF8: {}", e);
+                None
+            }
+        }
     }
 }
 
@@ -492,42 +508,6 @@ enum Message {
 }
 
 impl Message {
-    /// Creates a notification message.
-    fn notification<T: lsp_types::notification::Notification>(
-        params: T::Params,
-    ) -> Result<Self, Fault>
-    where
-        <T as lsp_types::notification::Notification>::Params: Serialize,
-    {
-        Ok(Self::Notification {
-            method: T::METHOD,
-            params: serde_json::to_value(params)?,
-        })
-    }
-
-    /// Creates a request message.
-    fn request<T: lsp_types::request::Request>(id: u64, params: T::Params) -> Result<Self, Fault>
-    where
-        <T as lsp_types::request::Request>::Params: Serialize,
-    {
-        Ok(Self::Request(MessageRequest {
-            id,
-            method: T::METHOD.to_string(),
-            params: serde_json::to_value(params)?,
-        }))
-    }
-
-    /// Creates a response message.
-    fn response<T: lsp_types::request::Request>(id: u64, result: T::Result) -> Result<Self, Fault>
-    where
-        <T as lsp_types::request::Request>::Result: Serialize,
-    {
-        Ok(Self::Response {
-            id,
-            outcome: Outcome::Success(serde_json::to_value(result)?),
-        })
-    }
-
     /// Returns `self` in its raw format.
     fn to_protocol(&self) -> Result<String, Fault> {
         let content = serde_json::to_string(&self)?;
@@ -656,7 +636,7 @@ impl LspErrorProcessor {
     fn terminate(&self) -> Result<(), Fault> {
         self.0
             .send(())
-            .map_err(|_| Fault::DisconnectedReceiver("language server stderr".to_string()))
+            .map_err(|_| Fault::Send("language server stderr".to_string()))
     }
 }
 

@@ -1,4 +1,3 @@
-//! Implements the entry point for the `paper` binary.
 use {
     // `app_from_crate` requires using all the macros that it calls.
     clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, Arg},
@@ -15,6 +14,5 @@ fn main() -> Result<(), Failure> {
             .get_matches(),
     )?;
 
-    Paper::new(args)?.run()?;
-    Ok(())
+    Paper::new(args)?.run()
 }
