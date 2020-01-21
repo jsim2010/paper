@@ -1,13 +1,17 @@
 //! A terminal-based text editor with goals to maximize simplicity and efficiency.
 //!
-//! ## Functional Overview
+//! # Functional Overview
 //! 1) All functionality shall be able to be performed via the keys reachable from the home row. Where it makes sense, functionality may additionally be performed via the mouse and other keys.
 //! 2) All input shall be modal, i.e. keys shall implement different functionality depending on the current mode of the application.
-//! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the Language Server Protocol.
-//! 4) Paper shall adapt to rustfmt and as many clippy lints as reasonably possible.
+//! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the [Language Server Protocol].
+//! 4) Paper shall adapt to [rustfmt] and as many [clippy] lints as reasonably possible.
 //!
-//! ### Upcoming
+//! ## Upcoming
 //! - Text manipulation shall involve a 3-step process of identifying the location should occur, marking that location, and then performing the desired edit.
+//!
+//! [Language Server Protocol]: https://microsoft.github.io/language-server-protocol/
+//! [rustfmt]: https://github.com/rust-lang/rustfmt
+//! [clippy]: https://rust-lang.github.io/rust-clippy/current/index.html
 #![warn(
     absolute_paths_not_starting_with_crate,
     anonymous_parameters,
@@ -60,9 +64,9 @@
     clippy::use_debug, // Flags debug formatting in Debug trait.
 )]
 
-mod app;
+pub mod app;
 mod translate;
-mod ui;
+pub mod ui;
 
 pub use app::Arguments;
 
@@ -73,19 +77,36 @@ use {
     ui::Terminal,
 };
 
-/// Manages the execution of the application.
+/// An instance of the `paper` program.
+///
+/// # Examples
+///
+/// ```no_run
+/// use paper::{Arguments, Failure, Paper};
+/// # fn main() -> Result<(), Failure> {
+///
+/// let result: Result<(), Failure> = Paper::new(Arguments::default())?.run();
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct Paper {
     /// Translates input into operations.
     interpreter: Interpreter,
-    /// Interface between the application and the user.
+    /// Manages the user interface.
     ui: Terminal,
     /// Processes application operations.
     sheet: Sheet,
 }
 
 impl Paper {
-    /// Creates a new instance of the application.
+    /// Creates a new instance of `paper`.
+    ///
+    /// # Errors
+    ///
+    /// If any error is encountered during creation, a [`Failure`] will be returned.
+    ///
+    /// [`Failure`]: struct.Failure.html
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
             sheet: Sheet::new(&arguments)?,
@@ -94,7 +115,13 @@ impl Paper {
         })
     }
 
-    /// Executes the runtime loop of the application.
+    /// Loops through program execution until a [`Failure`] occurs or the application quits.
+    ///
+    /// # Errors
+    ///
+    /// If any error from which the program is unable to recover is encountered, a [`Failure`] will be returned; in this case, the program will make all efforts to kill all processes and return the terminal to a clean state but these cannot be guaranteed.
+    ///
+    /// [`Failure`]: struct.Failure.html
     #[inline]
     pub fn run(&mut self) -> Result<(), Failure> {
         loop {
@@ -106,7 +133,7 @@ impl Paper {
         Ok(())
     }
 
-    /// Implements a single run of the runtime loop and returns if the application should keep running.
+    /// Implements a single execution and returns if the program should keep running.
     ///
     /// A single run is as follows:
     /// 1. Receive input.
@@ -133,16 +160,17 @@ impl Paper {
     }
 }
 
-/// Signifies an event that caused the application to stop running.
+/// An error from which `paper` was unable to recover.
 #[derive(Debug, Error)]
 pub enum Failure {
-    /// Signifies a failure in the user interface.
-    #[error("user interface: {0}")]
+    /// An error from [`ui`].
+    ///
+    /// [`ui`]: ui/index.html
+    #[error("{0}")]
     Ui(#[from] ui::Fault),
-    /// Signifies a failure in the translator.
-    #[error("translator: {0}")]
-    Translator(#[from] translate::Fault),
-    /// Signifies a failure in the application.
+    /// An error from [`app`].
+    ///
+    /// [`app`]: app/index.html
     #[error("{0}")]
     App(#[from] app::Fault),
 }

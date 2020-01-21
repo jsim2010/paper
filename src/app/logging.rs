@@ -1,4 +1,4 @@
-//! Implements the logging functionality of the application.
+//! Implements the logging functionality of `paper`.
 use {
     log::{trace, LevelFilter, Log, Metadata, Record, SetLoggerError},
     std::{
@@ -10,10 +10,24 @@ use {
     time::PrimitiveDateTime,
 };
 
-/// Provides a handle to dynamically configure the [`Logger`].
+/// An error from which the logging functionality was unable to recover.
+#[derive(Debug, Error)]
+pub enum Fault {
+    /// A failure to initialize the logger.
+    #[error("while initializing logger: {0}")]
+    Init(#[from] SetLoggerError),
+    /// An error while creating the log file.
+    #[error("while creating log file `{0}`: {1}")]
+    CreateFile(String, #[source] io::Error),
+    /// Failed to lock the logger.
+    #[error("unable to lock logger")]
+    WriterLock,
+}
+
+/// Configures logging for `paper` during runtime.
 #[derive(Clone, Debug)]
 pub struct LogConfig {
-    /// A pointer to the [`Writer`] used by the [`Logger`].
+    /// Implements the logging for `paper`.
     writer: Arc<RwLock<Writer>>,
 }
 
@@ -120,18 +134,4 @@ impl Log for Logger {
             writer.flush();
         }
     }
-}
-
-/// An error that occurs within the logger.
-#[derive(Debug, Error)]
-pub enum Fault {
-    /// A failure to initialize the logger.
-    #[error("failed to initialize logger: {0}")]
-    Init(#[from] SetLoggerError),
-    /// A failure to create the log file.
-    #[error("failed to create log file `{0}`: {1}")]
-    CreateFile(String, #[source] io::Error),
-    /// Failed to lock the [`Writer`] of the [`Logger`].
-    #[error("log writer lock is poisoned")]
-    WriterLock,
 }

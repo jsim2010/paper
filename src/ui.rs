@@ -41,7 +41,7 @@ use {
         fs,
         io::{self, Stdout, Write},
         path::PathBuf,
-        sync::mpsc::{self, Receiver},
+        sync::mpsc::{self, Receiver, TryRecvError},
     },
     thiserror::Error,
 };
@@ -49,27 +49,45 @@ use {
 /// Represents the return type of all functions that may fail.
 type Outcome<T> = Result<T, Fault>;
 
-/// The [`Err`] value returned by this module.
+/// An error from which the user interface was unable to recover.
 #[derive(Debug, Error)]
 pub enum Fault {
-    /// Error from crossterm.
-    #[error("crossterm: {0}")]
-    Crossterm(#[from] ErrorKind),
-    /// Error while flushing stdout.
-    #[error("unable to flush stdout: {0}")]
-    InvalidFlush(io::Error),
-    /// Unable to find HOME path.
-    #[error("unable to retrieve path of `HOME`")]
-    MissingHome,
-    /// An error while attempting to process the config file.
-    #[error("unable to parse config file: {0}")]
-    InvalidConfig(#[from] toml::de::Error),
-    /// An error while attempting to watch a path.
-    #[error("unable to watch path: {0}")]
-    Watch(#[source] notify::Error),
-    /// An error while creating the watcher.
-    #[error("unable to create watcher: {0}")]
-    CreateWatcher(#[source] notify::Error),
+    /// An error while creating the config file watcher.
+    #[error("while creating config file watcher: {0}")]
+    Watcher(#[from] notify::Error),
+    /// An error while retrieving the home directory of the user.
+    #[error("unable to determine home directory of user")]
+    HomeDir,
+    /// An error while retrieving the size of the terminal.
+    #[error("while determining terminal size: {0}")]
+    TerminalSize(#[source] ErrorKind),
+    /// An error while executing a [`crossterm`] command.
+    ///
+    /// [`crossterm`]: ../../crossterm/index.html
+    #[error("while executing terminal command: {0}")]
+    Command(#[source] ErrorKind),
+    /// An error while reading terminal events.
+    #[error("while reading terminal events: {0}")]
+    Event(#[source] ErrorKind),
+    /// Error while flushing terminal output.
+    #[error("while flushing terminal output: {0}")]
+    Flush(#[source] io::Error),
+}
+
+/// An error in the user interface that is recoverable.
+///
+/// Until a glitch is resolved, certain functionality may not be properly completed.
+#[derive(Debug, Error)]
+pub(crate) enum Glitch {
+    /// Config file watcher disconnected.
+    #[error("config file watcher disconnected")]
+    WatcherConnection,
+    /// Unable to read config file.
+    #[error("unable to read config file: {0}")]
+    ReadConfig(#[source] io::Error),
+    /// Unable to convert config file to Config.
+    #[error("config file invalid format: {0}")]
+    ConfigFormat(#[from] toml::de::Error),
 }
 
 /// The user interface provided by a terminal.
@@ -83,9 +101,9 @@ pub(crate) struct Terminal {
     /// Command arguments are viewed as config input so that all processing of arguments is performed within the main application loop.
     changed_settings: VecDeque<Setting>,
     /// A list of the glitches that have occurred in the user interface.
-    glitches: Vec<Fault>,
+    glitches: Vec<Glitch>,
     /// The size of the terminal.
-    size: TerminalSize,
+    size: Size,
     /// The index of the first line of the document that may be displayed.
     first_line: u64,
     /// Notifies `self` of any events to the config file.
@@ -99,12 +117,15 @@ pub(crate) struct Terminal {
 impl Terminal {
     /// Creates a new [`Terminal`].
     pub(crate) fn new(arguments: Arguments) -> Outcome<Self> {
-        let watcher = ConfigWatcher::new()?;
-        let mut terminal = Self {
+        let config_file = dirs::home_dir()
+            .ok_or(Fault::HomeDir)?
+            .join(".config/paper.toml");
+        let watcher = ConfigWatcher::new(&config_file)?;
+        let mut term = Self {
             out: io::stdout(),
             changed_settings: VecDeque::default(),
             glitches: Vec::default(),
-            size: TerminalSize::default(),
+            size: Size::default(),
             first_line: 0,
             watcher,
             config: Config::default(),
@@ -112,29 +133,17 @@ impl Terminal {
             grid: Grid::default(),
         };
 
-        terminal.init_size()?;
-        terminal.add_config_updates()?;
-        terminal.init_arguments(arguments);
+        term.changed_settings
+            .push_back(Setting::Size(get_terminal_size()?));
+        term.add_config_updates(config_file);
+
+        if let Some(file) = arguments.file {
+            term.changed_settings.push_back(Setting::File(file));
+        }
 
         // Store all previous terminal output.
-        execute!(terminal.out, EnterAlternateScreen)?;
-        Ok(terminal)
-    }
-
-    /// Initializes settings based on the terminal size.
-    fn init_size(&mut self) -> Outcome<()> {
-        let (columns, rows) = terminal::size()?;
-
-        self.changed_settings
-            .push_back(Setting::Size(TerminalSize { rows, columns }));
-        Ok(())
-    }
-
-    /// Initializes settings based on `arguments`.
-    fn init_arguments(&mut self, arguments: Arguments) {
-        if let Some(file) = arguments.file {
-            self.changed_settings.push_back(Setting::File(file));
-        }
+        execute!(term.out, EnterAlternateScreen).map_err(Fault::Command)?;
+        Ok(term)
     }
 
     /// Applies `change` to the output.
@@ -222,7 +231,7 @@ impl Terminal {
                 self.grid.resize(self.size.rows.saturating_sub(1));
             }
             Change::InputChar(c) => {
-                queue!(self.out, Print(c))?;
+                queue!(self.out, Print(c)).map_err(Fault::Command)?;
             }
         }
 
@@ -239,48 +248,51 @@ impl Terminal {
                 .replace("[J", "")
             ),
             RestorePosition,
-        )?;
+        )
+        .map_err(Fault::Command)?;
 
-        self.out.flush().map_err(Fault::InvalidFlush)
+        self.out.flush().map_err(Fault::Flush)
     }
 
     /// Checks for updates to [`Config`] and adds any changes the changed settings list.
-    fn add_config_updates(&mut self) -> Outcome<()> {
-        match self.config.update() {
+    fn add_config_updates(&mut self, config_file: PathBuf) {
+        match self.config.update(config_file) {
             Ok(mut settings) => {
                 self.changed_settings.append(&mut settings);
             }
-            Err(fault) => {
-                self.glitches.push(fault);
+            Err(glitch) => {
+                self.glitches.push(glitch);
             }
         }
-
-        Ok(())
     }
 
     /// Returns the input from the user.
     ///
     /// Configuration modifications are returned prior to returning all other inputs.
     pub(crate) fn input(&mut self) -> Outcome<Option<Input>> {
-        if let Ok(event) = self.watcher.notify.try_recv() {
-            if let notify::DebouncedEvent::Write(_) = event {
-                self.add_config_updates()?;
+        match self.watcher.notify.try_recv() {
+            Ok(event) => {
+                if let DebouncedEvent::Write(config_file) = event {
+                    self.add_config_updates(config_file);
+                }
+            }
+            Err(TryRecvError::Empty) => (),
+            Err(TryRecvError::Disconnected) => {
+                self.glitches.push(Glitch::WatcherConnection);
             }
         }
 
         // First check errors, then settings, then terminal input.
-        if let Some(fault) = self.glitches.pop() {
-            Ok(Some(Input::Glitch(fault)))
+        Ok(if let Some(glitch) = self.glitches.pop() {
+            Some(Input::Glitch(glitch))
         } else if let Some(setting) = self.changed_settings.pop_front() {
             trace!("retrieved setting: `{:?}`", setting);
-            Ok(Some(Input::Setting(setting)))
+            Some(Input::Setting(setting))
+        } else if event::poll(Duration::from_secs(0)).map_err(Fault::Event)? {
+            Some(event::read().map_err(Fault::Event)?.into())
         } else {
-            Ok(if event::poll(Duration::from_secs(0))? {
-                Some(event::read()?.into())
-            } else {
-                None
-            })
-        }
+            None
+        })
     }
 }
 
@@ -309,15 +321,11 @@ struct ConfigWatcher {
 
 impl ConfigWatcher {
     /// Creates a new [`ConfigWatcher`].
-    fn new() -> Outcome<Self> {
+    fn new(config_file: &PathBuf) -> Result<Self, notify::Error> {
         let (tx, notify) = mpsc::channel();
-        let mut watcher =
-            notify::watcher(tx, Duration::from_secs(0)).map_err(Fault::CreateWatcher)?;
+        let mut watcher = notify::watcher(tx, Duration::from_secs(0))?;
 
-        watcher
-            .watch(Config::path()?, notify::RecursiveMode::NonRecursive)
-            .map_err(Fault::Watch)?;
-
+        watcher.watch(config_file, notify::RecursiveMode::NonRecursive)?;
         Ok(Self { watcher, notify })
     }
 }
@@ -375,10 +383,10 @@ impl Grid {
     }
 
     /// Prints `s` at `row` of the grid.
-    fn print(&mut self, row: u16, s: &str, context: Option<MessageType>) -> crossterm::Result<()> {
+    fn print(&mut self, row: u16, s: &str, context: Option<MessageType>) -> Outcome<()> {
         trace!("{} print `{}`", row, s);
         // Add 1 to account for header.
-        queue!(self.out, MoveTo(0, row.saturating_add(1)))?;
+        queue!(self.out, MoveTo(0, row.saturating_add(1))).map_err(Fault::Command)?;
 
         if let Some(t) = context {
             queue!(
@@ -389,13 +397,14 @@ impl Grid {
                     MessageType::Info => Color::Blue,
                     MessageType::Log => Color::Grey,
                 })
-            )?;
+            )
+            .map_err(Fault::Command)?;
         }
 
-        queue!(self.out, Print(s), Clear(ClearType::UntilNewLine))?;
+        queue!(self.out, Print(s), Clear(ClearType::UntilNewLine)).map_err(Fault::Command)?;
 
         if context.is_some() {
-            queue!(self.out, ResetColor)?;
+            queue!(self.out, ResetColor).map_err(Fault::Command)?;
         }
 
         Ok(())
@@ -406,8 +415,7 @@ impl Grid {
         if self.alert_line_count != 0 {
             for row in 0..self.alert_line_count {
                 self.print(
-                    // TODO: Replace Fault with appropriate one.
-                    u16::try_from(row).map_err(|_| Fault::MissingHome)?,
+                    row,
                     &self
                         .lines
                         .get(usize::from(row))
@@ -463,19 +471,17 @@ struct Config {
 
 impl Config {
     /// Reads the config file into a `Config`.
-    fn read() -> Outcome<Self> {
+    fn read(config_file: PathBuf) -> Result<Self, Glitch> {
         // TODO: Replace Faults.
-        fs::read_to_string(Self::path()?)
-            .map_err(|_| Fault::MissingHome)
-            .and_then(|config_string| {
-                toml::from_str(&config_string).map_err(|_| Fault::MissingHome)
-            })
+        fs::read_to_string(config_file)
+            .map_err(Glitch::ReadConfig)
+            .and_then(|config_string| toml::from_str(&config_string).map_err(Glitch::ConfigFormat))
     }
 
     /// Updates `self` to match paper's config file, returning any changed [`Setting`]s.
-    fn update(&mut self) -> Outcome<VecDeque<Setting>> {
+    fn update(&mut self, config_file: PathBuf) -> Result<VecDeque<Setting>, Glitch> {
         let mut settings = VecDeque::new();
-        let config = Self::read()?;
+        let config = Self::read(config_file)?;
 
         if self.wrap != config.wrap {
             self.wrap = config.wrap;
@@ -488,13 +494,6 @@ impl Config {
         }
 
         Ok(settings)
-    }
-
-    /// Returns the path of the config file.
-    fn path() -> Outcome<PathBuf> {
-        dirs::home_dir()
-            .ok_or(Fault::MissingHome)
-            .map(|home_dir| home_dir.join(".config/paper.toml"))
     }
 }
 
@@ -535,7 +534,7 @@ pub(crate) enum Change {
     /// Open an input box with the given prompt.
     Input(String),
     /// Change the size of the terminal.
-    Size(TerminalSize),
+    Size(Size),
     /// Add a char to the input box.
     InputChar(char),
 }
@@ -548,14 +547,14 @@ pub(crate) enum Setting {
     /// If the document shall wrap long text.
     Wrap(bool),
     /// The size of the terminal.
-    Size(TerminalSize),
+    Size(Size),
     /// The level at which starship records shall be logged.
     StarshipLog(LevelFilter),
 }
 
 /// Signifies the size of a terminal.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct TerminalSize {
+pub(crate) struct Size {
     /// The number of rows.
     pub(crate) rows: u16,
     /// The number of columns.
@@ -586,7 +585,7 @@ pub(crate) enum Input {
     /// Signifies a changed [`Setting`].
     Setting(Setting),
     /// Signifies an error that is recoverable.
-    Glitch(Fault),
+    Glitch(Glitch),
 }
 
 impl From<Event> for Input {
@@ -600,4 +599,11 @@ impl From<Event> for Input {
             },
         }
     }
+}
+
+/// Returns the size of the terminal.
+fn get_terminal_size() -> Outcome<Size> {
+    let (columns, rows) = terminal::size().map_err(Fault::TerminalSize)?;
+
+    Ok(Size { rows, columns })
 }
