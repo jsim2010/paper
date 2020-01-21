@@ -39,7 +39,7 @@ impl LogConfig {
 
         log::set_boxed_logger(Box::new(logger))?;
         log::set_max_level(LevelFilter::Trace);
-        trace!("logger initialized");
+        trace!("Logger initialized");
 
         Ok(Self { writer })
     }
@@ -74,10 +74,9 @@ impl Writer {
     fn write(&mut self, record: &Record<'_>) {
         let _ = writeln!(
             self.file,
-            "{} [{}] {}: {}",
+            "{} [{}]: {}",
             PrimitiveDateTime::now().format("%F %T"),
             record.level(),
-            record.target(),
             record.args()
         );
     }

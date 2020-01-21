@@ -366,6 +366,7 @@ impl Grid {
 
     /// Adds an alert box over the grid.
     fn add_alert(&mut self, message: &str, context: MessageType) -> Outcome<()> {
+        trace!("lines {:?}", message.lines().next());
         for line in message.lines() {
             self.print(self.alert_line_count, line, Some(context))?;
             self.alert_line_count = self.alert_line_count.saturating_add(1);
@@ -384,7 +385,6 @@ impl Grid {
 
     /// Prints `s` at `row` of the grid.
     fn print(&mut self, row: u16, s: &str, context: Option<MessageType>) -> Outcome<()> {
-        trace!("{} print `{}`", row, s);
         // Add 1 to account for header.
         queue!(self.out, MoveTo(0, row.saturating_add(1))).map_err(Fault::Command)?;
 
@@ -395,7 +395,7 @@ impl Grid {
                     MessageType::Error => Color::Red,
                     MessageType::Warning => Color::Yellow,
                     MessageType::Info => Color::Blue,
-                    MessageType::Log => Color::Grey,
+                    MessageType::Log => Color::DarkCyan,
                 })
             )
             .map_err(Fault::Command)?;
