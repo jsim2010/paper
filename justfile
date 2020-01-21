@@ -1,17 +1,18 @@
 set shell := ["cmd.exe", "/c"]
 
 alias b := build
+alias f := fix
 alias v := validate
-alias x := fix
 
-# Builds project
+# Builds the project
 build:
     cargo build
 
-# Validates project
-validate: validate_format build test lint
+# Generates documentation for public and private items.
+doc_all:
+    cargo doc --document-private-items
 
-# Fixes issues that can be resolved automatically
+# Fixes issues that can be addressed automatically
 fix: format
 
 # Validates that code is formatted correctly
@@ -22,10 +23,17 @@ validate_format:
 format:
     cargo fmt
 
-# Analyzes code
+# Validates code style
 lint:
     cargo clippy -- -D warnings
 
 # Runs tests
 test:
     cargo test --verbose --all-features
+
+# Validates the project
+validate: validate_fmt build test lint
+
+# Validates the formatting of the project
+validate_fmt:
+    cargo fmt -- --check

@@ -15,7 +15,7 @@ use {
     },
     parse_display::Display as ParseDisplay,
     std::{
-        collections::HashMap,
+        collections::{hash_map::Entry, HashMap},
         env,
         ffi::OsStr,
         fmt, fs,
@@ -140,7 +140,10 @@ impl Sheet {
     /// Performs `operation` and returns the appropriate [`Change`]s.
     pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Fault> {
         match operation {
-            Operation::Reset => Ok(Some(Change::Reset)),
+            Operation::Reset => {
+                self.input.clear();
+                Ok(Some(Change::Reset))
+            }
             Operation::Confirm(action) => Ok(Some(Change::Question(
                 ShowMessageRequestParams::from(action),
             ))),
@@ -197,16 +200,24 @@ impl Sheet {
     fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
         match self.get_document(file) {
             Ok(doc) => {
+                if let Some(old_doc) = &self.doc {
+                    if let Some(lsp_server) = self.lsp_servers.get_mut(&old_doc.language_id) {
+                        lsp_server.did_close(old_doc)?;
+                    }
+                }
+
                 let cmd = match doc.language_id.as_str() {
                     "rust" => Some("rls"),
                     _ => None,
                 };
 
                 if let Some(process) = cmd {
-                    let lsp_server = self
-                        .lsp_servers
-                        .entry(doc.language_id.clone())
-                        .or_insert(LspServer::new(process, &self.working_dir)?);
+                    let lsp_server = match self.lsp_servers.entry(doc.language_id.clone()) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(LspServer::new(process, &self.working_dir)?)
+                        }
+                        Entry::Occupied(entry) => entry.into_mut(),
+                    };
 
                     lsp_server.did_open(&doc)?;
                 }

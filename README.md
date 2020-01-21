@@ -1,20 +1,10 @@
 # paper
 
-A terminal-based editor with goals to maximize simplicity and efficiency.
+A terminal-based text editor with goals to maximize simplicity and efficiency.
 
 This project is very much in an alpha state.
 
-Its features include:
-- Modal editing (keys implement different functionality depending on the current mode).
-- Adding support for Language Server Protocol.
-- Extensive but relatively simple filter grammar that allows user to select any text.
-
-Future items on the Roadmap:
-- Utilize external tools for filters.
-- Add more filter grammar.
-- Implement suggestions for commands to improve user experience.
-
-### Development
+## Development
 
 Clone the repository and enter the directory:
 
@@ -23,20 +13,18 @@ git clone https://github.com/jsim2010/paper.git
 cd paper
 ```
 
-If `cargo-make` is not already installed on your system, install it:
+This project uses [`just`](https://github.com/casey/just) for running project-specific commands. If `just` is not already installed on your system, install it:
 
 ```sh
-cargo install --force cargo-make
+cargo install just
 ```
 
-Install all dependencies needed for development:
+To see all available recipes for development, run:
 
 ```sh
-cargo make dev
+just --list
 ```
 
-Now you can run the following commands:
-- Evaluate all checks, lints and tests: `cargo make eval`
-- Fix stale README and formatting: `cargo make fix`
+Note that `just v` is run by the status check required for merging pull requests.
 
 License: MIT
