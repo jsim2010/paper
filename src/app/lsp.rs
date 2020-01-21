@@ -3,7 +3,9 @@ use {
     jsonrpc_core::{Id, Value, Version},
     log::{error, trace, warn},
     lsp_types::{
-        notification::{Notification, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized},
+        notification::{
+            DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized, Notification,
+        },
         request::{Initialize, RegisterCapability, Shutdown},
         ClientCapabilities, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
         InitializeParams, InitializeResult, InitializedParams, TextDocumentIdentifier,
@@ -219,14 +221,11 @@ impl LspTransmitter {
     }
 
     /// Sends a notification with `params`.
-    fn notify<T: Notification>(
-        &mut self,
-        params: T::Params,
-    ) -> Result<(), Fault>
+    fn notify<T: Notification>(&mut self, params: T::Params) -> Result<(), Fault>
     where
         T::Params: Serialize,
     {
-        self.lock()?.send(&Message::Notification{
+        self.lock()?.send(&Message::Notification {
             method: T::METHOD,
             params: serde_json::to_value(params)?,
         })
@@ -394,7 +393,8 @@ impl LspProcessor {
 
         if let Some(content) = self.read_content(length) {
             match serde_json::from_str::<Value>(&content) {
-                Ok(value) => if let Some(id) = value
+                Ok(value) => {
+                    if let Some(id) = value
                         .get("id")
                         .and_then(|id_value| serde_json::from_value(id_value.to_owned()).ok())
                     {
@@ -426,7 +426,8 @@ impl LspProcessor {
                     } else {
                         // Notification
                         None
-                    },
+                    }
+                }
                 Err(e) => {
                     warn!("failed to convert `{}` to json value: {}", content, e);
                     None

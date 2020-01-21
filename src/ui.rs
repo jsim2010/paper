@@ -74,13 +74,18 @@ pub enum Fault {
     Flush(#[source] io::Error),
 }
 
+/// An error in the user interface that is recoverable.
+///
+/// Until a glitch is resolved, certain functionality may not be properly completed.
 #[derive(Debug, Error)]
 pub(crate) enum Glitch {
     /// Config file watcher disconnected.
     #[error("config file watcher disconnected")]
     WatcherConnection,
+    /// Unable to read config file.
     #[error("unable to read config file: {0}")]
     ReadConfig(#[source] io::Error),
+    /// Unable to convert config file to Config.
     #[error("config file invalid format: {0}")]
     ConfigFormat(#[from] toml::de::Error),
 }
@@ -283,12 +288,10 @@ impl Terminal {
         } else if let Some(setting) = self.changed_settings.pop_front() {
             trace!("retrieved setting: `{:?}`", setting);
             Some(Input::Setting(setting))
+        } else if event::poll(Duration::from_secs(0)).map_err(Fault::Event)? {
+            Some(event::read().map_err(Fault::Event)?.into())
         } else {
-            if event::poll(Duration::from_secs(0)).map_err(Fault::Event)? {
-                Some(event::read().map_err(Fault::Event)?.into())
-            } else {
-                None
-            }
+            None
         })
     }
 }
@@ -598,6 +601,7 @@ impl From<Event> for Input {
     }
 }
 
+/// Returns the size of the terminal.
 fn get_terminal_size() -> Outcome<Size> {
     let (columns, rows) = terminal::size().map_err(Fault::TerminalSize)?;
 
