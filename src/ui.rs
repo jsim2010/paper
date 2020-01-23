@@ -16,7 +16,7 @@
 pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
-    crate::Arguments,
+    crate::{app::Movement, Arguments},
     clap::ArgMatches,
     core::{
         convert::{TryFrom, TryInto},
@@ -149,7 +149,18 @@ impl Terminal {
     /// Applies `change` to the output.
     pub(crate) fn apply(&mut self, change: Change) -> Outcome<()> {
         match change {
-            Change::Text { edits, is_wrapped } => {
+            Change::Text { edits, is_wrapped, movement } => {
+                if let Some(m) = movement {
+                    match m {
+                        Movement::Top => {
+                            self.first_line = 0;
+                        }
+                        Movement::Down => {
+                            self.first_line += u64::from(self.size.rows / 4);
+                        }
+                    }
+                }
+
                 for edit in edits {
                     let mut lines = edit
                         .new_text
@@ -211,6 +222,8 @@ impl Terminal {
                         }
                     }
                 }
+
+                queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(Fault::Command)?;
             }
             Change::Message(alert) => {
                 trace!("alert: {:?} {}", alert.typ, alert.message);
@@ -524,6 +537,8 @@ pub(crate) enum Change {
         edits: Vec<TextEdit>,
         /// Long lines are wrapped.
         is_wrapped: bool,
+        /// The change to first_line.
+        movement: Option<Movement>
     },
     /// Message will be displayed to the user.
     Message(ShowMessageParams),

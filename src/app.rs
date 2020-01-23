@@ -159,6 +159,7 @@ impl Sheet {
                     Ok(self.doc.as_ref().map(|doc| Change::Text {
                         edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
                         is_wrapped,
+                        movement: None,
                     }))
                 }
             }
@@ -193,6 +194,13 @@ impl Sheet {
                     Ok(None)
                 }
             }
+            Operation::Move(movement) => {
+                Ok(self.doc.as_ref().map(|doc| Change::Text {
+                    edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
+                    is_wrapped: self.is_wrapped,
+                    movement: Some(movement),
+                }))
+            }
         }
     }
 
@@ -226,6 +234,7 @@ impl Sheet {
                 Ok(Some(Change::Text {
                     edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
                     is_wrapped: self.is_wrapped,
+                    movement: Some(Movement::Top),
                 }))
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
@@ -295,6 +304,12 @@ pub(crate) enum Command {
     Open,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Movement {
+    Top,
+    Down,
+}
+
 /// Signifies errors associated with [`Document`].
 #[derive(Debug, Error)]
 enum DocumentError {
@@ -341,6 +356,7 @@ pub(crate) enum Operation {
     Collect(char),
     /// Executes the current command.
     Execute,
+    Move(Movement),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
