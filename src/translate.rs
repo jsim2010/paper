@@ -1,7 +1,7 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
     crate::{
-        app::{Command, ConfirmAction, Operation},
+        app::{Command, ConfirmAction, Movement, Operation},
         ui::{Input, Key},
     },
     core::fmt::Debug,
@@ -59,6 +59,7 @@ impl Default for Interpreter {
 }
 
 /// Signifies the mode of the application.
+#[allow(clippy::unreachable)] // unreachable added by derive(Enum).
 #[derive(Copy, Clone, Debug, Enum, Eq, ParseDisplay, PartialEq, Hash)]
 #[display(style = "CamelCase")]
 pub(crate) enum Mode {
@@ -126,6 +127,46 @@ impl ViewInterpreter {
     const fn new() -> Self {
         Self {}
     }
+
+    /// Converts `output` appropriate to `key`.
+    fn decode_key(key: Key, output: &mut Output) {
+        match key {
+            Key::Esc => {
+                output.add_op(Operation::Reset);
+            }
+            Key::Char('q') => {
+                output.add_op(Operation::Confirm(ConfirmAction::Quit));
+                output.set_mode(Mode::Confirm);
+            }
+            Key::Char('o') => {
+                output.add_op(Operation::StartCommand(Command::Open));
+                output.set_mode(Mode::Collect);
+            }
+            Key::Char('j') => {
+                output.add_op(Operation::Move(Movement::Down));
+            }
+            Key::Char('k') => {
+                output.add_op(Operation::Move(Movement::Up));
+            }
+            Key::Backspace
+            | Key::Enter
+            | Key::Left
+            | Key::Right
+            | Key::Up
+            | Key::Down
+            | Key::Home
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown
+            | Key::Tab
+            | Key::BackTab
+            | Key::Delete
+            | Key::Insert
+            | Key::F(..)
+            | Key::Null
+            | Key::Char(..) => {}
+        }
+    }
 }
 
 impl ModeInterpreter for ViewInterpreter {
@@ -136,22 +177,8 @@ impl ModeInterpreter for ViewInterpreter {
             Input::Setting(config) => {
                 output.add_op(Operation::UpdateConfig(config));
             }
-            Input::Key { key: Key::Esc, .. } => {
-                output.add_op(Operation::Reset);
-            }
-            Input::Key {
-                key: Key::Char('q'),
-                ..
-            } => {
-                output.add_op(Operation::Confirm(ConfirmAction::Quit));
-                output.set_mode(Mode::Confirm);
-            }
-            Input::Key {
-                key: Key::Char('o'),
-                ..
-            } => {
-                output.add_op(Operation::StartCommand(Command::Open));
-                output.set_mode(Mode::Collect);
+            Input::Key { key, .. } => {
+                Self::decode_key(key, &mut output);
             }
             Input::Glitch(fault) => {
                 output.add_op(Operation::Alert(ShowMessageParams {
@@ -159,7 +186,7 @@ impl ModeInterpreter for ViewInterpreter {
                     message: format!("{}", fault),
                 }));
             }
-            Input::Key { .. } | Input::Mouse | Input::Resize { .. } => {}
+            Input::Mouse | Input::Resize { .. } => {}
         }
 
         output
@@ -290,6 +317,24 @@ mod test {
             assert_eq!(
                 INTERPRETER.decode(key_input(Key::Char('o'))),
                 output(Operation::StartCommand(Command::Open), Mode::Collect)
+            );
+        }
+
+        /// The 'j' key shall scroll the document down.
+        #[test]
+        fn scroll_down() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('j'))),
+                keep_mode(Operation::Move(Movement::Down))
+            );
+        }
+
+        /// The 'k' key shall scroll the document up.
+        #[test]
+        fn scroll_up() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('k'))),
+                keep_mode(Operation::Move(Movement::Up))
             );
         }
     }

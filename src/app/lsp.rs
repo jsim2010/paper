@@ -12,8 +12,9 @@ use {
         TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
     },
     serde::{
+        de::DeserializeOwned,
         ser::SerializeStruct,
-        {Deserialize, Serialize, Serializer},
+        {Serialize, Serializer},
     },
     serde_json::error::Error as SerdeJsonError,
     std::{
@@ -247,7 +248,6 @@ impl LspTransmitter {
     }
 
     /// Sends `request` to the lsp server and waits for the response.
-    #[allow(single_use_lifetimes)] // 'de is needed to compile.
     fn request<T: lsp_types::request::Request>(
         &mut self,
         params: T::Params,
@@ -255,7 +255,7 @@ impl LspTransmitter {
     ) -> Result<T::Result, Fault>
     where
         T::Params: Serialize,
-        for<'de> T::Result: Deserialize<'de>,
+        T::Result: DeserializeOwned,
     {
         let mut transmitter = self.lock()?;
         let current_id = transmitter.id;
@@ -488,7 +488,6 @@ impl Drop for LspProcessor {
 }
 
 /// Signifies an LSP message.
-#[allow(dead_code)] // Bug in lint thinks Notification is never constructed.
 enum Message {
     /// A notification.
     Notification {
