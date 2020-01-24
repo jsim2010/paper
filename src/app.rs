@@ -9,10 +9,7 @@ use {
     log::{error, trace},
     logging::LogConfig,
     lsp::LspServer,
-    lsp_types::{
-        MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
-        TextDocumentItem, TextEdit,
-    },
+    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextDocumentItem},
     parse_display::Display as ParseDisplay,
     std::{
         collections::{hash_map::Entry, HashMap},
@@ -24,18 +21,6 @@ use {
     },
     thiserror::Error,
     url::{ParseError, Url},
-};
-
-/// Defines a [`Range`] covering the entire document.
-const ENTIRE_DOCUMENT: Range = Range {
-    start: Position {
-        line: 0,
-        character: 0,
-    },
-    end: Position {
-        line: u64::max_value(),
-        character: u64::max_value(),
-    },
 };
 
 /// Configures the initialization of `paper`.
@@ -60,6 +45,7 @@ pub struct Arguments {
 impl TryFrom<ArgMatches<'_>> for Arguments {
     type Error = Fault;
 
+    #[inline]
     fn try_from(value: ArgMatches<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
             file: value.value_of("file").map(str::to_string),
@@ -138,7 +124,7 @@ impl Sheet {
     }
 
     /// Performs `operation` and returns the appropriate [`Change`]s.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Fault> {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change<'_>>, Fault> {
         match operation {
             Operation::Reset => {
                 self.input.clear();
@@ -157,8 +143,9 @@ impl Sheet {
                 } else {
                     self.is_wrapped = is_wrapped;
                     Ok(self.doc.as_ref().map(|doc| Change::Text {
-                        edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
+                        lines: doc.text.lines(),
                         is_wrapped,
+                        movement: None,
                     }))
                 }
             }
@@ -193,11 +180,16 @@ impl Sheet {
                     Ok(None)
                 }
             }
+            Operation::Move(movement) => Ok(self.doc.as_ref().map(|doc| Change::Text {
+                lines: doc.text.lines(),
+                is_wrapped: self.is_wrapped,
+                movement: Some(movement),
+            })),
         }
     }
 
     /// Opens `file` as a [`Document`].
-    fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
+    fn open_file(&mut self, file: String) -> Result<Option<Change<'_>>, Fault> {
         match self.get_document(file) {
             Ok(doc) => {
                 if let Some(old_doc) = &self.doc {
@@ -222,10 +214,12 @@ impl Sheet {
                     lsp_server.did_open(&doc)?;
                 }
 
-                self.doc = Some(doc.clone());
-                Ok(Some(Change::Text {
-                    edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
+                self.doc = Some(doc);
+
+                Ok(self.doc.as_ref().map(|doc| Change::Text {
+                    lines: doc.text.lines(),
                     is_wrapped: self.is_wrapped,
+                    movement: Some(Movement::Top),
                 }))
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
@@ -295,6 +289,17 @@ pub(crate) enum Command {
     Open,
 }
 
+/// A movement to the display of the document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Movement {
+    /// Moves document so that the first line is displayed at the top of the screen.
+    Top,
+    /// Moves document down by a scroll amount.
+    Down,
+    /// Moves document up by a scroll amount.
+    Up,
+}
+
 /// Signifies errors associated with [`Document`].
 #[derive(Debug, Error)]
 enum DocumentError {
@@ -313,6 +318,7 @@ enum DocumentError {
 }
 
 impl From<DocumentError> for ShowMessageParams {
+    #[inline]
     #[must_use]
     fn from(value: DocumentError) -> Self {
         Self {
@@ -341,6 +347,8 @@ pub(crate) enum Operation {
     Collect(char),
     /// Executes the current command.
     Execute,
+    /// Moves the display of the document.
+    Move(Movement),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
@@ -357,6 +365,7 @@ impl fmt::Display for ConfirmAction {
 }
 
 impl From<ConfirmAction> for ShowMessageRequestParams {
+    #[inline]
     #[must_use]
     fn from(value: ConfirmAction) -> Self {
         Self {

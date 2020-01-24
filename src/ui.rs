@@ -16,11 +16,12 @@
 pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
-    crate::Arguments,
+    crate::{app::Movement, Arguments},
     clap::ArgMatches,
     core::{
         convert::{TryFrom, TryInto},
         fmt::{self, Debug},
+        str::Lines,
         time::Duration,
     },
     crossterm::{
@@ -32,11 +33,12 @@ use {
         ErrorKind,
     },
     log::{trace, warn, LevelFilter},
-    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
+    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     notify::{DebouncedEvent, RecommendedWatcher, Watcher},
     serde::Deserialize,
     starship::{context::Context, print},
     std::{
+        cmp,
         collections::VecDeque,
         fs,
         io::{self, Stdout, Write},
@@ -147,70 +149,71 @@ impl Terminal {
     }
 
     /// Applies `change` to the output.
-    pub(crate) fn apply(&mut self, change: Change) -> Outcome<()> {
+    pub(crate) fn apply(&mut self, change: Change<'_>) -> Outcome<()> {
         match change {
-            Change::Text { edits, is_wrapped } => {
-                for edit in edits {
-                    let mut lines = edit
-                        .new_text
-                        .lines()
-                        .skip(
-                            self.first_line
-                                .saturating_sub(edit.range.start.line)
-                                .try_into()
-                                .unwrap_or(usize::max_value()),
-                        )
-                        .take(
-                            edit.range
-                                .end
-                                .line
-                                .saturating_sub(edit.range.start.line)
-                                .try_into()
-                                .unwrap_or(usize::max_value()),
-                        )
-                        .collect::<Vec<&str>>()
-                        .into_iter();
-                    let mut row = edit
-                        .range
-                        .start
-                        .line
-                        .saturating_sub(self.first_line)
-                        .try_into()
-                        .unwrap_or(u16::max_value());
-
-                    while row < self.size.rows {
-                        if let Some(mut line) = lines.next() {
-                            let mut last_row = row;
-
-                            if is_wrapped {
-                                last_row = last_row.saturating_add(
-                                    u16::try_from(
-                                        line.len()
-                                            .saturating_sub(1)
-                                            .wrapping_div(usize::from(self.size.columns)),
-                                    )
-                                    .unwrap_or(u16::max_value()),
-                                );
-                            }
-
-                            for r in row..=last_row {
-                                let printed_line = if line.len() > self.size.columns.into() {
-                                    let split = line.split_at(self.size.columns.into());
-                                    line = split.1;
-                                    split.0
-                                } else {
-                                    line
-                                };
-
-                                self.grid.replace_line(r, printed_line)?;
-                            }
-
-                            row = last_row.saturating_add(1);
-                        } else {
-                            break;
+            Change::Text {
+                lines,
+                is_wrapped,
+                movement,
+            } => {
+                if let Some(m) = movement {
+                    match m {
+                        Movement::Top => {
+                            self.first_line = 0;
+                        }
+                        Movement::Down => {
+                            self.first_line = cmp::min(
+                                self.first_line.saturating_add(self.scroll_amount()),
+                                u64::try_from(lines.clone().count().saturating_sub(1))
+                                    .unwrap_or(u64::max_value()),
+                            );
+                        }
+                        Movement::Up => {
+                            self.first_line = self.first_line.saturating_sub(self.scroll_amount());
                         }
                     }
                 }
+
+                let mut lines = lines
+                    .skip(self.first_line.try_into().unwrap_or(usize::max_value()))
+                    .collect::<Vec<&str>>()
+                    .into_iter();
+                let mut row = 0;
+
+                while row < self.size.rows {
+                    if let Some(mut line) = lines.next() {
+                        let mut last_row = row;
+
+                        if is_wrapped {
+                            last_row = last_row.saturating_add(
+                                u16::try_from(
+                                    line.len()
+                                        .saturating_sub(1)
+                                        .wrapping_div(usize::from(self.size.columns)),
+                                )
+                                .unwrap_or(u16::max_value()),
+                            );
+                        }
+
+                        for r in row..=last_row {
+                            let printed_line = if line.len() > self.size.columns.into() {
+                                let split = line.split_at(self.size.columns.into());
+                                line = split.1;
+                                split.0
+                            } else {
+                                line
+                            };
+
+                            self.grid.replace_line(r, printed_line)?;
+                        }
+
+                        row = last_row.saturating_add(1);
+                    } else {
+                        break;
+                    }
+                }
+
+                queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(Fault::Command)?;
             }
             Change::Message(alert) => {
                 trace!("alert: {:?} {}", alert.typ, alert.message);
@@ -293,6 +296,11 @@ impl Terminal {
         } else {
             None
         })
+    }
+
+    /// Returns the amount by which to scroll.
+    fn scroll_amount(&self) -> u64 {
+        u64::from(self.size.rows.wrapping_div(4))
     }
 }
 
@@ -516,14 +524,16 @@ def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 /// Signifies a potential modification to the output of the user interface.
 ///
 /// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Change {
+#[derive(Clone, Debug)]
+pub(crate) enum Change<'a> {
     /// Text of the current document or how it was displayed was modified.
     Text {
-        /// Text that was modified.
-        edits: Vec<TextEdit>,
+        /// The lines of the document.
+        lines: Lines<'a>,
         /// Long lines are wrapped.
         is_wrapped: bool,
+        /// The change to first_line.
+        movement: Option<Movement>,
     },
     /// Message will be displayed to the user.
     Message(ShowMessageParams),
@@ -565,7 +575,7 @@ pub(crate) struct Size {
 #[derive(Debug)]
 pub(crate) enum Input {
     /// Signifies a new terminal size.
-    #[allow(dead_code)] // This lint has an error.
+    #[allow(dead_code)] // False positive.
     Resize {
         /// The new number of rows.
         rows: u16,
@@ -575,7 +585,7 @@ pub(crate) enum Input {
     /// Signifies a mouse action.
     Mouse,
     /// Signifies a key being pressed.
-    #[allow(dead_code)] // This lint has an error.
+    #[allow(dead_code)] // False positive.
     Key {
         /// The `key` that was pressed.
         key: Key,
