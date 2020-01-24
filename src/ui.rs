@@ -16,16 +16,17 @@
 pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
-    crate::{app::Movement, Arguments},
+    crate::Arguments,
     clap::ArgMatches,
     core::{
+        iter,
         convert::{TryFrom, TryInto},
         fmt::{self, Debug},
         str::Lines,
         time::Duration,
     },
     crossterm::{
-        cursor::{MoveTo, RestorePosition, SavePosition},
+        cursor::{MoveTo, RestorePosition, SavePosition, Hide},
         event::{self, Event},
         execute, queue,
         style::{Color, Print, ResetColor, SetBackgroundColor},
@@ -33,12 +34,11 @@ use {
         ErrorKind,
     },
     log::{trace, warn, LevelFilter},
-    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
+    lsp_types::{Position, MessageType, ShowMessageParams, ShowMessageRequestParams},
     notify::{DebouncedEvent, RecommendedWatcher, Watcher},
     serde::Deserialize,
     starship::{context::Context, print},
     std::{
-        cmp,
         collections::VecDeque,
         fs,
         io::{self, Stdout, Write},
@@ -144,7 +144,7 @@ impl Terminal {
         }
 
         // Store all previous terminal output.
-        execute!(term.out, EnterAlternateScreen).map_err(Fault::Command)?;
+        execute!(term.out, EnterAlternateScreen, Hide).map_err(Fault::Command)?;
         Ok(term)
     }
 
@@ -154,31 +154,56 @@ impl Terminal {
             Change::Text {
                 lines,
                 is_wrapped,
-                movement,
+                cursor_position
             } => {
-                if let Some(m) = movement {
-                    match m {
-                        Movement::Top => {
-                            self.first_line = 0;
+                if cursor_position.line < self.first_line {
+                    self.first_line = cursor_position.line;
+                }
+                
+                let mut row_line_mapping: Vec<usize> = lines.clone()
+                    .enumerate()
+                    .skip(self.first_line.try_into().unwrap_or(usize::max_value()))
+                    .flat_map(|(index, line)| {
+                        let mut row_count: usize = 1;
+
+                        if is_wrapped {
+                            row_count = row_count.saturating_add(line.len().saturating_sub(1).wrapping_div(usize::from(self.size.columns)));
                         }
-                        Movement::Down => {
-                            self.first_line = cmp::min(
-                                self.first_line.saturating_add(self.scroll_amount()),
-                                u64::try_from(lines.clone().count().saturating_sub(1))
-                                    .unwrap_or(u64::max_value()),
-                            );
+
+                        iter::repeat(index).take(row_count)
+                }).collect();
+
+                loop {
+                    if let Some(first_line_past_bottom) = row_line_mapping.get(usize::from(self.size.rows)) {
+                        if *first_line_past_bottom > usize::try_from(cursor_position.line).unwrap_or(usize::max_value()) {
+                            break;
+                        } else {
+                            let line = row_line_mapping.remove(0);
+                            self.first_line = self.first_line.wrapping_add(1);
+
+                            loop {
+                                if let Some(row_line) = row_line_mapping.get(0) {
+                                    if *row_line == line {
+                                        let _ = row_line_mapping.remove(0);
+                                    } else {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
                         }
-                        Movement::Up => {
-                            self.first_line = self.first_line.saturating_sub(self.scroll_amount());
-                        }
+                    } else {
+                        break;
                     }
                 }
 
                 let mut lines = lines
                     .skip(self.first_line.try_into().unwrap_or(usize::max_value()))
-                    .collect::<Vec<&str>>()
-                    .into_iter();
+                    .take(usize::from(self.size.rows));
                 let mut row = 0;
+                let cursor_line_from_top = cursor_position.line.checked_sub(self.first_line);
+                let mut line_count = 0;
 
                 while row < self.size.rows {
                     if let Some(mut line) = lines.next() {
@@ -204,10 +229,11 @@ impl Terminal {
                                 line
                             };
 
-                            self.grid.replace_line(r, printed_line)?;
+                            self.grid.replace_line(r, printed_line, if let Some(line_from_top) = cursor_line_from_top {line_count == line_from_top} else {false})?;
                         }
 
                         row = last_row.saturating_add(1);
+                        line_count = line_count.saturating_add(1);
                     } else {
                         break;
                     }
@@ -297,11 +323,6 @@ impl Terminal {
             None
         })
     }
-
-    /// Returns the amount by which to scroll.
-    fn scroll_amount(&self) -> u64 {
-        u64::from(self.size.rows.wrapping_div(4))
-    }
 }
 
 impl Debug for Terminal {
@@ -363,12 +384,12 @@ impl Grid {
     }
 
     /// Replaces line in grid at `index` with `new_line`.
-    fn replace_line(&mut self, index: u16, new_line: &str) -> Outcome<()> {
+    fn replace_line(&mut self, index: u16, new_line: &str, is_cursor_line: bool) -> Outcome<()> {
         if let Some(line) = self.lines.get_mut(usize::from(index)) {
             line.replace_range(.., new_line);
         }
 
-        self.print(index, new_line, None)?;
+        self.print(index, new_line, if is_cursor_line {Some(Color::DarkGrey)} else {None})?;
         Ok(())
     }
 
@@ -376,7 +397,12 @@ impl Grid {
     fn add_alert(&mut self, message: &str, context: MessageType) -> Outcome<()> {
         trace!("lines {:?}", message.lines().next());
         for line in message.lines() {
-            self.print(self.alert_line_count, line, Some(context))?;
+            self.print(self.alert_line_count, line, Some(match context {
+                MessageType::Error => Color::Red,
+                MessageType::Warning => Color::Yellow,
+                MessageType::Info => Color::Blue,
+                MessageType::Log => Color::DarkCyan,
+            }))?;
             self.alert_line_count = self.alert_line_count.saturating_add(1);
         }
 
@@ -392,26 +418,21 @@ impl Grid {
     }
 
     /// Prints `s` at `row` of the grid.
-    fn print(&mut self, row: u16, s: &str, context: Option<MessageType>) -> Outcome<()> {
+    fn print(&mut self, row: u16, s: &str, background_color: Option<Color>) -> Outcome<()> {
         // Add 1 to account for header.
         queue!(self.out, MoveTo(0, row.saturating_add(1))).map_err(Fault::Command)?;
 
-        if let Some(t) = context {
+        if let Some(color) = background_color {
             queue!(
                 self.out,
-                SetBackgroundColor(match t {
-                    MessageType::Error => Color::Red,
-                    MessageType::Warning => Color::Yellow,
-                    MessageType::Info => Color::Blue,
-                    MessageType::Log => Color::DarkCyan,
-                })
+                SetBackgroundColor(color)
             )
             .map_err(Fault::Command)?;
         }
 
         queue!(self.out, Print(s), Clear(ClearType::UntilNewLine)).map_err(Fault::Command)?;
 
-        if context.is_some() {
+        if background_color.is_some() {
             queue!(self.out, ResetColor).map_err(Fault::Command)?;
         }
 
@@ -532,8 +553,8 @@ pub(crate) enum Change<'a> {
         lines: Lines<'a>,
         /// Long lines are wrapped.
         is_wrapped: bool,
-        /// The change to first_line.
-        movement: Option<Movement>,
+        /// The cursor position.
+        cursor_position: Position,
     },
     /// Message will be displayed to the user.
     Message(ShowMessageParams),
