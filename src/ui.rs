@@ -567,7 +567,7 @@ pub(crate) struct Size {
 #[derive(Debug)]
 pub(crate) enum Input {
     /// Signifies a new terminal size.
-    #[allow(dead_code)] // This lint has an error.
+    #[allow(dead_code)] // False positive.
     Resize {
         /// The new number of rows.
         rows: u16,
@@ -577,7 +577,7 @@ pub(crate) enum Input {
     /// Signifies a mouse action.
     Mouse,
     /// Signifies a key being pressed.
-    #[allow(dead_code)] // This lint has an error.
+    #[allow(dead_code)] // False positive.
     Key {
         /// The `key` that was pressed.
         key: Key,

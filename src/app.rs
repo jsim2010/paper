@@ -48,6 +48,7 @@ pub struct Arguments {
 impl TryFrom<ArgMatches<'_>> for Arguments {
     type Error = Fault;
 
+    #[inline]
     fn try_from(value: ArgMatches<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
             file: value.value_of("file").map(str::to_string),
@@ -220,15 +221,12 @@ impl Sheet {
 
                 self.doc = Some(doc);
                 
-                if let Some(doc) = &self.doc {
-                    Ok(Some(Change::Text {
+                Ok(self.doc.as_ref().map(|doc|
+                                Change::Text {
                         lines: doc.text.lines(),
                         is_wrapped: self.is_wrapped,
                         movement: Some(Movement::Top),
                     }))
-                } else {
-                    unreachable!();
-                }
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
         }
@@ -326,6 +324,7 @@ enum DocumentError {
 }
 
 impl From<DocumentError> for ShowMessageParams {
+    #[inline]
     #[must_use]
     fn from(value: DocumentError) -> Self {
         Self {
@@ -372,6 +371,7 @@ impl fmt::Display for ConfirmAction {
 }
 
 impl From<ConfirmAction> for ShowMessageRequestParams {
+    #[inline]
     #[must_use]
     fn from(value: ConfirmAction) -> Self {
         Self {

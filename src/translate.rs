@@ -59,6 +59,7 @@ impl Default for Interpreter {
 }
 
 /// Signifies the mode of the application.
+#[allow(clippy::unreachable)] // unreachable added by derive(Enum).
 #[derive(Copy, Clone, Debug, Enum, Eq, ParseDisplay, PartialEq, Hash)]
 #[display(style = "CamelCase")]
 pub(crate) enum Mode {

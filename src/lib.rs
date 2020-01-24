@@ -47,9 +47,7 @@
     clippy::restriction
 )]
 #![allow(
-    clippy::fallible_impl_from, // Not always valid; issues should be detected by tests or other lints.
-    clippy::implicit_return, // Goes against rust convention and requires return calls in places it is not helpful (e.g. closures).
-    clippy::large_enum_variant, // Seems to be the same as variant_size_differences.
+    clippy::implicit_return, // Goes against rust convention.
     clippy::suspicious_arithmetic_impl, // Not always valid; issues should be detected by tests or other lints.
     clippy::suspicious_op_assign_impl, // Not always valid; issues should be detected by tests or other lints.
     box_pointers, // Generally okay.
@@ -60,7 +58,7 @@
     clippy::missing_inline_in_public_items, // Flags methods in derived traits.
     clippy::multiple_crate_versions, // Requires redox_users update to avoid multiple versions of rand_core.
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
-    clippy::unreachable, // Added by derive(Enum).
+    clippy::unreachable, // unreachable added by derive(Enum).
     clippy::use_debug, // Flags debug formatting in Debug trait.
 )]
 
@@ -107,6 +105,7 @@ impl Paper {
     /// If any error is encountered during creation, a [`Failure`] will be returned.
     ///
     /// [`Failure`]: struct.Failure.html
+    #[inline]
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
             sheet: Sheet::new(&arguments)?,
