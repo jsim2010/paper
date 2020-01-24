@@ -127,7 +127,8 @@ impl ViewInterpreter {
         Self {}
     }
 
-    fn decode_key(&self, key: Key, output: &mut Output) {
+    /// Converts `output` appropriate to `key`.
+    fn decode_key(key: Key, output: &mut Output) {
         match key {
             Key::Esc => {
                 output.add_op(Operation::Reset);
@@ -143,7 +144,10 @@ impl ViewInterpreter {
             Key::Char('j') => {
                 output.add_op(Operation::Move(Movement::Down));
             }
-            _ => {}
+            Key::Char('k') => {
+                output.add_op(Operation::Move(Movement::Up));
+            }
+            Key::Backspace | Key::Enter | Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End | Key::PageUp | Key::PageDown | Key::Tab | Key::BackTab | Key::Delete | Key::Insert | Key::F(..) | Key::Null | Key::Char(..)=> {}
         }
     }
 }
@@ -157,7 +161,7 @@ impl ModeInterpreter for ViewInterpreter {
                 output.add_op(Operation::UpdateConfig(config));
             }
             Input::Key { key, ..} => {
-                self.decode_key(key, &mut output);
+                Self::decode_key(key, &mut output);
             }
             Input::Glitch(fault) => {
                 output.add_op(Operation::Alert(ShowMessageParams {
@@ -305,6 +309,15 @@ mod test {
             assert_eq!(
                 INTERPRETER.decode(key_input(Key::Char('j'))),
                 keep_mode(Operation::Move(Movement::Down))
+            );
+        }
+
+        /// The 'k' key shall scroll the document up.
+        #[test]
+        fn scroll_up() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('k'))),
+                keep_mode(Operation::Move(Movement::Up))
             );
         }
     }

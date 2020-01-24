@@ -10,8 +10,8 @@ use {
     logging::LogConfig,
     lsp::LspServer,
     lsp_types::{
-        MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
-        TextDocumentItem, TextEdit,
+        MessageType, ShowMessageParams, ShowMessageRequestParams,
+        TextDocumentItem,
     },
     parse_display::Display as ParseDisplay,
     std::{
@@ -24,18 +24,6 @@ use {
     },
     thiserror::Error,
     url::{ParseError, Url},
-};
-
-/// Defines a [`Range`] covering the entire document.
-const ENTIRE_DOCUMENT: Range = Range {
-    start: Position {
-        line: 0,
-        character: 0,
-    },
-    end: Position {
-        line: u64::max_value(),
-        character: u64::max_value(),
-    },
 };
 
 /// Configures the initialization of `paper`.
@@ -138,7 +126,7 @@ impl Sheet {
     }
 
     /// Performs `operation` and returns the appropriate [`Change`]s.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Fault> {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change<'_>>, Fault> {
         match operation {
             Operation::Reset => {
                 self.input.clear();
@@ -157,7 +145,7 @@ impl Sheet {
                 } else {
                     self.is_wrapped = is_wrapped;
                     Ok(self.doc.as_ref().map(|doc| Change::Text {
-                        edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
+                        lines: doc.text.lines(),
                         is_wrapped,
                         movement: None,
                     }))
@@ -196,7 +184,7 @@ impl Sheet {
             }
             Operation::Move(movement) => {
                 Ok(self.doc.as_ref().map(|doc| Change::Text {
-                    edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text.clone())],
+                    lines: doc.text.lines(),
                     is_wrapped: self.is_wrapped,
                     movement: Some(movement),
                 }))
@@ -205,7 +193,7 @@ impl Sheet {
     }
 
     /// Opens `file` as a [`Document`].
-    fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
+    fn open_file(&mut self, file: String) -> Result<Option<Change<'_>>, Fault> {
         match self.get_document(file) {
             Ok(doc) => {
                 if let Some(old_doc) = &self.doc {
@@ -230,12 +218,17 @@ impl Sheet {
                     lsp_server.did_open(&doc)?;
                 }
 
-                self.doc = Some(doc.clone());
-                Ok(Some(Change::Text {
-                    edits: vec![TextEdit::new(ENTIRE_DOCUMENT, doc.text)],
-                    is_wrapped: self.is_wrapped,
-                    movement: Some(Movement::Top),
-                }))
+                self.doc = Some(doc);
+                
+                if let Some(doc) = &self.doc {
+                    Ok(Some(Change::Text {
+                        lines: doc.text.lines(),
+                        is_wrapped: self.is_wrapped,
+                        movement: Some(Movement::Top),
+                    }))
+                } else {
+                    unreachable!();
+                }
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
         }
@@ -304,10 +297,15 @@ pub(crate) enum Command {
     Open,
 }
 
+/// A movement to the display of the document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Movement {
+    /// Moves document so that the first line is displayed at the top of the screen.
     Top,
+    /// Moves document down by a scroll amount.
     Down,
+    /// Moves document up by a scroll amount.
+    Up,
 }
 
 /// Signifies errors associated with [`Document`].
@@ -356,6 +354,7 @@ pub(crate) enum Operation {
     Collect(char),
     /// Executes the current command.
     Execute,
+    /// Moves the display of the document.
     Move(Movement),
 }
 
