@@ -9,10 +9,7 @@ use {
     log::{error, trace},
     logging::LogConfig,
     lsp::LspServer,
-    lsp_types::{
-        MessageType, ShowMessageParams, ShowMessageRequestParams,
-        TextDocumentItem,
-    },
+    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextDocumentItem},
     parse_display::Display as ParseDisplay,
     std::{
         collections::{hash_map::Entry, HashMap},
@@ -183,13 +180,11 @@ impl Sheet {
                     Ok(None)
                 }
             }
-            Operation::Move(movement) => {
-                Ok(self.doc.as_ref().map(|doc| Change::Text {
-                    lines: doc.text.lines(),
-                    is_wrapped: self.is_wrapped,
-                    movement: Some(movement),
-                }))
-            }
+            Operation::Move(movement) => Ok(self.doc.as_ref().map(|doc| Change::Text {
+                lines: doc.text.lines(),
+                is_wrapped: self.is_wrapped,
+                movement: Some(movement),
+            })),
         }
     }
 
@@ -220,13 +215,12 @@ impl Sheet {
                 }
 
                 self.doc = Some(doc);
-                
-                Ok(self.doc.as_ref().map(|doc|
-                                Change::Text {
-                        lines: doc.text.lines(),
-                        is_wrapped: self.is_wrapped,
-                        movement: Some(Movement::Top),
-                    }))
+
+                Ok(self.doc.as_ref().map(|doc| Change::Text {
+                    lines: doc.text.lines(),
+                    is_wrapped: self.is_wrapped,
+                    movement: Some(Movement::Top),
+                }))
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
         }

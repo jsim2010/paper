@@ -12,8 +12,8 @@ use {
         TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
     },
     serde::{
-        ser::SerializeStruct,
         de::DeserializeOwned,
+        ser::SerializeStruct,
         {Serialize, Serializer},
     },
     serde_json::error::Error as SerdeJsonError,

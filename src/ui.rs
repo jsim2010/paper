@@ -21,8 +21,8 @@ use {
     core::{
         convert::{TryFrom, TryInto},
         fmt::{self, Debug},
-        time::Duration,
         str::Lines,
+        time::Duration,
     },
     crossterm::{
         cursor::{MoveTo, RestorePosition, SavePosition},
@@ -151,14 +151,22 @@ impl Terminal {
     /// Applies `change` to the output.
     pub(crate) fn apply(&mut self, change: Change<'_>) -> Outcome<()> {
         match change {
-            Change::Text { lines, is_wrapped, movement } => {
+            Change::Text {
+                lines,
+                is_wrapped,
+                movement,
+            } => {
                 if let Some(m) = movement {
                     match m {
                         Movement::Top => {
                             self.first_line = 0;
                         }
                         Movement::Down => {
-                            self.first_line = cmp::min(self.first_line.saturating_add(self.scroll_amount()), u64::try_from(lines.clone().count().saturating_sub(1)).unwrap_or(u64::max_value()));
+                            self.first_line = cmp::min(
+                                self.first_line.saturating_add(self.scroll_amount()),
+                                u64::try_from(lines.clone().count().saturating_sub(1))
+                                    .unwrap_or(u64::max_value()),
+                            );
                         }
                         Movement::Up => {
                             self.first_line = self.first_line.saturating_sub(self.scroll_amount());
@@ -525,7 +533,7 @@ pub(crate) enum Change<'a> {
         /// Long lines are wrapped.
         is_wrapped: bool,
         /// The change to first_line.
-        movement: Option<Movement>
+        movement: Option<Movement>,
     },
     /// Message will be displayed to the user.
     Message(ShowMessageParams),

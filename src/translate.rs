@@ -1,7 +1,7 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
     crate::{
-        app::{Movement, Command, ConfirmAction, Operation},
+        app::{Command, ConfirmAction, Movement, Operation},
         ui::{Input, Key},
     },
     core::fmt::Debug,
@@ -148,7 +148,23 @@ impl ViewInterpreter {
             Key::Char('k') => {
                 output.add_op(Operation::Move(Movement::Up));
             }
-            Key::Backspace | Key::Enter | Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End | Key::PageUp | Key::PageDown | Key::Tab | Key::BackTab | Key::Delete | Key::Insert | Key::F(..) | Key::Null | Key::Char(..)=> {}
+            Key::Backspace
+            | Key::Enter
+            | Key::Left
+            | Key::Right
+            | Key::Up
+            | Key::Down
+            | Key::Home
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown
+            | Key::Tab
+            | Key::BackTab
+            | Key::Delete
+            | Key::Insert
+            | Key::F(..)
+            | Key::Null
+            | Key::Char(..) => {}
         }
     }
 }
@@ -161,7 +177,7 @@ impl ModeInterpreter for ViewInterpreter {
             Input::Setting(config) => {
                 output.add_op(Operation::UpdateConfig(config));
             }
-            Input::Key { key, ..} => {
+            Input::Key { key, .. } => {
                 Self::decode_key(key, &mut output);
             }
             Input::Glitch(fault) => {
