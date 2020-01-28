@@ -25,6 +25,6 @@ To see all available recipes for development, run:
 just --list
 ```
 
-Note that `just v` is run by the status check required for merging pull requests.
+Note that `just v` is run by the **validate** status check required for merging pull requests.
 
 License: MIT

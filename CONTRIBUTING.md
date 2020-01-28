@@ -22,7 +22,7 @@ As many source code style conventions as possible shall be tested via lints or t
 
 In addition, source code should adhere to the following recommendations which (unfortunately) cannot be automatically tested:
 - Regular comments (i.e. not documentation comments) should only be used when they would assist a reasonably knowledgable reader in understanding why a section of code was written in its current form. A "reasonably knowledge reader" is a reader who has a solid understanding of the Rust language and a basic idea of how the program operates.
-- Lints should be allowed sparingly and only after careful consideration (which must be described in a comment following the `allow` attribute). Lints may be allowed under the following conditions:
+- Lints should be allowed sparingly and only after careful consideration. The rationale for allowing the lint must be described in a comment following the attribute. Lints may be allowed under the following conditions:
     + When a lint is not desired for any part of the project, it should be allowed at the beginning of `src/lib.rs`.
     + When the risks of allowing a lint are understood but they are acceptable or desired for the given context, the `allow` attribute for that lint should be added to the appropriate section of code. Code where a lint is allowed should be as consise as possible to avoid other cases of the lint being allowed unintentionally.
 - The [Rust API Guidelines Checklist](https://rust-lang-nursery.github.io/api-guidelines/checklist.html) should be followed.

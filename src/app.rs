@@ -228,6 +228,7 @@ impl Sheet {
                     cursor_position: self.cursor_position,
                 }))
             }
+            Operation::Delete => Ok(None),
         }
     }
 
@@ -400,6 +401,7 @@ pub(crate) enum Operation {
     Execute,
     /// Moves the cursor.
     Move(Movement),
+    Delete,
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
