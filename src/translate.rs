@@ -143,10 +143,16 @@ impl ViewInterpreter {
                 output.set_mode(Mode::Collect);
             }
             Key::Char('j') => {
-                output.add_op(Operation::Move(Movement::Down));
+                output.add_op(Operation::Move(Movement::SingleDown));
             }
             Key::Char('k') => {
-                output.add_op(Operation::Move(Movement::Up));
+                output.add_op(Operation::Move(Movement::SingleUp));
+            }
+            Key::Char('J') => {
+                output.add_op(Operation::Move(Movement::HalfDown));
+            }
+            Key::Char('K') => {
+                output.add_op(Operation::Move(Movement::HalfUp));
             }
             Key::Backspace
             | Key::Enter
@@ -320,21 +326,39 @@ mod test {
             );
         }
 
-        /// The 'j' key shall scroll the document down.
+        /// The 'j' key shall move the cursor down.
         #[test]
-        fn scroll_down() {
+        fn move_down() {
             assert_eq!(
                 INTERPRETER.decode(key_input(Key::Char('j'))),
-                keep_mode(Operation::Move(Movement::Down))
+                keep_mode(Operation::Move(Movement::SingleDown))
             );
         }
 
-        /// The 'k' key shall scroll the document up.
+        /// The 'k' key shall move the cursor up.
+        #[test]
+        fn move_up() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('k'))),
+                keep_mode(Operation::Move(Movement::SingleUp))
+            );
+        }
+
+        /// The 'J' key shall scroll the document down.
+        #[test]
+        fn scroll_down() {
+            assert_eq!(
+                INTERPRETER.decode(key_input(Key::Char('J'))),
+                keep_mode(Operation::Move(Movement::HalfDown))
+            );
+        }
+
+        /// The 'K' key shall scroll the document up.
         #[test]
         fn scroll_up() {
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('k'))),
-                keep_mode(Operation::Move(Movement::Up))
+                INTERPRETER.decode(key_input(Key::Char('K'))),
+                keep_mode(Operation::Move(Movement::HalfUp))
             );
         }
     }

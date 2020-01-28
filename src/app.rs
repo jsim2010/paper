@@ -3,15 +3,18 @@ pub mod logging;
 pub mod lsp;
 
 use {
-    crate::ui::{Change, Setting},
+    crate::ui::{Change, Setting, Size},
     clap::ArgMatches,
     core::convert::TryFrom,
     log::{error, trace},
     logging::LogConfig,
     lsp::LspServer,
-    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextDocumentItem},
+    lsp_types::{
+        MessageType, Position, ShowMessageParams, ShowMessageRequestParams, TextDocumentItem,
+    },
     parse_display::Display as ParseDisplay,
     std::{
+        cmp,
         collections::{hash_map::Entry, HashMap},
         env,
         ffi::OsStr,
@@ -105,6 +108,10 @@ pub(crate) struct Sheet {
     command: Option<Command>,
     /// The working directory of the application.
     working_dir: Url,
+    /// The position of the cursor.
+    cursor_position: Position,
+    /// The size of the user interface.
+    ui_size: Size,
 }
 
 impl Sheet {
@@ -120,6 +127,8 @@ impl Sheet {
             working_dir: Url::from_directory_path(arguments.working_dir.clone()).map_err(|_| {
                 WorkingDirFault::Path(arguments.working_dir.to_string_lossy().to_string())
             })?,
+            cursor_position: Position::new(0, 0),
+            ui_size: Size::default(),
         })
     }
 
@@ -145,11 +154,14 @@ impl Sheet {
                     Ok(self.doc.as_ref().map(|doc| Change::Text {
                         lines: doc.text.lines(),
                         is_wrapped,
-                        movement: None,
+                        cursor_position: self.cursor_position,
                     }))
                 }
             }
-            Operation::UpdateConfig(Setting::Size(size)) => Ok(Some(Change::Size(size))),
+            Operation::UpdateConfig(Setting::Size(size)) => {
+                self.ui_size = size.clone();
+                Ok(Some(Change::Size(size)))
+            }
             Operation::UpdateConfig(Setting::StarshipLog(log_level)) => {
                 trace!("updating starship log level to `{}`", log_level);
 
@@ -180,12 +192,48 @@ impl Sheet {
                     Ok(None)
                 }
             }
-            Operation::Move(movement) => Ok(self.doc.as_ref().map(|doc| Change::Text {
-                lines: doc.text.lines(),
-                is_wrapped: self.is_wrapped,
-                movement: Some(movement),
-            })),
+            Operation::Move(movement) => {
+                match movement {
+                    Movement::SingleDown => {
+                        self.cursor_position.line = self.cursor_position.line.saturating_add(1);
+                    }
+                    Movement::SingleUp => {
+                        self.cursor_position.line = self.cursor_position.line.saturating_sub(1);
+                    }
+                    Movement::HalfDown => {
+                        self.cursor_position.line = cmp::min(
+                            self.cursor_position
+                                .line
+                                .saturating_add(self.scroll_value()),
+                            u64::try_from(
+                                self.doc
+                                    .as_ref()
+                                    .map_or(0, |doc| doc.text.lines().count())
+                                    .saturating_sub(1),
+                            )
+                            .unwrap_or(u64::max_value()),
+                        );
+                    }
+                    Movement::HalfUp => {
+                        self.cursor_position.line = self
+                            .cursor_position
+                            .line
+                            .saturating_sub(self.scroll_value());
+                    }
+                };
+
+                Ok(self.doc.as_ref().map(|doc| Change::Text {
+                    lines: doc.text.lines(),
+                    is_wrapped: self.is_wrapped,
+                    cursor_position: self.cursor_position,
+                }))
+            }
         }
+    }
+
+    /// Returns the amount to move for scrolling.
+    fn scroll_value(&self) -> u64 {
+        u64::from(self.ui_size.rows.wrapping_div(3))
     }
 
     /// Opens `file` as a [`Document`].
@@ -215,11 +263,12 @@ impl Sheet {
                 }
 
                 self.doc = Some(doc);
+                self.cursor_position.line = 0;
 
                 Ok(self.doc.as_ref().map(|doc| Change::Text {
                     lines: doc.text.lines(),
                     is_wrapped: self.is_wrapped,
-                    movement: Some(Movement::Top),
+                    cursor_position: self.cursor_position,
                 }))
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
@@ -289,15 +338,17 @@ pub(crate) enum Command {
     Open,
 }
 
-/// A movement to the display of the document.
+/// A movement to the cursor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Movement {
-    /// Moves document so that the first line is displayed at the top of the screen.
-    Top,
-    /// Moves document down by a scroll amount.
-    Down,
-    /// Moves document up by a scroll amount.
-    Up,
+    /// Moves cursor down by a single line.
+    SingleDown,
+    /// Moves cursor up by a single line.
+    SingleUp,
+    /// Moves cursor down close to half the height.
+    HalfDown,
+    /// Moves cursor up close to half the height.
+    HalfUp,
 }
 
 /// Signifies errors associated with [`Document`].
@@ -347,7 +398,7 @@ pub(crate) enum Operation {
     Collect(char),
     /// Executes the current command.
     Execute,
-    /// Moves the display of the document.
+    /// Moves the cursor.
     Move(Movement),
 }
 
