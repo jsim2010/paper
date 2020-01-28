@@ -19,14 +19,14 @@ use {
     crate::Arguments,
     clap::ArgMatches,
     core::{
-        iter,
         convert::{TryFrom, TryInto},
         fmt::{self, Debug},
+        iter,
         str::Lines,
         time::Duration,
     },
     crossterm::{
-        cursor::{MoveTo, RestorePosition, SavePosition, Hide},
+        cursor::{Hide, MoveTo, RestorePosition, SavePosition},
         event::{self, Event},
         execute, queue,
         style::{Color, Print, ResetColor, SetBackgroundColor},
@@ -34,7 +34,7 @@ use {
         ErrorKind,
     },
     log::{trace, warn, LevelFilter},
-    lsp_types::{Position, MessageType, ShowMessageParams, ShowMessageRequestParams},
+    lsp_types::{MessageType, Position, ShowMessageParams, ShowMessageRequestParams},
     notify::{DebouncedEvent, RecommendedWatcher, Watcher},
     serde::Deserialize,
     starship::{context::Context, print},
@@ -107,7 +107,7 @@ pub(crate) struct Terminal {
     /// The size of the terminal.
     size: Size,
     /// The index of the first line of the document that may be displayed.
-    first_line: u64,
+    top_line: u64,
     /// Notifies `self` of any events to the config file.
     watcher: ConfigWatcher,
     /// The working directory of the application.
@@ -128,7 +128,7 @@ impl Terminal {
             changed_settings: VecDeque::default(),
             glitches: Vec::default(),
             size: Size::default(),
-            first_line: 0,
+            top_line: 0,
             watcher,
             config: Config::default(),
             working_dir: arguments.working_dir.clone(),
@@ -148,61 +148,67 @@ impl Terminal {
         Ok(term)
     }
 
+    /// Corrects the top line to ensure the cursor is displayed.
+    fn adjust_for_cursor(&mut self, cursor_line: u64, lines: &Lines<'_>, is_wrapped: bool) {
+        if cursor_line < self.top_line {
+            self.top_line = cursor_line;
+        } else {
+            let mut line_mappings: Vec<usize> = lines
+                .clone()
+                .enumerate()
+                .skip(self.top_line.try_into().unwrap_or(usize::max_value()))
+                .flat_map(|(index, line)| {
+                    let mut row_count: usize = 1;
+
+                    if is_wrapped {
+                        row_count = row_count.saturating_add(
+                            line.len()
+                                .saturating_sub(1)
+                                .wrapping_div(usize::from(self.size.columns)),
+                        );
+                    }
+
+                    iter::repeat(index).take(row_count)
+                })
+                .collect();
+
+            while let Some(first_line_past_bottom) = line_mappings.get(usize::from(self.size.rows))
+            {
+                if usize::try_from(cursor_line).unwrap_or(usize::max_value())
+                    < *first_line_past_bottom
+                {
+                    break;
+                } else {
+                    let line = line_mappings.remove(0);
+                    self.top_line = self.top_line.saturating_add(1);
+
+                    while let Some(row_line) = line_mappings.get(0) {
+                        if *row_line == line {
+                            let _ = line_mappings.remove(0);
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Applies `change` to the output.
     pub(crate) fn apply(&mut self, change: Change<'_>) -> Outcome<()> {
         match change {
             Change::Text {
                 lines,
                 is_wrapped,
-                cursor_position
+                cursor_position,
             } => {
-                if cursor_position.line < self.first_line {
-                    self.first_line = cursor_position.line;
-                }
-                
-                let mut row_line_mapping: Vec<usize> = lines.clone()
-                    .enumerate()
-                    .skip(self.first_line.try_into().unwrap_or(usize::max_value()))
-                    .flat_map(|(index, line)| {
-                        let mut row_count: usize = 1;
-
-                        if is_wrapped {
-                            row_count = row_count.saturating_add(line.len().saturating_sub(1).wrapping_div(usize::from(self.size.columns)));
-                        }
-
-                        iter::repeat(index).take(row_count)
-                }).collect();
-
-                loop {
-                    if let Some(first_line_past_bottom) = row_line_mapping.get(usize::from(self.size.rows)) {
-                        if *first_line_past_bottom > usize::try_from(cursor_position.line).unwrap_or(usize::max_value()) {
-                            break;
-                        } else {
-                            let line = row_line_mapping.remove(0);
-                            self.first_line = self.first_line.wrapping_add(1);
-
-                            loop {
-                                if let Some(row_line) = row_line_mapping.get(0) {
-                                    if *row_line == line {
-                                        let _ = row_line_mapping.remove(0);
-                                    } else {
-                                        break;
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        break;
-                    }
-                }
+                self.adjust_for_cursor(cursor_position.line, &lines, is_wrapped);
 
                 let mut lines = lines
-                    .skip(self.first_line.try_into().unwrap_or(usize::max_value()))
+                    .skip(self.top_line.try_into().unwrap_or(usize::max_value()))
                     .take(usize::from(self.size.rows));
                 let mut row = 0;
-                let cursor_line_from_top = cursor_position.line.checked_sub(self.first_line);
+                let cursor_line_from_top = cursor_position.line.checked_sub(self.top_line);
                 let mut line_count = 0;
 
                 while row < self.size.rows {
@@ -229,7 +235,15 @@ impl Terminal {
                                 line
                             };
 
-                            self.grid.replace_line(r, printed_line, if let Some(line_from_top) = cursor_line_from_top {line_count == line_from_top} else {false})?;
+                            self.grid.replace_line(
+                                r,
+                                printed_line,
+                                if let Some(line_from_top) = cursor_line_from_top {
+                                    line_count == line_from_top
+                                } else {
+                                    false
+                                },
+                            )?;
                         }
 
                         row = last_row.saturating_add(1);
@@ -389,7 +403,15 @@ impl Grid {
             line.replace_range(.., new_line);
         }
 
-        self.print(index, new_line, if is_cursor_line {Some(Color::DarkGrey)} else {None})?;
+        self.print(
+            index,
+            new_line,
+            if is_cursor_line {
+                Some(Color::DarkGrey)
+            } else {
+                None
+            },
+        )?;
         Ok(())
     }
 
@@ -397,12 +419,16 @@ impl Grid {
     fn add_alert(&mut self, message: &str, context: MessageType) -> Outcome<()> {
         trace!("lines {:?}", message.lines().next());
         for line in message.lines() {
-            self.print(self.alert_line_count, line, Some(match context {
-                MessageType::Error => Color::Red,
-                MessageType::Warning => Color::Yellow,
-                MessageType::Info => Color::Blue,
-                MessageType::Log => Color::DarkCyan,
-            }))?;
+            self.print(
+                self.alert_line_count,
+                line,
+                Some(match context {
+                    MessageType::Error => Color::Red,
+                    MessageType::Warning => Color::Yellow,
+                    MessageType::Info => Color::Blue,
+                    MessageType::Log => Color::DarkCyan,
+                }),
+            )?;
             self.alert_line_count = self.alert_line_count.saturating_add(1);
         }
 
@@ -423,11 +449,7 @@ impl Grid {
         queue!(self.out, MoveTo(0, row.saturating_add(1))).map_err(Fault::Command)?;
 
         if let Some(color) = background_color {
-            queue!(
-                self.out,
-                SetBackgroundColor(color)
-            )
-            .map_err(Fault::Command)?;
+            queue!(self.out, SetBackgroundColor(color)).map_err(Fault::Command)?;
         }
 
         queue!(self.out, Print(s), Clear(ClearType::UntilNewLine)).map_err(Fault::Command)?;

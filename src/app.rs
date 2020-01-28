@@ -9,7 +9,9 @@ use {
     log::{error, trace},
     logging::LogConfig,
     lsp::LspServer,
-    lsp_types::{Position, MessageType, ShowMessageParams, ShowMessageRequestParams, TextDocumentItem},
+    lsp_types::{
+        MessageType, Position, ShowMessageParams, ShowMessageRequestParams, TextDocumentItem,
+    },
     parse_display::Display as ParseDisplay,
     std::{
         cmp,
@@ -108,6 +110,7 @@ pub(crate) struct Sheet {
     working_dir: Url,
     /// The position of the cursor.
     cursor_position: Position,
+    /// The size of the user interface.
     ui_size: Size,
 }
 
@@ -198,20 +201,39 @@ impl Sheet {
                         self.cursor_position.line = self.cursor_position.line.saturating_sub(1);
                     }
                     Movement::HalfDown => {
-                        self.cursor_position.line = cmp::min(self.cursor_position.line.saturating_add(u64::from(self.ui_size.rows / 3)), u64::try_from(self.doc.as_ref().map(|doc| doc.text.lines().count()).unwrap_or(0).saturating_sub(1)).unwrap_or(u64::max_value()));
+                        self.cursor_position.line = cmp::min(
+                            self.cursor_position
+                                .line
+                                .saturating_add(self.scroll_value()),
+                            u64::try_from(
+                                self.doc
+                                    .as_ref()
+                                    .map_or(0, |doc| doc.text.lines().count())
+                                    .saturating_sub(1),
+                            )
+                            .unwrap_or(u64::max_value()),
+                        );
                     }
                     Movement::HalfUp => {
-                        self.cursor_position.line = self.cursor_position.line.saturating_sub(u64::from(self.ui_size.rows / 3));
+                        self.cursor_position.line = self
+                            .cursor_position
+                            .line
+                            .saturating_sub(self.scroll_value());
                     }
                 };
 
                 Ok(self.doc.as_ref().map(|doc| Change::Text {
-                lines: doc.text.lines(),
-                is_wrapped: self.is_wrapped,
-                cursor_position: self.cursor_position,
-            }))
+                    lines: doc.text.lines(),
+                    is_wrapped: self.is_wrapped,
+                    cursor_position: self.cursor_position,
+                }))
             }
         }
+    }
+
+    /// Returns the amount to move for scrolling.
+    fn scroll_value(&self) -> u64 {
+        u64::from(self.ui_size.rows.wrapping_div(3))
     }
 
     /// Opens `file` as a [`Document`].
