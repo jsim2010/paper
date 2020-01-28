@@ -184,7 +184,7 @@ impl ModeInterpreter for ViewInterpreter {
 
         match input {
             Input::Setting(config) => {
-                output.add_op(Operation::UpdateConfig(config));
+                output.add_op(Operation::UpdateSetting(config));
             }
             Input::Key { key, .. } => {
                 Self::decode_key(key, &mut output);

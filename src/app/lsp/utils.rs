@@ -1,10 +1,8 @@
 //! Implements language server utilities.
 use {
-    lsp_types::{
-        notification::Notification,
-        request::RegisterCapability,
-    },
-    log::{trace, warn, error},
+    jsonrpc_core::{Id, Value, Version},
+    log::{error, trace, warn},
+    lsp_types::{notification::Notification, request::RegisterCapability},
     serde::{
         de::DeserializeOwned,
         ser::SerializeStruct,
@@ -12,19 +10,22 @@ use {
     },
     serde_json::error::Error as SerdeJsonError,
     std::{
-        thread,
         fmt,
-        io::{self, Write, BufReader, BufRead, Read},
-        sync::{mpsc::{self, Receiver, Sender}, Arc, Mutex, MutexGuard},
-        process::{ChildStderr, ChildStdout, ChildStdin},
+        io::{self, BufRead, BufReader, Read, Write},
+        process::{ChildStderr, ChildStdin, ChildStdout},
+        sync::{
+            mpsc::{self, Receiver, Sender},
+            Arc, Mutex, MutexGuard,
+        },
+        thread,
     },
-    jsonrpc_core::{Id, Value, Version},
     thiserror::Error,
 };
 
 /// The header field name that maps to the length of the content.
 static HEADER_CONTENT_LENGTH: &str = "Content-Length";
 
+/// An error from which a language server utility was unable to recover.
 #[derive(Debug, Error)]
 pub enum Fault {
     /// An error while receiving data over a channel.

@@ -5,13 +5,14 @@ use {
     log::warn,
     lsp_types::{
         notification::{
-            DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized, DidChangeTextDocument
+            DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
         },
         request::{Initialize, Shutdown},
-        TextEdit, TextDocumentContentChangeEvent, VersionedTextDocumentIdentifier, DidChangeTextDocumentParams,
-        ClientCapabilities, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-        InitializeParams, InitializeResult, InitializedParams, TextDocumentIdentifier,
-        TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+        ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+        DidOpenTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
+        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+        TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+        VersionedTextDocumentIdentifier,
     },
     std::{
         io,
@@ -102,7 +103,12 @@ impl LspServer {
         Ok(())
     }
 
-    pub(crate) fn did_change(&mut self, text_document: &TextDocumentItem, edit: TextEdit) -> Result<(), Fault> {
+    /// Sends the didChange notification, if appropriate.
+    pub(crate) fn did_change(
+        &mut self,
+        text_document: &TextDocumentItem,
+        edit: TextEdit,
+    ) -> Result<(), Fault> {
         if let Some(content_changes) = match self.settings.notify_changes_kind {
             TextDocumentSyncKind::None => None,
             TextDocumentSyncKind::Full => Some(vec![TextDocumentContentChangeEvent {
@@ -116,10 +122,14 @@ impl LspServer {
                 text: edit.new_text,
             }]),
         } {
-            self.transmitter.notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
-                text_document: VersionedTextDocumentIdentifier::new(text_document.uri.clone(), text_document.version),
-                content_changes,
-            })?;
+            self.transmitter
+                .notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
+                    text_document: VersionedTextDocumentIdentifier::new(
+                        text_document.uri.clone(),
+                        text_document.version,
+                    ),
+                    content_changes,
+                })?;
         }
 
         Ok(())
@@ -215,6 +225,7 @@ impl ServerProcess {
 struct LspSettings {
     /// The client should send open and close notifications.
     notify_open_close: bool,
+    /// How the client should send change notifications.
     notify_changes_kind: TextDocumentSyncKind,
 }
 

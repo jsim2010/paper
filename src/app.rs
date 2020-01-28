@@ -5,12 +5,13 @@ pub mod lsp;
 use {
     crate::ui::{Change, Setting, Size},
     clap::ArgMatches,
-    core::convert::TryFrom,
+    core::{convert::TryFrom, ops::{RangeBounds, Bound}},
     log::{error, trace},
     logging::LogConfig,
     lsp::LspServer,
     lsp_types::{
-        TextEdit, Range, MessageType, Position, ShowMessageParams, ShowMessageRequestParams, TextDocumentItem,
+        MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
+        TextDocumentItem, TextEdit,
     },
     parse_display::Display as ParseDisplay,
     std::{
@@ -108,8 +109,8 @@ pub(crate) struct Sheet {
     command: Option<Command>,
     /// The working directory of the application.
     working_dir: Url,
-    /// The position of the cursor.
-    cursor_position: Position,
+    /// The current user selection.
+    cursor: Selection,
     /// The size of the user interface.
     ui_size: Size,
 }
@@ -127,7 +128,7 @@ impl Sheet {
             working_dir: Url::from_directory_path(arguments.working_dir.clone()).map_err(|_| {
                 WorkingDirFault::Path(arguments.working_dir.to_string_lossy().to_string())
             })?,
-            cursor_position: Position::new(0, 0),
+            cursor: Selection::default(),
             ui_size: Size::default(),
         })
     }
@@ -142,35 +143,8 @@ impl Sheet {
             Operation::Confirm(action) => Ok(Some(Change::Question(
                 ShowMessageRequestParams::from(action),
             ))),
-            Operation::Quit => {
-                unreachable!("attempted to execute `Quit` operation");
-            }
-            Operation::UpdateConfig(Setting::File(file)) => self.open_file(file),
-            Operation::UpdateConfig(Setting::Wrap(is_wrapped)) => {
-                if self.is_wrapped == is_wrapped {
-                    Ok(None)
-                } else {
-                    self.is_wrapped = is_wrapped;
-                    Ok(self.doc.as_ref().map(|doc| Change::Text {
-                        lines: doc.text.lines(),
-                        is_wrapped,
-                        cursor_position: self.cursor_position,
-                    }))
-                }
-            }
-            Operation::UpdateConfig(Setting::Size(size)) => {
-                self.ui_size = size.clone();
-                Ok(Some(Change::Size(size)))
-            }
-            Operation::UpdateConfig(Setting::StarshipLog(log_level)) => {
-                trace!("updating starship log level to `{}`", log_level);
-
-                if let Some(log_config) = &self.log_config {
-                    log_config.writer()?.starship_level = log_level;
-                }
-
-                Ok(None)
-            }
+            Operation::Quit => Ok(None),
+            Operation::UpdateSetting(setting) => self.update_setting(setting),
             Operation::Alert(alert) => Ok(Some(Change::Message(alert))),
             Operation::StartCommand(command) => {
                 let prompt = command.to_string();
@@ -195,51 +169,74 @@ impl Sheet {
             Operation::Move(movement) => {
                 match movement {
                     Movement::SingleDown => {
-                        self.cursor_position.line = self.cursor_position.line.saturating_add(1);
+                        self.cursor.move_down(1, self.line_count());
                     }
                     Movement::SingleUp => {
-                        self.cursor_position.line = self.cursor_position.line.saturating_sub(1);
+                        self.cursor.move_up(1);
                     }
                     Movement::HalfDown => {
-                        self.cursor_position.line = cmp::min(
-                            self.cursor_position
-                                .line
-                                .saturating_add(self.scroll_value()),
-                            u64::try_from(
-                                self.doc
-                                    .as_ref()
-                                    .map_or(0, |doc| doc.text.lines().count())
-                                    .saturating_sub(1),
-                            )
-                            .unwrap_or(u64::max_value()),
+                        self.cursor.move_down(
+                            self.scroll_value(), 
+                            self.line_count()
                         );
                     }
                     Movement::HalfUp => {
-                        self.cursor_position.line = self
-                            .cursor_position
-                            .line
-                            .saturating_sub(self.scroll_value());
+                        self.cursor.move_up(self.scroll_value());
                     }
                 };
 
                 Ok(self.doc.as_ref().map(|doc| Change::Text {
                     lines: doc.text.lines(),
                     is_wrapped: self.is_wrapped,
-                    cursor_position: self.cursor_position,
+                    cursor_position: self.cursor.range.start,
                 }))
             }
             Operation::Delete => {
                 if let Some(doc) = &mut self.doc {
-                    doc.version += 1;
+                    doc.version = doc.version.wrapping_add(1);
                     let mut lines: Vec<&str> = doc.text.lines().collect();
-                    let line = usize::try_from(self.cursor_position.line).unwrap_or(usize::max_value());
-                    let edit = TextEdit::new(Range::new(Position::new(self.cursor_position.line, 0), Position::new(self.cursor_position.line + 1, 0)), lines.drain(line..line + 1).collect());
+                    let edit = TextEdit::new(
+                        self.cursor.range,
+                        lines.drain(self.cursor).collect(),
+                    );
                     doc.text = lines.join("\n");
 
                     if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.language_id.clone()) {
-                        lsp_server.did_change(&doc, edit)?;
+                        lsp_server.did_change(doc, edit)?;
                     }
                 };
+
+                Ok(None)
+            }
+        }
+    }
+
+    /// Updates `self` based on `setting`.
+    fn update_setting(&mut self, setting: Setting) -> Result<Option<Change<'_>>, Fault> {
+        match setting {
+            Setting::File(file) => self.open_file(file),
+            Setting::Wrap(is_wrapped) => {
+                if self.is_wrapped == is_wrapped {
+                    Ok(None)
+                } else {
+                    self.is_wrapped = is_wrapped;
+                    Ok(self.doc.as_ref().map(|doc| Change::Text {
+                        lines: doc.text.lines(),
+                        is_wrapped,
+                        cursor_position: self.cursor.range.start,
+                    }))
+                }
+            }
+            Setting::Size(size) => {
+                self.ui_size = size.clone();
+                Ok(Some(Change::Size(size)))
+            }
+            Setting::StarshipLog(log_level) => {
+                trace!("updating starship log level to `{}`", log_level);
+
+                if let Some(log_config) = &self.log_config {
+                    log_config.writer()?.starship_level = log_level;
+                }
 
                 Ok(None)
             }
@@ -249,6 +246,10 @@ impl Sheet {
     /// Returns the amount to move for scrolling.
     fn scroll_value(&self) -> u64 {
         u64::from(self.ui_size.rows.wrapping_div(3))
+    }
+
+    fn line_count(&self) -> u64 {
+        u64::try_from(self.doc.as_ref().map_or(0, |doc| doc.text.lines().count())).unwrap_or(u64::max_value())
     }
 
     /// Opens `file` as a [`Document`].
@@ -278,12 +279,12 @@ impl Sheet {
                 }
 
                 self.doc = Some(doc);
-                self.cursor_position.line = 0;
+                self.cursor = Selection::default();
 
                 Ok(self.doc.as_ref().map(|doc| Change::Text {
                     lines: doc.text.lines(),
                     is_wrapped: self.is_wrapped,
-                    cursor_position: self.cursor_position,
+                    cursor_position: self.cursor.range.start,
                 }))
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
@@ -345,6 +346,60 @@ impl Drop for Sheet {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Selection {
+    range: Range,
+    start_bound: usize,
+    end_bound: usize,
+}
+
+impl Selection {
+    fn move_down(&mut self, amount: u64, line_count: u64) {
+        let end_line = cmp::min(
+            self.range.end.line.saturating_add(amount),
+            line_count.saturating_sub(1)
+        );
+        self.set_start_bound(self.range.start.line.saturating_add(end_line.saturating_sub(self.range.end.line)));
+        self.set_end_bound(end_line);
+    }
+
+    fn move_up(&mut self, amount: u64) {
+        let start_line = self.range.start.line.saturating_sub(amount);
+        self.set_end_bound(self.range.end.line.saturating_sub(self.range.start.line.saturating_sub(start_line)));
+        self.set_start_bound(start_line);
+    }
+
+    fn set_start_bound(&mut self, value: u64) {
+        self.range.start.line = value;
+        self.start_bound = usize::try_from(value).unwrap_or(usize::max_value());
+    }
+
+    fn set_end_bound(&mut self, value: u64) {
+        self.range.end.line = value;
+        self.end_bound = usize::try_from(value).unwrap_or(usize::max_value());
+    }
+}
+
+impl Default for Selection {
+    fn default() -> Self {
+        Self {
+            range: Range::new(Position::new(0, 0), Position::new(1, 0)),
+            start_bound: 0,
+            end_bound: 0,
+        }
+    }
+}
+
+impl RangeBounds<usize> for Selection {
+    fn start_bound(&self) -> Bound<&usize> {
+        Bound::Included(&self.start_bound)
+    }
+
+    fn end_bound(&self) -> Bound<&usize> {
+        Bound::Excluded(&self.end_bound)
+    }
+}
+
 /// Signifies a command that a user can give to the application.
 #[derive(Debug, ParseDisplay, PartialEq)]
 pub(crate) enum Command {
@@ -403,8 +458,8 @@ pub(crate) enum Operation {
     Confirm(ConfirmAction),
     /// Quits the application.
     Quit,
-    /// Updates a configuration.
-    UpdateConfig(Setting),
+    /// Updates a setting.
+    UpdateSetting(Setting),
     /// Alerts the user with a message.
     Alert(ShowMessageParams),
     /// Open input box for a command.
@@ -415,6 +470,7 @@ pub(crate) enum Operation {
     Execute,
     /// Moves the cursor.
     Move(Movement),
+    /// Deletes the current selection.
     Delete,
 }
 
