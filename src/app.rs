@@ -10,7 +10,7 @@ use {
     logging::LogConfig,
     lsp::LspServer,
     lsp_types::{
-        MessageType, Position, ShowMessageParams, ShowMessageRequestParams, TextDocumentItem,
+        TextEdit, Range, MessageType, Position, ShowMessageParams, ShowMessageRequestParams, TextDocumentItem,
     },
     parse_display::Display as ParseDisplay,
     std::{
@@ -228,7 +228,21 @@ impl Sheet {
                     cursor_position: self.cursor_position,
                 }))
             }
-            Operation::Delete => Ok(None),
+            Operation::Delete => {
+                if let Some(doc) = &mut self.doc {
+                    doc.version += 1;
+                    let mut lines: Vec<&str> = doc.text.lines().collect();
+                    let line = usize::try_from(self.cursor_position.line).unwrap_or(usize::max_value());
+                    let edit = TextEdit::new(Range::new(Position::new(self.cursor_position.line, 0), Position::new(self.cursor_position.line + 1, 0)), lines.drain(line..line + 1).collect());
+                    doc.text = lines.join("\n");
+
+                    if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.language_id.clone()) {
+                        lsp_server.did_change(&doc, edit)?;
+                    }
+                };
+
+                Ok(None)
+            }
         }
     }
 
