@@ -5,7 +5,10 @@ pub mod lsp;
 use {
     crate::ui::{Change, Setting, Size},
     clap::ArgMatches,
-    core::{convert::TryFrom, ops::{RangeBounds, Bound}},
+    core::{
+        convert::TryFrom,
+        ops::{Bound, RangeBounds},
+    },
     log::{error, trace},
     logging::LogConfig,
     lsp::LspServer,
@@ -175,10 +178,8 @@ impl Sheet {
                         self.cursor.move_up(1);
                     }
                     Movement::HalfDown => {
-                        self.cursor.move_down(
-                            self.scroll_value(), 
-                            self.line_count()
-                        );
+                        self.cursor
+                            .move_down(self.scroll_value(), self.line_count());
                     }
                     Movement::HalfUp => {
                         self.cursor.move_up(self.scroll_value());
@@ -195,10 +196,7 @@ impl Sheet {
                 if let Some(doc) = &mut self.doc {
                     doc.version = doc.version.wrapping_add(1);
                     let mut lines: Vec<&str> = doc.text.lines().collect();
-                    let edit = TextEdit::new(
-                        self.cursor.range,
-                        lines.drain(self.cursor).collect(),
-                    );
+                    let edit = TextEdit::new(self.cursor.range, lines.drain(self.cursor).collect());
                     doc.text = lines.join("\n");
 
                     if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.language_id.clone()) {
@@ -206,7 +204,11 @@ impl Sheet {
                     }
                 };
 
-                Ok(None)
+                Ok(self.doc.as_ref().map(|doc| Change::Text {
+                    lines: doc.text.lines(),
+                    is_wrapped: self.is_wrapped,
+                    cursor_position: self.cursor.range.start,
+                }))
             }
         }
     }
@@ -248,8 +250,10 @@ impl Sheet {
         u64::from(self.ui_size.rows.wrapping_div(3))
     }
 
+    /// Returns the number of lines in the doc.
     fn line_count(&self) -> u64 {
-        u64::try_from(self.doc.as_ref().map_or(0, |doc| doc.text.lines().count())).unwrap_or(u64::max_value())
+        u64::try_from(self.doc.as_ref().map_or(0, |doc| doc.text.lines().count()))
+            .unwrap_or(u64::max_value())
     }
 
     /// Opens `file` as a [`Document`].
@@ -346,34 +350,52 @@ impl Drop for Sheet {
     }
 }
 
+/// Represents a user selection.
 #[derive(Clone, Copy, Debug)]
 struct Selection {
+    /// The text [`Range`] of the selection.
     range: Range,
+    /// The start bound, included.
     start_bound: usize,
+    /// The end bound, excluded.
     end_bound: usize,
 }
 
 impl Selection {
+    /// Moves `self` down by `amount` lines.
     fn move_down(&mut self, amount: u64, line_count: u64) {
         let end_line = cmp::min(
             self.range.end.line.saturating_add(amount),
-            line_count.saturating_sub(1)
+            line_count.saturating_sub(1),
         );
-        self.set_start_bound(self.range.start.line.saturating_add(end_line.saturating_sub(self.range.end.line)));
+        self.set_start_bound(
+            self.range
+                .start
+                .line
+                .saturating_add(end_line.saturating_sub(self.range.end.line)),
+        );
         self.set_end_bound(end_line);
     }
 
+    /// Moves `self` up by `amount` lines.
     fn move_up(&mut self, amount: u64) {
         let start_line = self.range.start.line.saturating_sub(amount);
-        self.set_end_bound(self.range.end.line.saturating_sub(self.range.start.line.saturating_sub(start_line)));
+        self.set_end_bound(
+            self.range
+                .end
+                .line
+                .saturating_sub(self.range.start.line.saturating_sub(start_line)),
+        );
         self.set_start_bound(start_line);
     }
 
+    /// Sets the start bound (included).
     fn set_start_bound(&mut self, value: u64) {
         self.range.start.line = value;
         self.start_bound = usize::try_from(value).unwrap_or(usize::max_value());
     }
 
+    /// Sets the end bound (excluded).
     fn set_end_bound(&mut self, value: u64) {
         self.range.end.line = value;
         self.end_bound = usize::try_from(value).unwrap_or(usize::max_value());

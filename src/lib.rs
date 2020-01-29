@@ -4,7 +4,7 @@
 //! 1) All functionality shall be able to be performed via the keys reachable from the home row. Where it makes sense, functionality may additionally be performed via the mouse and other keys.
 //! 2) All input shall be modal, i.e. keys shall implement different functionality depending on the current mode of the application.
 //! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the [Language Server Protocol].
-//! 4) Paper shall adapt to [rustfmt] and as many [clippy] lints as reasonably possible.
+//! 4) Paper shall follow [rustfmt] and as many [clippy] lints as reasonably possible.
 //!
 //! ## Upcoming
 //! - Text manipulation shall involve a 3-step process of identifying the location should occur, marking that location, and then performing the desired edit.
@@ -146,7 +146,6 @@ impl Paper {
             for operation in self.interpreter.translate(input) {
                 if let Operation::Quit = operation {
                     keep_running = false;
-                    break;
                 }
 
                 if let Some(change) = self.sheet.operate(operation)? {
