@@ -25,7 +25,9 @@ use {
 /// An error from which the language server was unable to recover.
 #[derive(Debug, Error)]
 pub enum Fault {
-    /// An error from which a language server utility was unable to recover.
+    /// An error from [`utils`].
+    ///
+    /// [`utils`]: utils/index.html
     #[error("{0}")]
     Util(#[from] utils::Fault),
     /// An error while accessing an IO of the language server process.

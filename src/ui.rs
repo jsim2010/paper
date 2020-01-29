@@ -16,13 +16,11 @@
 pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
-    crate::Arguments,
+    crate::{Arguments, app::Row},
     clap::ArgMatches,
     core::{
-        convert::{TryFrom, TryInto},
+        convert::TryFrom,
         fmt::{self, Debug},
-        iter,
-        str::Lines,
         time::Duration,
     },
     crossterm::{
@@ -148,109 +146,41 @@ impl Terminal {
         Ok(term)
     }
 
-    /// Corrects the top line to ensure the cursor is displayed.
-    fn adjust_for_cursor(&mut self, cursor_line: u64, lines: &Lines<'_>, is_wrapped: bool) {
-        if cursor_line < self.top_line {
-            self.top_line = cursor_line;
-        } else {
-            let mut line_mappings: Vec<usize> = lines
-                .clone()
-                .enumerate()
-                .skip(self.top_line.try_into().unwrap_or(usize::max_value()))
-                .flat_map(|(index, line)| {
-                    let mut row_count: usize = 1;
+    /// Applies `change` to the output.
+    pub(crate) fn apply(&mut self, change: Change) -> Outcome<()> {
+        match change {
+            Change::Text {
+                rows,
+                cursor_position,
+            } => {
+                if cursor_position.line < self.top_line {
+                    self.top_line = cursor_position.line;
+                }
 
-                    if is_wrapped {
-                        row_count = row_count.saturating_add(
-                            line.len()
-                                .saturating_sub(1)
-                                .wrapping_div(usize::from(self.size.columns)),
-                        );
-                    }
+                let mut visible_rows: Vec<Row> = rows.iter().filter(|row| row.line() >= self.top_line).cloned().collect();
 
-                    iter::repeat(index).take(row_count)
-                })
-                .collect();
+                while let Some(first_line_past_bottom) = visible_rows.get(usize::from(self.grid.height)).map(|row| row.line()) {
+                    if cursor_position.line < first_line_past_bottom {
+                        break;
+                    } else {
+                        let line = visible_rows.remove(0).line();
+                        self.top_line = self.top_line.saturating_add(1);
 
-            while let Some(first_line_past_bottom) = line_mappings.get(usize::from(self.size.rows))
-            {
-                if usize::try_from(cursor_line).unwrap_or(usize::max_value())
-                    < *first_line_past_bottom
-                {
-                    break;
-                } else {
-                    let line = line_mappings.remove(0);
-                    self.top_line = self.top_line.saturating_add(1);
-
-                    while let Some(row_line) = line_mappings.get(0) {
-                        if *row_line == line {
-                            let _ = line_mappings.remove(0);
-                        } else {
-                            break;
+                        while visible_rows.get(0).map(|row| row.line()) == Some(line) {
+                            let _ = visible_rows.remove(0);
                         }
                     }
                 }
-            }
-        }
-    }
 
-    /// Applies `change` to the output.
-    pub(crate) fn apply(&mut self, change: Change<'_>) -> Outcome<()> {
-        match change {
-            Change::Text {
-                lines,
-                is_wrapped,
-                cursor_position,
-            } => {
-                self.adjust_for_cursor(cursor_position.line, &lines, is_wrapped);
+                let top_line = self.top_line;
 
-                let mut lines = lines
-                    .skip(self.top_line.try_into().unwrap_or(usize::max_value()))
-                    .take(usize::from(self.size.rows));
-                let mut row = 0;
-                let cursor_line_from_top = cursor_position.line.checked_sub(self.top_line);
-                let mut line_count = 0;
-
-                while row < self.size.rows {
-                    if let Some(mut line) = lines.next() {
-                        let mut last_row = row;
-
-                        if is_wrapped {
-                            last_row = last_row.saturating_add(
-                                u16::try_from(
-                                    line.len()
-                                        .saturating_sub(1)
-                                        .wrapping_div(usize::from(self.size.columns)),
-                                )
-                                .unwrap_or(u16::max_value()),
-                            );
-                        }
-
-                        for r in row..=last_row {
-                            let printed_line = if line.len() > self.size.columns.into() {
-                                let split = line.split_at(self.size.columns.into());
-                                line = split.1;
-                                split.0
-                            } else {
-                                line
-                            };
-
-                            self.grid.replace_line(
-                                r,
-                                printed_line,
-                                if let Some(line_from_top) = cursor_line_from_top {
-                                    line_count == line_from_top
-                                } else {
-                                    false
-                                },
-                            )?;
-                        }
-
-                        row = last_row.saturating_add(1);
-                        line_count = line_count.saturating_add(1);
-                    } else {
-                        break;
-                    }
+                for (index, row) in rows.iter().filter(|row| row.line() >= top_line).enumerate().take(usize::from(self.size.rows - 1)) {
+                    //trace!("index {}, row {:?}", index, row);
+                    self.grid.replace_line(
+                        index,
+                        row.text(),
+                        row.line() == cursor_position.line,
+                    )?;
                 }
 
                 queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(Fault::Command)?;
@@ -398,13 +328,13 @@ impl Grid {
     }
 
     /// Replaces line in grid at `index` with `new_line`.
-    fn replace_line(&mut self, index: u16, new_line: &str, is_cursor_line: bool) -> Outcome<()> {
-        if let Some(line) = self.lines.get_mut(usize::from(index)) {
+    fn replace_line(&mut self, index: usize, new_line: &str, is_cursor_line: bool) -> Outcome<()> {
+        if let Some(line) = self.lines.get_mut(index) {
             line.replace_range(.., new_line);
         }
 
         self.print(
-            index,
+            u16::try_from(index).unwrap_or(u16::max_value()),
             new_line,
             if is_cursor_line {
                 Some(Color::DarkGrey)
@@ -568,13 +498,10 @@ def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 ///
 /// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
 #[derive(Clone, Debug)]
-pub(crate) enum Change<'a> {
+pub(crate) enum Change {
     /// Text of the current document or how it was displayed was modified.
     Text {
-        /// The lines of the document.
-        lines: Lines<'a>,
-        /// Long lines are wrapped.
-        is_wrapped: bool,
+        rows: Vec<Row>,
         /// The cursor position.
         cursor_position: Position,
     },

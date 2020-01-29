@@ -57,7 +57,7 @@ impl TryFrom<ArgMatches<'_>> for Arguments {
         Ok(Self {
             file: value.value_of("file").map(str::to_string),
             log_config: Some(LogConfig::new()?),
-            working_dir: env::current_dir().map_err(|e| Fault::WorkingDir(e.into()))?,
+            working_dir: env::current_dir().map_err(Fault::WorkingDir)?,
         })
     }
 }
@@ -77,29 +77,115 @@ pub enum Fault {
     Lsp(#[from] lsp::Fault),
     /// An error while determining the current working directory.
     #[error("while determining working directory: {0}")]
-    WorkingDir(#[from] WorkingDirFault),
+    WorkingDir(#[source] io::Error),
+    /// An error while converting a directory to a URL.
+    #[error("while converting `{0}` to a URL")]
+    Url(String),
+    /// An error occurred while parsing a URL.
+    #[error("while parsing URL: {0}")]
+    ParseUrl(#[from] ParseError),
 }
 
-/// An error while determining the working directory.
-#[derive(Debug, Error)]
-pub enum WorkingDirFault {
-    /// An io error.
-    #[error("{0}")]
-    Io(#[from] io::Error),
-    /// An error converting working directory to [`Url`].
-    ///
-    /// The argument is the working directory path.
-    ///
-    /// [`Url`]: ../../url/struct.Url.html
-    #[error("unable to convert path `{0}` to url")]
-    Path(String),
+#[derive(Clone, Debug)]
+pub(crate) struct Row {
+    line: u64,
+    text: String,
+}
+
+impl Row {
+    pub(crate) fn line(&self) -> u64 {
+        self.line
+    }
+
+    pub(crate) fn text(&self) -> &String {
+        &self.text
+    }
+}
+
+#[derive(Debug)]
+struct Document {
+    item: TextDocumentItem,
+    rows: Vec<Row>,
+}
+
+impl Document {
+    fn new(uri: Url, wrap_length: Option<u16>) -> Result<Self, DocumentError> {
+        let file_path = uri
+            .clone()
+            .to_file_path()
+            .map_err(|_| DocumentError::InvalidPath(uri.to_string()))?;
+
+        let language_id = match file_path.extension().and_then(OsStr::to_str) {
+            Some("rs") => "rust",
+            Some(x) => x,
+            None => "",
+        }
+        .to_string();
+        let text = fs::read_to_string(file_path).map_err(|error| match error.kind() {
+            ErrorKind::NotFound => DocumentError::NonExistantFile(uri.to_string()),
+            ErrorKind::PermissionDenied
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::AddrInUse
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::BrokenPipe
+            | ErrorKind::AlreadyExists
+            | ErrorKind::WouldBlock
+            | ErrorKind::InvalidInput
+            | ErrorKind::InvalidData
+            | ErrorKind::TimedOut
+            | ErrorKind::WriteZero
+            | ErrorKind::Interrupted
+            | ErrorKind::Other
+            | ErrorKind::UnexpectedEof
+            | _ => DocumentError::from(error),
+        })?;
+
+        let mut rows = Vec::new();
+
+        for (index, mut line) in text.lines().enumerate() {
+            let mut is_final = false;
+
+            loop {
+                let row_text = if let Some(length) = wrap_length.map(usize::from) {
+                    if line.len() > length {
+                        let split = line.split_at(length);
+                        line = split.1;
+                        split.0
+                    } else {
+                        is_final = true;
+                        line
+                    }
+                } else {
+                    is_final = true;
+                    line
+                };
+
+                rows.push(Row {
+                    line: u64::try_from(index).unwrap_or(u64::max_value()),
+                    text: row_text.to_string(),
+                });
+
+                if is_final {
+                    break;
+                }
+            }
+        }
+
+        Ok(Self {
+            item: TextDocumentItem::new(uri, language_id, 0, text),
+            rows,
+        })
+    }
 }
 
 /// Signifies the business logic of the application.
 #[derive(Debug)]
 pub(crate) struct Sheet {
     /// Signifies the document being viewed.
-    doc: Option<TextDocumentItem>,
+    doc: Option<Document>,
     /// The document wraps long lines.
     is_wrapped: bool,
     /// The [`LspServer`]s managed by this document.
@@ -115,7 +201,7 @@ pub(crate) struct Sheet {
     /// The current user selection.
     cursor: Selection,
     /// The size of the user interface.
-    ui_size: Size,
+    size: Size,
 }
 
 impl Sheet {
@@ -129,15 +215,15 @@ impl Sheet {
             log_config: arguments.log_config.clone(),
             command: None,
             working_dir: Url::from_directory_path(arguments.working_dir.clone()).map_err(|_| {
-                WorkingDirFault::Path(arguments.working_dir.to_string_lossy().to_string())
+                Fault::Url(arguments.working_dir.to_string_lossy().to_string())
             })?,
             cursor: Selection::default(),
-            ui_size: Size::default(),
+            size: Size::default(),
         })
     }
 
     /// Performs `operation` and returns the appropriate [`Change`]s.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change<'_>>, Fault> {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change>, Fault> {
         match operation {
             Operation::Reset => {
                 self.input.clear();
@@ -187,34 +273,49 @@ impl Sheet {
                 };
 
                 Ok(self.doc.as_ref().map(|doc| Change::Text {
-                    lines: doc.text.lines(),
-                    is_wrapped: self.is_wrapped,
                     cursor_position: self.cursor.range.start,
+                    rows: doc.rows.clone(),
                 }))
             }
             Operation::Delete => {
-                if let Some(doc) = &mut self.doc {
-                    doc.version = doc.version.wrapping_add(1);
-                    let mut lines: Vec<&str> = doc.text.lines().collect();
-                    let edit = TextEdit::new(self.cursor.range, lines.drain(self.cursor).collect());
-                    doc.text = lines.join("\n");
+                let cursor = self.cursor;
 
-                    if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.language_id.clone()) {
-                        lsp_server.did_change(doc, edit)?;
+                if let Some(doc) = &mut self.doc {
+                    doc.item.version = doc.item.version.wrapping_add(1);
+                    let mut lines: Vec<&str> = doc.item.text.lines().collect();
+                    let edit = TextEdit::new(self.cursor.range, lines.drain(self.cursor).collect());
+                    doc.item.text = lines.join("\n");
+                    let cursor_line_count = u64::try_from(cursor.end_bound - cursor.start_bound).unwrap_or(u64::max_value());
+                    doc.rows = doc.rows.iter().filter_map(|row| {
+                        let row_line = usize::try_from(row.line()).unwrap_or(usize::max_value());
+                        if cursor.contains(&row_line) {
+                            None
+                        } else {
+                            let mut new_row = row.clone();
+
+                            if row_line >= cursor.end_bound {
+                                new_row.line -= cursor_line_count;
+                            }
+
+                            Some(new_row)
+                        }
+                    }).collect();
+
+                    if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.item.language_id.clone()) {
+                        lsp_server.did_change(&doc.item, edit)?;
                     }
                 };
 
                 Ok(self.doc.as_ref().map(|doc| Change::Text {
-                    lines: doc.text.lines(),
-                    is_wrapped: self.is_wrapped,
                     cursor_position: self.cursor.range.start,
+                    rows: doc.rows.clone(),
                 }))
             }
         }
     }
 
     /// Updates `self` based on `setting`.
-    fn update_setting(&mut self, setting: Setting) -> Result<Option<Change<'_>>, Fault> {
+    fn update_setting(&mut self, setting: Setting) -> Result<Option<Change>, Fault> {
         match setting {
             Setting::File(file) => self.open_file(file),
             Setting::Wrap(is_wrapped) => {
@@ -223,14 +324,13 @@ impl Sheet {
                 } else {
                     self.is_wrapped = is_wrapped;
                     Ok(self.doc.as_ref().map(|doc| Change::Text {
-                        lines: doc.text.lines(),
-                        is_wrapped,
+                        rows: doc.rows.clone(),
                         cursor_position: self.cursor.range.start,
                     }))
                 }
             }
             Setting::Size(size) => {
-                self.ui_size = size.clone();
+                self.size = size.clone();
                 Ok(Some(Change::Size(size)))
             }
             Setting::StarshipLog(log_level) => {
@@ -247,99 +347,66 @@ impl Sheet {
 
     /// Returns the amount to move for scrolling.
     fn scroll_value(&self) -> u64 {
-        u64::from(self.ui_size.rows.wrapping_div(3))
+        u64::from(self.size.rows.wrapping_div(3))
     }
 
     /// Returns the number of lines in the doc.
     fn line_count(&self) -> u64 {
-        u64::try_from(self.doc.as_ref().map_or(0, |doc| doc.text.lines().count()))
+        u64::try_from(self.doc.as_ref().map_or(0, |doc| doc.item.text.lines().count()))
             .unwrap_or(u64::max_value())
     }
 
     /// Opens `file` as a [`Document`].
-    fn open_file(&mut self, file: String) -> Result<Option<Change<'_>>, Fault> {
-        match self.get_document(file) {
+    fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
+        let uri = self.working_dir.join(&file)?;
+
+        match Document::new(uri, if self.is_wrapped {Some(self.size.columns)} else {None}) {
             Ok(doc) => {
                 if let Some(old_doc) = &self.doc {
-                    if let Some(lsp_server) = self.lsp_servers.get_mut(&old_doc.language_id) {
-                        lsp_server.did_close(old_doc)?;
+                    if let Some(lsp_server) = self.lsp_servers.get_mut(&old_doc.item.language_id) {
+                        lsp_server.did_close(&old_doc.item)?;
                     }
                 }
 
-                let cmd = match doc.language_id.as_str() {
+                let cmd = match doc.item.language_id.as_str() {
                     "rust" => Some("rls"),
                     _ => None,
                 };
 
                 if let Some(process) = cmd {
-                    let lsp_server = match self.lsp_servers.entry(doc.language_id.clone()) {
+                    let lsp_server = match self.lsp_servers.entry(doc.item.language_id.clone()) {
                         Entry::Vacant(entry) => {
                             entry.insert(LspServer::new(process, &self.working_dir)?)
                         }
                         Entry::Occupied(entry) => entry.into_mut(),
                     };
 
-                    lsp_server.did_open(&doc)?;
+                    lsp_server.did_open(&doc.item)?;
+                }
+
+                self.cursor = Selection::default();
+
+                if !doc.item.text.is_empty() {
+                    self.cursor.set_end_bound(1);
                 }
 
                 self.doc = Some(doc);
-                self.cursor = Selection::default();
 
                 Ok(self.doc.as_ref().map(|doc| Change::Text {
-                    lines: doc.text.lines(),
-                    is_wrapped: self.is_wrapped,
+                    rows: doc.rows.clone(),
                     cursor_position: self.cursor.range.start,
                 }))
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
         }
     }
-
-    /// Creates a [`TextDocumentItem`] from `path`.
-    fn get_document(&self, path: String) -> Result<TextDocumentItem, DocumentError> {
-        let uri = self.working_dir.join(&path).map_err(DocumentError::from)?;
-        let file_path = uri
-            .clone()
-            .to_file_path()
-            .map_err(|_| DocumentError::InvalidPath(uri.to_string()))?;
-
-        let language_id = match file_path.extension().and_then(OsStr::to_str) {
-            Some("rs") => "rust",
-            Some(x) => x,
-            None => "",
-        }
-        .to_string();
-        let text = fs::read_to_string(file_path).map_err(|error| match error.kind() {
-            ErrorKind::NotFound => DocumentError::NonExistantFile(path),
-            ErrorKind::PermissionDenied
-            | ErrorKind::ConnectionRefused
-            | ErrorKind::ConnectionReset
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::NotConnected
-            | ErrorKind::AddrInUse
-            | ErrorKind::AddrNotAvailable
-            | ErrorKind::BrokenPipe
-            | ErrorKind::AlreadyExists
-            | ErrorKind::WouldBlock
-            | ErrorKind::InvalidInput
-            | ErrorKind::InvalidData
-            | ErrorKind::TimedOut
-            | ErrorKind::WriteZero
-            | ErrorKind::Interrupted
-            | ErrorKind::Other
-            | ErrorKind::UnexpectedEof
-            | _ => DocumentError::from(error),
-        })?;
-
-        Ok(TextDocumentItem::new(uri, language_id, 0, text))
-    }
 }
 
 impl Drop for Sheet {
     fn drop(&mut self) {
         if let Some(doc) = &self.doc {
-            if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.language_id) {
-                if let Err(e) = lsp_server.did_close(doc) {
+            if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.item.language_id) {
+                if let Err(e) = lsp_server.did_close(&doc.item) {
                     error!(
                         "failed to inform language server process about closing {}",
                         e
@@ -366,7 +433,7 @@ impl Selection {
     fn move_down(&mut self, amount: u64, line_count: u64) {
         let end_line = cmp::min(
             self.range.end.line.saturating_add(amount),
-            line_count.saturating_sub(1),
+            line_count,
         );
         self.set_start_bound(
             self.range
