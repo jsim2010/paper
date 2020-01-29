@@ -21,7 +21,7 @@ pub enum Fault {
     CreateFile(String, #[source] io::Error),
     /// Failed to lock the logger.
     #[error("unable to lock logger")]
-    WriterLock,
+    Lock,
 }
 
 /// Configures logging for `paper` during runtime.
@@ -46,7 +46,7 @@ impl LogConfig {
 
     /// Returns the writer.
     pub(crate) fn writer(&self) -> Result<RwLockWriteGuard<'_, Writer>, Fault> {
-        self.writer.write().map_err(|_| Fault::WriterLock)
+        self.writer.write().map_err(|_| Fault::Lock)
     }
 }
 

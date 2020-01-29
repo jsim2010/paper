@@ -154,6 +154,9 @@ impl ViewInterpreter {
             Key::Char('K') => {
                 output.add_op(Operation::Move(Movement::HalfUp));
             }
+            Key::Char('d') => {
+                output.add_op(Operation::Delete);
+            }
             Key::Backspace
             | Key::Enter
             | Key::Left
@@ -181,7 +184,7 @@ impl ModeInterpreter for ViewInterpreter {
 
         match input {
             Input::Setting(config) => {
-                output.add_op(Operation::UpdateConfig(config));
+                output.add_op(Operation::UpdateSetting(config));
             }
             Input::Key { key, .. } => {
                 Self::decode_key(key, &mut output);
@@ -281,6 +284,10 @@ mod test {
     use super::*;
     use crate::ui::Modifiers;
 
+    fn char_input(c: char) -> Input {
+        key_input(Key::Char(c))
+    }
+
     fn key_input(key: Key) -> Input {
         Input::Key {
             key,
@@ -312,7 +319,7 @@ mod test {
         #[test]
         fn quit() {
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('q'))),
+                INTERPRETER.decode(char_input('q')),
                 output(Operation::Confirm(ConfirmAction::Quit), Mode::Confirm)
             );
         }
@@ -359,6 +366,15 @@ mod test {
             assert_eq!(
                 INTERPRETER.decode(key_input(Key::Char('K'))),
                 keep_mode(Operation::Move(Movement::HalfUp))
+            );
+        }
+
+        /// The 'd' key shall delete the current selection.
+        #[test]
+        fn delete() {
+            assert_eq!(
+                INTERPRETER.decode(char_input('d')),
+                keep_mode(Operation::Delete)
             );
         }
     }
