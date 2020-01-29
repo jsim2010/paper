@@ -17,7 +17,6 @@ pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
     crate::{Arguments, app::Row},
-    clap::ArgMatches,
     core::{
         convert::TryFrom,
         fmt::{self, Debug},
@@ -32,10 +31,9 @@ use {
         ErrorKind,
     },
     log::{trace, warn, LevelFilter},
-    lsp_types::{MessageType, Position, ShowMessageParams, ShowMessageRequestParams},
+    lsp_types::{MessageType, Range, ShowMessageParams, ShowMessageRequestParams},
     notify::{DebouncedEvent, RecommendedWatcher, Watcher},
     serde::Deserialize,
-    starship::{context::Context, print},
     std::{
         collections::VecDeque,
         fs,
@@ -108,8 +106,6 @@ pub(crate) struct Terminal {
     top_line: u64,
     /// Notifies `self` of any events to the config file.
     watcher: ConfigWatcher,
-    /// The working directory of the application.
-    working_dir: PathBuf,
     /// The grid of the terminal.
     grid: Grid,
 }
@@ -129,7 +125,6 @@ impl Terminal {
             top_line: 0,
             watcher,
             config: Config::default(),
-            working_dir: arguments.working_dir.clone(),
             grid: Grid::default(),
         };
 
@@ -147,20 +142,25 @@ impl Terminal {
     }
 
     /// Applies `change` to the output.
-    pub(crate) fn apply(&mut self, change: Change) -> Outcome<()> {
-        match change {
+    pub(crate) fn apply(&mut self, update: Update) -> Outcome<()> {
+        match update.change {
             Change::Text {
                 rows,
-                cursor_position,
+                cursor,
             } => {
-                if cursor_position.line < self.top_line {
-                    self.top_line = cursor_position.line;
+                if cursor.start.line < self.top_line {
+                    self.top_line = cursor.start.line;
                 }
 
                 let mut visible_rows: Vec<Row> = rows.iter().filter(|row| row.line() >= self.top_line).cloned().collect();
+                let mut end_line = cursor.end.line;
+
+                if cursor.end.character == 0 {
+                    end_line = end_line.saturating_sub(1);
+                }
 
                 while let Some(first_line_past_bottom) = visible_rows.get(usize::from(self.grid.height)).map(|row| row.line()) {
-                    if cursor_position.line < first_line_past_bottom {
+                    if end_line < first_line_past_bottom {
                         break;
                     } else {
                         let line = visible_rows.remove(0).line();
@@ -179,7 +179,7 @@ impl Terminal {
                     self.grid.replace_line(
                         index,
                         row.text(),
-                        row.line() == cursor_position.line,
+                        row.line() == end_line,
                     )?;
                 }
 
@@ -213,13 +213,7 @@ impl Terminal {
             self.out,
             SavePosition,
             MoveTo(0, 0),
-            Print(
-                print::get_prompt(Context::new_with_dir(
-                    ArgMatches::default(),
-                    &self.working_dir
-                ))
-                .replace("[J", "")
-            ),
+            Print(update.header),
             RestorePosition,
         )
         .map_err(Fault::Command)?;
@@ -494,6 +488,20 @@ macro_rules! def_config {
 def_config!(Wrap: bool = false);
 def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 
+pub(crate) struct Update {
+    header: String,
+    change: Change,
+}
+
+impl Update {
+    pub(crate) fn new(header: String, change: Change) -> Self {
+        Self {
+            header,
+            change,
+        }
+    }
+}
+
 /// Signifies a potential modification to the output of the user interface.
 ///
 /// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
@@ -502,8 +510,8 @@ pub(crate) enum Change {
     /// Text of the current document or how it was displayed was modified.
     Text {
         rows: Vec<Row>,
-        /// The cursor position.
-        cursor_position: Position,
+        /// The cursor.
+        cursor: Range,
     },
     /// Message will be displayed to the user.
     Message(ShowMessageParams),

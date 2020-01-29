@@ -108,7 +108,7 @@ impl Paper {
     #[inline]
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
-            sheet: Sheet::new(&arguments)?,
+            sheet: Sheet::new(&arguments),
             interpreter: Interpreter::default(),
             ui: Terminal::new(arguments)?,
         })
@@ -148,8 +148,8 @@ impl Paper {
                     keep_running = false;
                 }
 
-                if let Some(change) = self.sheet.operate(operation)? {
-                    self.ui.apply(change)?;
+                if let Some(update) = self.sheet.operate(operation)? {
+                    self.ui.apply(update)?;
                 }
             }
         }
