@@ -3,7 +3,7 @@ pub mod logging;
 pub mod lsp;
 
 use {
-    crate::ui::{Change, Setting, Size, Update},
+    crate::ui::{Change, Setting, Update},
     clap::ArgMatches,
     core::{
         convert::TryFrom,
@@ -65,12 +65,12 @@ impl TryFrom<ArgMatches<'_>> for Arguments {
 
 /// A URL that is a valid path.
 ///
-/// Useful for preventing multiple translations between URL and Path.
+/// Useful for preventing repeat translations between URL and path formats.
 #[derive(Clone, Debug)]
 pub struct PathUrl {
     /// The path.
     path: PathBuf,
-    /// The URL of path.
+    /// The URL.
     url: Url,
 }
 
@@ -119,27 +119,29 @@ pub enum Fault {
     ParseUrl(#[from] ParseError),
 }
 
-/// Signifies the business logic of the application.
+/// The processor of the application.
 #[derive(Debug)]
 pub(crate) struct Sheet {
-    /// Signifies the document being viewed.
+    /// The document being viewed.
     doc: Option<Document>,
-    /// The length at which lines are wrapped.
+    /// The length at which displayed lines may be wrapped.
     ///
-    /// [`None`] signifies that lines are not wrapped.
-    wrap_length: Option<usize>,
-    /// The [`LspServer`]s managed by this document.
+    /// [`On`] signifies that lines shall be wrapped at the given length. [`Off`] signifies that lines shall not be wrapped.
+    wrap_length: Swival<usize>,
+    /// The [`LspServer`]s managed by the application.
     lsp_servers: HashMap<String, LspServer>,
-    /// Provides handle to be able to modify logger settings.
+    /// Handle to access and modify logger settings.
+    ///
+    /// [`None`] signifies that logger settings are not dynamically configurable.
     log_config: Option<LogConfig>,
-    /// The input for `command`.
+    /// The input of a command.
     input: String,
     /// The current command to be implemented.
     command: Option<Command>,
     /// The working directory of the application.
     working_dir: PathUrl,
-    /// The size of the user interface.
-    size: Size,
+    /// The number of lines by which a scroll moves.
+    scroll_amount: u64,
 }
 
 impl Sheet {
@@ -147,13 +149,13 @@ impl Sheet {
     pub(crate) fn new(arguments: &Arguments) -> Self {
         Self {
             doc: None,
-            wrap_length: None,
+            wrap_length: Swival::new_off(usize::max_value()),
             lsp_servers: HashMap::default(),
             input: String::new(),
             log_config: arguments.log_config.clone(),
             command: None,
             working_dir: arguments.working_dir.clone(),
-            size: Size::default(),
+            scroll_amount: 0,
         }
     }
 
@@ -188,8 +190,6 @@ impl Sheet {
                 }
             }
             Operation::Move(movement) => {
-                let scroll_value = self.scroll_value();
-
                 if let Some(doc) = &mut self.doc {
                     match movement {
                         Movement::SingleDown => {
@@ -199,10 +199,10 @@ impl Sheet {
                             doc.move_selection_up(1);
                         }
                         Movement::HalfDown => {
-                            doc.move_selection_down(scroll_value);
+                            doc.move_selection_down(self.scroll_amount);
                         }
                         Movement::HalfUp => {
-                            doc.move_selection_up(scroll_value);
+                            doc.move_selection_up(self.scroll_amount);
                         }
                     };
                 }
@@ -258,20 +258,20 @@ impl Sheet {
                 self.open_file()
             }
             Setting::Wrap(is_wrapped) => {
-                if self.wrap_length.is_some() == is_wrapped {
-                    Ok(None)
-                } else {
-                    self.wrap_length = if is_wrapped {Some(usize::from(self.size.columns))} else {None};
-                    
+                if self.wrap_length.control(is_wrapped) {
                     if let Some(doc) = &mut self.doc {
-                        doc.update_rows(self.wrap_length);
+                        doc.update_rows(&self.wrap_length);
                     }
 
                     Ok(self.text_change())
+                } else {
+                    Ok(None)
                 }
             }
             Setting::Size(size) => {
-                self.size = size.clone();
+                self.wrap_length.set(size.columns.into());
+
+                self.scroll_amount = u64::from(size.rows.wrapping_div(3));
                 Ok(Some(Change::Size(size)))
             }
             Setting::StarshipLog(log_level) => {
@@ -294,16 +294,11 @@ impl Sheet {
         })
     }
 
-    /// Returns the amount to move for scrolling.
-    fn scroll_value(&self) -> u64 {
-        u64::from(self.size.rows.wrapping_div(3))
-    }
-
     /// Opens `file` as a [`Document`].
     fn open_file(&mut self) -> Result<Option<Change>, Fault> {
         let uri = self.working_dir.url.join(&self.input)?;
 
-        let change = match Document::new(uri, self.wrap_length) {
+        let change = match Document::new(uri, &self.wrap_length) {
             Ok(doc) => {
                 if let Some(old_doc) = &self.doc {
                     if let Some(lsp_server) = self.lsp_servers.get_mut(&old_doc.item.language_id) {
@@ -353,6 +348,65 @@ impl Drop for Sheet {
     }
 }
 
+#[derive(Debug)]
+enum Swiv<T: Clone> {
+    On(T),
+    Off(T),
+}
+
+#[derive(Debug)]
+struct Swival<T: Clone>(Swiv<T>);
+
+impl<T: Clone> Swival<T> {
+    fn new_off(value: T) -> Self {
+        Self(Swiv::Off(value))
+    }
+
+    fn control(&mut self, enable: bool) -> bool {
+        let mut is_toggled = false;
+
+        match &self.0 {
+            Swiv::On(value) => {
+                if !enable {
+                    is_toggled = true;
+                    self.0 = Swiv::Off(value.clone());
+                }
+            }
+            Swiv::Off(value) => {
+                if enable {
+                    is_toggled = true;
+                    self.0 = Swiv::On(value.clone());
+                }
+            }
+        };
+
+        is_toggled
+    }
+
+    fn is_enabled(&self) -> bool {
+        match self.0 {
+            Swiv::On(_) => true,
+            Swiv::Off(_) => false,
+        }
+    }
+
+    fn get(&self) -> Option<T> {
+        if let Swiv::On(value) = &self.0 {
+            Some(value.clone())
+        } else {
+            None
+        }
+    }
+
+    fn set(&mut self, value: T) {
+        self.0 = if self.is_enabled() {
+            Swiv::On(value)
+        } else {
+            Swiv::Off(value)
+        };
+    }
+}
+
 /// Represents a row in the user interface.
 #[derive(Clone, Debug)]
 pub(crate) struct Row {
@@ -387,7 +441,7 @@ struct Document {
 
 impl Document {
     /// Creates a new [`Document`].
-    fn new(uri: Url, wrap_length: Option<usize>) -> Result<Self, DocumentError> {
+    fn new(uri: Url, wrap_length: &Swival<usize>) -> Result<Self, DocumentError> {
         let file_path = uri
             .clone()
             .to_file_path()
@@ -437,14 +491,14 @@ impl Document {
     }
 
     /// Update the rows in `self` based on `wrap_length`.
-    fn update_rows(&mut self, wrap_length: Option<usize>) {
+    fn update_rows(&mut self, wrap_length: &Swival<usize>) {
         self.rows = Vec::new();
 
         for (index, mut line) in self.item.text.lines().enumerate() {
             let mut is_final = false;
 
             loop {
-                let row_text = if let Some(length) = wrap_length {
+                let row_text = if let Some(length) = wrap_length.get() {
                     if line.len() > length {
                         let split = line.split_at(length);
                         line = split.1;

@@ -132,12 +132,7 @@ impl Paper {
         Ok(())
     }
 
-    /// Implements a single execution and returns if the program should keep running.
-    ///
-    /// A single run is as follows:
-    /// 1. Receive input.
-    /// 2. Translate input into operations.
-    /// 3. For each operation, execute the operation and output the resulting changes.
+    /// Executes a single run of the runtime loop and returns if the program should keep running.
     #[inline]
     fn step(&mut self) -> Result<bool, Failure> {
         let mut keep_running = true;
