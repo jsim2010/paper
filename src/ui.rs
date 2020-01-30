@@ -159,14 +159,14 @@ impl Terminal {
                     end_line = end_line.saturating_sub(1);
                 }
 
-                while let Some(first_line_past_bottom) = visible_rows.get(usize::from(self.grid.height)).map(|row| row.line()) {
+                while let Some(first_line_past_bottom) = visible_rows.get(usize::from(self.grid.height)).map(Row::line) {
                     if end_line < first_line_past_bottom {
                         break;
                     } else {
                         let line = visible_rows.remove(0).line();
                         self.top_line = self.top_line.saturating_add(1);
 
-                        while visible_rows.get(0).map(|row| row.line()) == Some(line) {
+                        while visible_rows.get(0).map(Row::line) == Some(line) {
                             let _ = visible_rows.remove(0);
                         }
                     }
@@ -174,7 +174,7 @@ impl Terminal {
 
                 let top_line = self.top_line;
 
-                for (index, row) in rows.iter().filter(|row| row.line() >= top_line).enumerate().take(usize::from(self.size.rows - 1)) {
+                for (index, row) in rows.iter().filter(|row| row.line() >= top_line).enumerate().take(usize::from(self.size.rows.saturating_sub(1))) {
                     //trace!("index {}, row {:?}", index, row);
                     self.grid.replace_line(
                         index,
@@ -488,13 +488,17 @@ macro_rules! def_config {
 def_config!(Wrap: bool = false);
 def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 
+/// An update to the user interface.
 pub(crate) struct Update {
+    /// The update header of the ui.
     header: String,
+    /// The change of the update.
     change: Change,
 }
 
 impl Update {
-    pub(crate) fn new(header: String, change: Change) -> Self {
+    /// Creates a new [`Update`].
+    pub(crate) const fn new(header: String, change: Change) -> Self {
         Self {
             header,
             change,
@@ -509,6 +513,7 @@ impl Update {
 pub(crate) enum Change {
     /// Text of the current document or how it was displayed was modified.
     Text {
+        /// The rows of the current document.
         rows: Vec<Row>,
         /// The cursor.
         cursor: Range,

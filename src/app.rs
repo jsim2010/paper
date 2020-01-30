@@ -64,20 +64,21 @@ impl TryFrom<ArgMatches<'_>> for Arguments {
 }
 
 /// A URL that is a valid path.
+///
+/// Useful for preventing multiple translations between URL and Path.
 #[derive(Clone, Debug)]
 pub struct PathUrl {
+    /// The path.
     path: PathBuf,
+    /// The URL of path.
     url: Url,
 }
 
 impl Default for PathUrl {
+    #[must_use]
     fn default() -> Self {
-        let path = PathBuf::default();
-
-        Self {
-            url: Url::from_file_path(path.clone()).unwrap(),
-            path,
-        }
+        #[allow(clippy::result_expect_used)] // Default path should not fail and failure cannot be propogated.
+        Self::try_from(PathBuf::default()).expect("creating default `PathUrl`")
     }
 }
 
@@ -123,6 +124,9 @@ pub enum Fault {
 pub(crate) struct Sheet {
     /// Signifies the document being viewed.
     doc: Option<Document>,
+    /// The length at which lines are wrapped.
+    ///
+    /// [`None`] signifies that lines are not wrapped.
     wrap_length: Option<usize>,
     /// The [`LspServer`]s managed by this document.
     lsp_servers: HashMap<String, LspServer>,
@@ -178,10 +182,7 @@ impl Sheet {
             }
             Operation::Execute => {
                 if self.command.is_some() {
-                    let file = self.input.clone();
-
-                    self.input.clear();
-                    self.open_file(file)?
+                    self.open_file()?
                 } else {
                     None
                 }
@@ -214,7 +215,7 @@ impl Sheet {
                     let mut lines: Vec<&str> = doc.item.text.lines().collect();
                     let edit = TextEdit::new(doc.selection.range, lines.drain(doc.selection).collect());
                     doc.item.text = lines.join("\n");
-                    let cursor_line_count = u64::try_from(doc.selection.end_bound - doc.selection.start_bound).unwrap_or(u64::max_value());
+                    let cursor_line_count = u64::try_from(doc.selection.end_bound.saturating_sub(doc.selection.start_bound)).unwrap_or(u64::max_value());
                     doc.rows = doc.rows.iter().filter_map(|row| {
                         let row_line = usize::try_from(row.line()).unwrap_or(usize::max_value());
                         if doc.selection.contains(&row_line) {
@@ -223,7 +224,7 @@ impl Sheet {
                             let mut new_row = row.clone();
 
                             if row_line >= doc.selection.end_bound {
-                                new_row.line -= cursor_line_count;
+                                new_row.line = new_row.line.saturating_sub(cursor_line_count);
                             }
 
                             Some(new_row)
@@ -252,7 +253,10 @@ impl Sheet {
     /// Updates `self` based on `setting`.
     fn update_setting(&mut self, setting: Setting) -> Result<Option<Change>, Fault> {
         match setting {
-            Setting::File(file) => self.open_file(file),
+            Setting::File(file) => {
+                self.input = file;
+                self.open_file()
+            }
             Setting::Wrap(is_wrapped) => {
                 if self.wrap_length.is_some() == is_wrapped {
                     Ok(None)
@@ -282,6 +286,7 @@ impl Sheet {
         }
     }
 
+    /// Return the change representative of the document.
     fn text_change(&self) -> Option<Change> {
         self.doc.as_ref().map(|doc| Change::Text {
             cursor: doc.selection.range,
@@ -295,10 +300,10 @@ impl Sheet {
     }
 
     /// Opens `file` as a [`Document`].
-    fn open_file(&mut self, file: String) -> Result<Option<Change>, Fault> {
-        let uri = self.working_dir.url.join(&file)?;
+    fn open_file(&mut self) -> Result<Option<Change>, Fault> {
+        let uri = self.working_dir.url.join(&self.input)?;
 
-        match Document::new(uri, self.wrap_length) {
+        let change = match Document::new(uri, self.wrap_length) {
             Ok(doc) => {
                 if let Some(old_doc) = &self.doc {
                     if let Some(lsp_server) = self.lsp_servers.get_mut(&old_doc.item.language_id) {
@@ -326,7 +331,10 @@ impl Sheet {
                 Ok(self.text_change())
             }
             Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
-        }
+        };
+
+        self.input.clear();
+        change
     }
 }
 
@@ -345,31 +353,40 @@ impl Drop for Sheet {
     }
 }
 
+/// Represents a row in the user interface.
 #[derive(Clone, Debug)]
 pub(crate) struct Row {
+    /// The line of the row.
     line: u64,
+    /// The text of the row.
     text: String,
 }
 
 impl Row {
-    pub(crate) fn line(&self) -> u64 {
+    /// Returns the line of `self`.
+    pub(crate) const fn line(&self) -> u64 {
         self.line
     }
 
-    pub(crate) fn text(&self) -> &String {
+    /// Returns the text of `self`.
+    pub(crate) const fn text(&self) -> &String {
         &self.text
     }
 }
 
+/// A file and the user's current interactions with it.
 #[derive(Debug)]
 struct Document {
+    /// An lsp representation of the document.
     item: TextDocumentItem,
+    /// The rows of the document.
     rows: Vec<Row>,
     /// The current user selection.
     selection: Selection,
 }
 
 impl Document {
+    /// Creates a new [`Document`].
     fn new(uri: Url, wrap_length: Option<usize>) -> Result<Self, DocumentError> {
         let file_path = uri
             .clone()
@@ -419,6 +436,7 @@ impl Document {
         Ok(doc)
     }
 
+    /// Update the rows in `self` based on `wrap_length`.
     fn update_rows(&mut self, wrap_length: Option<usize>) {
         self.rows = Vec::new();
 
@@ -458,10 +476,12 @@ impl Document {
             .unwrap_or(u64::max_value())
     }
 
+    /// Move the selection down by `amount` lines.
     fn move_selection_down(&mut self, amount: u64) {
         self.selection.move_down(amount, self.line_count());
     }
 
+    /// Move the selection up by `amount` lines.
     fn move_selection_up(&mut self, amount: u64) {
         self.selection.move_up(amount);
     }
