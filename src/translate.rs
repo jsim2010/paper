@@ -1,7 +1,7 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
     crate::{
-        app::{Command, ConfirmAction, Movement, Operation},
+        app::{Command, ConfirmAction, DocOp, Vector, Magnitude, Direction, Operation},
         ui::{Input, Key},
     },
     core::fmt::Debug,
@@ -143,19 +143,19 @@ impl ViewInterpreter {
                 output.set_mode(Mode::Collect);
             }
             Key::Char('j') => {
-                output.add_op(Operation::Move(Movement::SingleDown));
+                output.add_op(Operation::Document(DocOp::Move(Vector::new(Direction::Down, Magnitude::Single))));
             }
             Key::Char('k') => {
-                output.add_op(Operation::Move(Movement::SingleUp));
+                output.add_op(Operation::Document(DocOp::Move(Vector::new(Direction::Up, Magnitude::Single))));
             }
             Key::Char('J') => {
-                output.add_op(Operation::Move(Movement::HalfDown));
+                output.add_op(Operation::Document(DocOp::Move(Vector::new(Direction::Down, Magnitude::Half))));
             }
             Key::Char('K') => {
-                output.add_op(Operation::Move(Movement::HalfUp));
+                output.add_op(Operation::Document(DocOp::Move(Vector::new(Direction::Up, Magnitude::Half))));
             }
             Key::Char('d') => {
-                output.add_op(Operation::Delete);
+                output.add_op(Operation::Document(DocOp::Delete));
             }
             Key::Backspace
             | Key::Enter

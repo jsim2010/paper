@@ -69,7 +69,7 @@ pub mod ui;
 pub use app::Arguments;
 
 use {
-    app::{Operation, Sheet},
+    app::{Operation, Processor},
     thiserror::Error,
     translate::Interpreter,
     ui::Terminal,
@@ -94,7 +94,7 @@ pub struct Paper {
     /// Manages the user interface.
     ui: Terminal,
     /// Processes application operations.
-    sheet: Sheet,
+    processor: Processor,
 }
 
 impl Paper {
@@ -108,7 +108,7 @@ impl Paper {
     #[inline]
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
-            sheet: Sheet::new(&arguments),
+            processor: Processor::new(&arguments),
             interpreter: Interpreter::default(),
             ui: Terminal::new(arguments)?,
         })
@@ -143,7 +143,7 @@ impl Paper {
                     keep_running = false;
                 }
 
-                if let Some(update) = self.sheet.operate(operation)? {
+                if let Some(update) = self.processor.operate(operation)? {
                     self.ui.apply(update)?;
                 }
             }
