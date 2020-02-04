@@ -6,7 +6,7 @@ use {
     crate::ui::{Change, Setting, Size, Update},
     clap::ArgMatches,
     core::{
-        convert::TryFrom,
+        convert::{TryFrom, TryInto},
         ops::{Bound, RangeBounds},
     },
     log::{error, trace},
@@ -26,7 +26,7 @@ use {
         ffi::OsStr,
         fmt, fs,
         io::{self, ErrorKind},
-        path::PathBuf,
+        path::{Path, PathBuf},
         rc::Rc,
     },
     thiserror::Error,
@@ -76,6 +76,28 @@ pub struct PathUrl {
     url: Url,
 }
 
+impl PathUrl {
+    fn join(&self, path: &str) -> Result<Self, Fault>{
+        let mut joined_path = self.path.clone();
+
+        joined_path.push(path);
+        joined_path.try_into()
+    }
+
+    fn language_id(&self) -> Result<&str, Fault> {
+        self.path.extension().and_then(OsStr::to_str).map(|ext| match ext {
+            "rs" => "rust",
+            x => x,
+        }).ok_or(Fault::LangId)
+    }
+}
+
+impl AsRef<Path> for PathUrl {
+    fn as_ref(&self) -> &Path {
+        self.path.as_ref()
+    }
+}
+
 impl Default for PathUrl {
     #[must_use]
     fn default() -> Self {
@@ -119,6 +141,9 @@ pub enum Fault {
     /// An error occurred while parsing a URL.
     #[error("while parsing URL: {0}")]
     ParseUrl(#[from] ParseError),
+    /// An error occurred while parsing the language identifier.
+    #[error("language id")]
+    LangId,
 }
 
 /// The processor of the application.
@@ -229,7 +254,7 @@ struct Pane {
     /// The number of lines by which a scroll moves.
     scroll_amount: Rc<RefCell<Amount>>,
     /// The length at which displayed lines may be wrapped.
-    wrap_length: Swival<usize>,
+    wrap_length: Rc<RefCell<Swival<usize>>>,
     working_dir: Rc<PathUrl>,
     /// The [`LspServer`]s managed by the application.
     lsp_servers: HashMap<String, Rc<RefCell<LspServer>>>,
@@ -240,7 +265,7 @@ impl Pane {
         Self {
             doc: None,
             scroll_amount: Rc::new(RefCell::new(Amount(0))),
-            wrap_length: Swival::default(),
+            wrap_length: Rc::new(RefCell::new(Swival::default())),
             lsp_servers: HashMap::default(),
             working_dir: Rc::clone(working_dir),
         }
@@ -256,7 +281,7 @@ impl Pane {
     }
 
     fn open_doc(&mut self, path: &str) -> Option<Change> {
-        Some(match Document::new(path, &self.working_dir.url, &self.wrap_length, &mut self.lsp_servers, &self.scroll_amount) {
+        Some(match self.create_doc(path) {
             Ok(doc) => {
                 let change = doc.text_change();
                 let _ = self.doc.replace(doc);
@@ -267,13 +292,14 @@ impl Pane {
         })
     }
 
-    fn control_wrap(&mut self, is_wrapped: bool) -> Option<Change> {
-        if self.wrap_length.control(is_wrapped) {
-            // Required to avoid multiple borrows.
-            let wrap_length = &self.wrap_length;
+    fn create_doc(&mut self, path: &str) -> Result<Document, DocumentError> {
+        Document::new(self.working_dir.join(path)?, &self.working_dir, &self.wrap_length, &mut self.lsp_servers, &self.scroll_amount)
+    }
 
+    fn control_wrap(&mut self, is_wrapped: bool) -> Option<Change> {
+        if self.wrap_length.borrow_mut().control(is_wrapped) {
             self.doc.as_mut().map(|doc| {
-                doc.update_rows(wrap_length);
+                doc.update_rows();
                 doc.text_change()
             })
         } else {
@@ -282,7 +308,7 @@ impl Pane {
     }
 
     fn update_size(&mut self, size: Size) -> Change {
-        self.wrap_length.set(size.columns.into());
+        self.wrap_length.borrow_mut().set(size.columns.into());
         self.scroll_amount.borrow_mut().set(u64::from(size.rows.wrapping_div(3)));
         Change::Size(size)
     }
@@ -299,26 +325,15 @@ struct Document {
     selection: Selection,
     lsp_server: Option<Rc<RefCell<LspServer>>>,
     scroll_amount: Rc<RefCell<Amount>>,
+    wrap_length: Rc<RefCell<Swival<usize>>>,
 }
 
 impl Document {
     /// Creates a new [`Document`].
-    fn new(path: &str, working_dir: &Url, wrap_length: &Swival<usize>, lsp_servers: &mut HashMap<String, Rc<RefCell<LspServer>>>, scroll_amount: &Rc<RefCell<Amount>>) -> Result<Self, DocumentError> {
-        let uri = working_dir.join(path)?;
-
-        let file_path = uri
-            .clone()
-            .to_file_path()
-            .map_err(|_| DocumentError::InvalidPath(uri.to_string()))?;
-
-        let language_id = match file_path.extension().and_then(OsStr::to_str) {
-            Some("rs") => "rust",
-            Some(x) => x,
-            None => "",
-        }
-        .to_string();
-        let text = fs::read_to_string(file_path).map_err(|error| match error.kind() {
-            ErrorKind::NotFound => DocumentError::NonExistantFile(uri.to_string()),
+    fn new(path: PathUrl, working_dir: &PathUrl, wrap_length: &Rc<RefCell<Swival<usize>>>, lsp_servers: &mut HashMap<String, Rc<RefCell<LspServer>>>, scroll_amount: &Rc<RefCell<Amount>>) -> Result<Self, DocumentError> {
+        let language_id = path.language_id()?;
+        let text = fs::read_to_string(path.clone()).map_err(|error| match error.kind() {
+            ErrorKind::NotFound => DocumentError::NonExistantFile(path.url.to_string()),
             ErrorKind::PermissionDenied
             | ErrorKind::ConnectionRefused
             | ErrorKind::ConnectionReset
@@ -344,16 +359,16 @@ impl Document {
             selection.set_end_bound(1);
         }
 
-        let cmd = match language_id.as_str() {
+        let cmd = match language_id {
             "rust" => Some("rls"),
             _ => None,
         };
-        let item = TextDocumentItem::new(uri, language_id.clone(), 0, text);
+        let item = TextDocumentItem::new(path.url.clone(), language_id.to_string(), 0, text);
 
         let lsp_server = cmd.map(|process| {
-            let server = match lsp_servers.entry(language_id) {
+            let server = match lsp_servers.entry(language_id.to_string()) {
                 Entry::Vacant(entry) => {
-                    entry.insert(Rc::new(RefCell::new(LspServer::new(process, working_dir).unwrap())))
+                    entry.insert(Rc::new(RefCell::new(LspServer::new(process, &working_dir.url).unwrap())))
                 }
                 Entry::Occupied(entry) => entry.into_mut(),
             };
@@ -368,9 +383,10 @@ impl Document {
             selection,
             lsp_server: lsp_server.map(|server| Rc::clone(server)),
             scroll_amount: Rc::clone(scroll_amount),
+            wrap_length: Rc::clone(wrap_length),
         };
 
-        doc.update_rows(wrap_length);
+        doc.update_rows();
 
         Ok(doc)
     }
@@ -404,15 +420,15 @@ impl Document {
         self.text_change()
     }
 
-    /// Update the rows in `self` based on `wrap_length`.
-    fn update_rows(&mut self, wrap_length: &Swival<usize>) {
+    /// Update the rows in `self`.
+    fn update_rows(&mut self) {
         self.rows = Vec::new();
 
         for (index, mut line) in self.item.text.lines().enumerate() {
             let mut is_final = false;
 
             loop {
-                let row_text = if let Some(length) = wrap_length.get() {
+                let row_text = if let Some(length) = self.wrap_length.borrow().get() {
                     if line.len() > *length {
                         let split = line.split_at(*length);
                         line = split.1;
@@ -661,9 +677,6 @@ enum DocumentError {
     /// Error while parsing url.
     #[error("unable to parse url: {0}")]
     Parse(#[from] ParseError),
-    /// Path is invalid.
-    #[error("path `{0}` is invalid")]
-    InvalidPath(String),
     /// File does not exist.
     #[error("file `{0}` does not exist")]
     NonExistantFile(String),
@@ -672,6 +685,8 @@ enum DocumentError {
     Io(#[from] io::Error),
     #[error("lsp: {0}")]
     Lsp(#[from] lsp::Fault),
+    #[error("{0}")]
+    Fault(#[from] Fault),
 }
 
 impl From<DocumentError> for ShowMessageParams {
