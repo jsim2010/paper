@@ -21,7 +21,7 @@ use {
     std::{
         cell::RefCell,
         cmp,
-        collections::{hash_map::Entry, HashMap},
+        collections::HashMap,
         env,
         ffi::OsStr,
         fmt, fs,
@@ -84,11 +84,11 @@ impl PathUrl {
         joined_path.try_into()
     }
 
-    fn language_id(&self) -> Result<&str, Fault> {
+    fn language_id(&self) -> &str {
         self.path.extension().and_then(OsStr::to_str).map(|ext| match ext {
             "rs" => "rust",
             x => x,
-        }).ok_or(Fault::LangId)
+        }).unwrap_or("")
     }
 }
 
@@ -141,9 +141,6 @@ pub enum Fault {
     /// An error occurred while parsing a URL.
     #[error("while parsing URL: {0}")]
     ParseUrl(#[from] ParseError),
-    /// An error occurred while parsing the language identifier.
-    #[error("language id")]
-    LangId,
 }
 
 /// The processor of the application.
@@ -293,7 +290,17 @@ impl Pane {
     }
 
     fn create_doc(&mut self, path: &str) -> Result<Document, DocumentError> {
-        Document::new(self.working_dir.join(path)?, &self.working_dir, &self.wrap_length, &mut self.lsp_servers, &self.scroll_amount)
+        let doc_path = self.working_dir.join(path)?;
+        let language_id = doc_path.language_id();
+        let lsp_server = self.lsp_servers.get(language_id).cloned();
+
+        if lsp_server.is_none() {
+            if let Some(lsp_server) = LspServer::new(language_id, &self.working_dir.url)?.map(|server| Rc::new(RefCell::new(server))) {
+                let _ = self.lsp_servers.insert(language_id.to_string(), Rc::clone(&lsp_server));
+            }
+        }
+
+        Document::new(doc_path, &self.wrap_length, lsp_server, &self.scroll_amount)
     }
 
     fn control_wrap(&mut self, is_wrapped: bool) -> Option<Change> {
@@ -319,6 +326,7 @@ impl Pane {
 struct Document {
     /// An lsp representation of the document.
     item: TextDocumentItem,
+    // TODO: This should hold the text string while impl Iterator<Item=Row>.
     /// The rows of the document.
     rows: Vec<Row>,
     /// The current user selection.
@@ -330,8 +338,7 @@ struct Document {
 
 impl Document {
     /// Creates a new [`Document`].
-    fn new(path: PathUrl, working_dir: &PathUrl, wrap_length: &Rc<RefCell<Swival<usize>>>, lsp_servers: &mut HashMap<String, Rc<RefCell<LspServer>>>, scroll_amount: &Rc<RefCell<Amount>>) -> Result<Self, DocumentError> {
-        let language_id = path.language_id()?;
+    fn new(path: PathUrl, wrap_length: &Rc<RefCell<Swival<usize>>>, lsp_server: Option<Rc<RefCell<LspServer>>>, scroll_amount: &Rc<RefCell<Amount>>) -> Result<Self, DocumentError> {
         let text = fs::read_to_string(path.clone()).map_err(|error| match error.kind() {
             ErrorKind::NotFound => DocumentError::NonExistantFile(path.url.to_string()),
             ErrorKind::PermissionDenied
@@ -359,29 +366,17 @@ impl Document {
             selection.set_end_bound(1);
         }
 
-        let cmd = match language_id {
-            "rust" => Some("rls"),
-            _ => None,
-        };
-        let item = TextDocumentItem::new(path.url.clone(), language_id.to_string(), 0, text);
+        let item = TextDocumentItem::new(path.url.clone(), path.language_id().to_string(), 0, text);
 
-        let lsp_server = cmd.map(|process| {
-            let server = match lsp_servers.entry(language_id.to_string()) {
-                Entry::Vacant(entry) => {
-                    entry.insert(Rc::new(RefCell::new(LspServer::new(process, &working_dir.url).unwrap())))
-                }
-                Entry::Occupied(entry) => entry.into_mut(),
-            };
-
+        if let Some(server) = &lsp_server {
             server.borrow_mut().did_open(&item).unwrap();
-            server
-        });
+        }
 
         let mut doc = Self {
             item,
             rows: Vec::new(),
             selection,
-            lsp_server: lsp_server.map(|server| Rc::clone(server)),
+            lsp_server,
             scroll_amount: Rc::clone(scroll_amount),
             wrap_length: Rc::clone(wrap_length),
         };

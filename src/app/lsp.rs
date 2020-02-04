@@ -42,6 +42,9 @@ pub enum Fault {
     /// An error while killing a language server process.
     #[error("unable to kill language server process: {0}")]
     Kill(#[source] io::Error),
+    /// Language server for given language identifier is unknown.
+    #[error("language server for `{0}` is unknown")]
+    LanguageId(String),
 }
 
 /// Represents a language server process.
@@ -60,36 +63,39 @@ pub(crate) struct LspServer {
 }
 
 impl LspServer {
-    /// Creates a new `LspServer` represented by `process_cmd`.
-    pub(crate) fn new(process_cmd: &str, root: &Url) -> Result<Self, Fault> {
-        let mut server = ServerProcess::new(process_cmd)?;
-        let mut transmitter = LspTransmitter::new(server.stdin()?);
-        let receiver = LspReceiver::new(server.stdout()?, &transmitter);
+    /// Creates a new `LspServer` for `language_id`.
+    pub(crate) fn new(language_id: &str, root: &Url) -> Result<Option<Self>, Fault> {
+        Ok(if let Some(mut server) = ServerProcess::new(language_id)? {
+            let mut transmitter = LspTransmitter::new(server.stdin()?);
+            let receiver = LspReceiver::new(server.stdout()?, &transmitter);
 
-        #[allow(deprecated)] // root_path is a required field.
-        let settings = LspSettings::from(transmitter.request::<Initialize>(
-            InitializeParams {
-                process_id: Some(u64::from(process::id())),
-                root_path: None,
-                root_uri: Some(root.clone()),
-                initialization_options: None,
-                capabilities: ClientCapabilities::default(),
-                trace: None,
-                workspace_folders: None,
-                client_info: None,
-            },
-            &receiver,
-        )?);
+            #[allow(deprecated)] // root_path is a required field.
+            let settings = LspSettings::from(transmitter.request::<Initialize>(
+                InitializeParams {
+                    process_id: Some(u64::from(process::id())),
+                    root_path: None,
+                    root_uri: Some(root.clone()),
+                    initialization_options: None,
+                    capabilities: ClientCapabilities::default(),
+                    trace: None,
+                    workspace_folders: None,
+                    client_info: None,
+                },
+                &receiver,
+            )?);
 
-        transmitter.notify::<Initialized>(InitializedParams {})?;
+            transmitter.notify::<Initialized>(InitializedParams {})?;
 
-        Ok(Self {
-            // error_processor must be created before server is moved.
-            error_processor: LspErrorProcessor::new(server.stderr()?),
-            server,
-            transmitter,
-            settings,
-            receiver,
+            Some(Self {
+                // error_processor must be created before server is moved.
+                error_processor: LspErrorProcessor::new(server.stderr()?),
+                server,
+                transmitter,
+                settings,
+                receiver,
+            })
+        } else {
+            None
         })
     }
 
@@ -176,15 +182,22 @@ struct ServerProcess(Child);
 
 impl ServerProcess {
     /// Creates a new [`ServerProcess`].
-    fn new(process_cmd: &str) -> Result<Self, Fault> {
-        Ok(Self(
-            Command::new(process_cmd)
+    fn new(language_id: &str) -> Result<Option<Self>, Fault> {
+        let command = match language_id {
+            "rust" => Some("rls"),
+            _ => None,
+        };
+
+        Ok(if let Some(cmd) = command {
+            Some(Self(Command::new(cmd)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|e| Fault::Spawn(process_cmd.to_string(), e))?,
-        ))
+                .map_err(|e| Fault::Spawn(cmd.to_string(), e))?))
+        } else {
+            None
+        })
     }
 
     /// Returns the stderr of the process.
