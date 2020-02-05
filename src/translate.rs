@@ -350,7 +350,10 @@ mod test {
         fn move_down() {
             assert_eq!(
                 INTERPRETER.decode(key_input(Key::Char('j'))),
-                keep_mode(Operation::Move(Movement::SingleDown))
+                keep_mode(Operation::Document(DocOp::Move(Vector::new(
+                    Direction::Down,
+                    Magnitude::Single
+                ))))
             );
         }
 
@@ -359,7 +362,10 @@ mod test {
         fn move_up() {
             assert_eq!(
                 INTERPRETER.decode(key_input(Key::Char('k'))),
-                keep_mode(Operation::Move(Movement::SingleUp))
+                keep_mode(Operation::Document(DocOp::Move(Vector::new(
+                    Direction::Up,
+                    Magnitude::Single
+                ))))
             );
         }
 
@@ -368,7 +374,10 @@ mod test {
         fn scroll_down() {
             assert_eq!(
                 INTERPRETER.decode(key_input(Key::Char('J'))),
-                keep_mode(Operation::Move(Movement::HalfDown))
+                keep_mode(Operation::Document(DocOp::Move(Vector::new(
+                    Direction::Down,
+                    Magnitude::Half
+                ))))
             );
         }
 
@@ -377,7 +386,10 @@ mod test {
         fn scroll_up() {
             assert_eq!(
                 INTERPRETER.decode(key_input(Key::Char('K'))),
-                keep_mode(Operation::Move(Movement::HalfUp))
+                keep_mode(Operation::Document(DocOp::Move(Vector::new(
+                    Direction::Up,
+                    Magnitude::Half
+                ))))
             );
         }
 
@@ -386,7 +398,7 @@ mod test {
         fn delete() {
             assert_eq!(
                 INTERPRETER.decode(char_input('d')),
-                keep_mode(Operation::Delete)
+                keep_mode(Operation::Document(DocOp::Delete))
             );
         }
     }
