@@ -665,7 +665,7 @@ pub(crate) enum Input {
     },
     /// Signifies a changed [`Setting`].
     Setting(Setting),
-    /// Signifies an error that is recoverable.
+    /// Signifies an error in the user interface that is recoverable.
     Glitch(Glitch),
 }
 
