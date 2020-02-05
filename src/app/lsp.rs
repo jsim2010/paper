@@ -10,8 +10,8 @@ use {
         request::{Initialize, Shutdown},
         ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-        TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+        MessageType, ShowMessageParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+        TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
         VersionedTextDocumentIdentifier,
     },
     std::{
@@ -45,6 +45,17 @@ pub enum Fault {
     /// Language server for given language identifier is unknown.
     #[error("language server for `{0}` is unknown")]
     LanguageId(String),
+}
+
+impl From<Fault> for ShowMessageParams {
+    #[inline]
+    #[must_use]
+    fn from(value: Fault) -> Self {
+        Self {
+            typ: MessageType::Error,
+            message: value.to_string(),
+        }
+    }
 }
 
 /// Represents a language server process.
@@ -100,11 +111,22 @@ impl LspServer {
     }
 
     /// Sends the didOpen notification, if appropriate.
-    pub(crate) fn did_open(&mut self, uri: &Url, language_id: &str, version: i64, text: &str) -> Result<(), Fault> {
+    pub(crate) fn did_open(
+        &mut self,
+        uri: &Url,
+        language_id: &str,
+        version: i64,
+        text: &str,
+    ) -> Result<(), Fault> {
         if self.settings.notify_open_close {
             self.transmitter
                 .notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
-                    text_document: TextDocumentItem::new(uri.clone(), language_id.to_string(), version, text.to_string()),
+                    text_document: TextDocumentItem::new(
+                        uri.clone(),
+                        language_id.to_string(),
+                        version,
+                        text.to_string(),
+                    ),
                 })?;
         }
 
@@ -134,10 +156,7 @@ impl LspServer {
         } {
             self.transmitter
                 .notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
-                    text_document: VersionedTextDocumentIdentifier::new(
-                        uri.clone(),
-                        version,
-                    ),
+                    text_document: VersionedTextDocumentIdentifier::new(uri.clone(), version),
                     content_changes,
                 })?;
         }
@@ -191,12 +210,14 @@ impl ServerProcess {
         };
 
         Ok(if let Some(cmd) = command {
-            Some(Self(Command::new(cmd)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| Fault::Spawn(cmd.to_string(), e))?))
+            Some(Self(
+                Command::new(cmd)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| Fault::Spawn(cmd.to_string(), e))?,
+            ))
         } else {
             None
         })

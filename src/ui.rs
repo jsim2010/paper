@@ -144,22 +144,25 @@ impl Terminal {
     /// Applies `change` to the output.
     pub(crate) fn apply(&mut self, update: Update<'_>) -> Outcome<()> {
         match update.change {
-            Change::Text {
-                rows,
-                cursor,
-            } => {
+            Change::Text { rows, cursor } => {
                 if cursor.start.line < self.top_line {
                     self.top_line = cursor.start.line;
                 }
 
-                let mut visible_rows: Vec<Row<'_>> = rows.clone().filter(|row| row.line() >= self.top_line).collect();
+                let mut visible_rows: Vec<Row<'_>> = rows
+                    .clone()
+                    .filter(|row| row.line() >= self.top_line)
+                    .collect();
                 let mut end_line = cursor.end.line;
 
                 if cursor.end.character == 0 {
                     end_line = end_line.saturating_sub(1);
                 }
 
-                while let Some(first_line_past_bottom) = visible_rows.get(usize::from(self.grid.height)).map(Row::line) {
+                while let Some(first_line_past_bottom) = visible_rows
+                    .get(usize::from(self.grid.height))
+                    .map(Row::line)
+                {
                     if end_line < first_line_past_bottom {
                         break;
                     } else {
@@ -174,13 +177,14 @@ impl Terminal {
 
                 let top_line = self.top_line;
 
-                for (index, row) in rows.filter(|row| row.line() >= top_line).enumerate().take(usize::from(self.size.rows.saturating_sub(1))) {
+                for (index, row) in rows
+                    .filter(|row| row.line() >= top_line)
+                    .enumerate()
+                    .take(usize::from(self.size.rows.saturating_sub(1)))
+                {
                     //trace!("index {}, row {:?}", index, row);
-                    self.grid.replace_line(
-                        index,
-                        row.text(),
-                        row.line() == end_line,
-                    )?;
+                    self.grid
+                        .replace_line(index, row.text(), row.line() == end_line)?;
                 }
 
                 queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(Fault::Command)?;
@@ -277,16 +281,25 @@ impl Drop for Terminal {
     }
 }
 
+/// An [`Iterator`] over the rows of a string.
 #[derive(Clone, Debug)]
 pub(crate) struct Rows<'a> {
+    /// The string being iterated over.
     s: &'a str,
+    /// The maximum size of a row.
     max_len: usize,
+    /// The index of the current line of the iterator.
     current_line: u64,
 }
 
 impl<'a> Rows<'a> {
+    /// Creates a new [`Iterator`] over the rows of `s` with a `max_len`.
     pub(crate) fn new(s: &'a str, max_len: Option<usize>) -> Self {
-        Rows {s, max_len: max_len.unwrap_or(usize::max_value()), current_line: 0}
+        Rows {
+            s,
+            max_len: max_len.unwrap_or(usize::max_value()),
+            current_line: 0,
+        }
     }
 }
 
@@ -297,14 +310,17 @@ impl<'a> Iterator for Rows<'a> {
         if self.s.is_empty() {
             None
         } else {
-            let (line_len, extra_len) = if let Some(newline_len) = self.s.find('\n') {
-                let line_end = newline_len - 1;
+            let (line_len, extra_len) = if let Some(mut newline_len) = self.s.find('\n') {
+                let mut extra = 1;
 
-                if self.s.get(line_end..=line_end) == Some("\r") {
-                    (line_end, 2)
-                } else {
-                    (newline_len, 1)
+                if let Some(line_end) = newline_len.checked_sub(1) {
+                    if self.s.get(line_end..=line_end) == Some("\r") {
+                        newline_len = line_end;
+                        extra = 2;
+                    }
                 }
+
+                (newline_len, extra)
             } else {
                 (self.s.len(), 0)
             };
@@ -315,10 +331,13 @@ impl<'a> Iterator for Rows<'a> {
             };
             let (row_text, remainder) = self.s.split_at(row_len);
             let (_, new_s) = remainder.split_at(rm_len);
-            let row = Row {text: row_text, line: self.current_line};
+            let row = Row {
+                text: row_text,
+                line: self.current_line,
+            };
 
             if rm_len != 0 {
-                self.current_line += 1;
+                self.current_line = self.current_line.saturating_add(1);
             }
 
             self.s = new_s;
@@ -570,10 +589,7 @@ pub(crate) struct Update<'a> {
 impl<'a> Update<'a> {
     /// Creates a new [`Update`].
     pub(crate) const fn new(header: String, change: Change<'a>) -> Self {
-        Self {
-            header,
-            change,
-        }
+        Self { header, change }
     }
 }
 

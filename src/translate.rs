@@ -1,7 +1,7 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
     crate::{
-        app::{Command, ConfirmAction, DocOp, Vector, Magnitude, Direction, Operation},
+        app::{Command, ConfirmAction, Direction, DocOp, Magnitude, Operation, Vector},
         ui::{Input, Key},
     },
     core::fmt::Debug,
@@ -143,16 +143,28 @@ impl ViewInterpreter {
                 output.set_mode(Mode::Collect);
             }
             Key::Char('j') => {
-                output.add_op(Operation::Document(DocOp::Move(Vector::new(Direction::Down, Magnitude::Single))));
+                output.add_op(Operation::Document(DocOp::Move(Vector::new(
+                    Direction::Down,
+                    Magnitude::Single,
+                ))));
             }
             Key::Char('k') => {
-                output.add_op(Operation::Document(DocOp::Move(Vector::new(Direction::Up, Magnitude::Single))));
+                output.add_op(Operation::Document(DocOp::Move(Vector::new(
+                    Direction::Up,
+                    Magnitude::Single,
+                ))));
             }
             Key::Char('J') => {
-                output.add_op(Operation::Document(DocOp::Move(Vector::new(Direction::Down, Magnitude::Half))));
+                output.add_op(Operation::Document(DocOp::Move(Vector::new(
+                    Direction::Down,
+                    Magnitude::Half,
+                ))));
             }
             Key::Char('K') => {
-                output.add_op(Operation::Document(DocOp::Move(Vector::new(Direction::Up, Magnitude::Half))));
+                output.add_op(Operation::Document(DocOp::Move(Vector::new(
+                    Direction::Up,
+                    Magnitude::Half,
+                ))));
             }
             Key::Char('d') => {
                 output.add_op(Operation::Document(DocOp::Delete));
