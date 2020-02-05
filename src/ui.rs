@@ -143,6 +143,8 @@ impl Terminal {
 
     /// Applies `change` to the output.
     pub(crate) fn apply(&mut self, update: Update<'_>) -> Outcome<()> {
+        let header = update.header;
+
         match update.change {
             Change::Text { rows, cursor } => {
                 if cursor.start.line < self.top_line {
@@ -212,12 +214,11 @@ impl Terminal {
             }
         }
 
-        // For now, must deal with fact that StarshipConfig included in Context is very difficult to edit (must edit the TOML Value). Thus for now, the starship.toml config file must be configured correctly.
         queue!(
             self.out,
             SavePosition,
             MoveTo(0, 0),
-            Print(update.header),
+            Print(header),
             RestorePosition,
         )
         .map_err(Fault::Command)?;

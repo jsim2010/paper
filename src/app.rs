@@ -227,6 +227,7 @@ impl Processor {
 
         Ok(change.map(|c| {
             Update::new(
+                // For now, must deal with fact that StarshipConfig included in Context is very difficult to edit (must edit the TOML Value). Thus for now, the starship.toml config file must be configured correctly.
                 print::get_prompt(Context::new_with_dir(ArgMatches::default(), &working_dir))
                     .replace("[J", ""),
                 c,
