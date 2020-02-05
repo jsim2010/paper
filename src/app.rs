@@ -3,28 +3,30 @@ pub mod logging;
 pub mod lsp;
 
 use {
-    crate::ui::{Change, Setting, Size},
+    crate::ui::{Change, Rows, Setting, Size, Update},
     clap::ArgMatches,
     core::{
-        convert::TryFrom,
+        cmp,
+        convert::{TryFrom, TryInto},
         ops::{Bound, RangeBounds},
     },
     log::{error, trace},
     logging::LogConfig,
     lsp::LspServer,
     lsp_types::{
-        MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
-        TextDocumentItem, TextEdit,
+        MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams, TextEdit,
     },
     parse_display::Display as ParseDisplay,
+    starship::{context::Context, print},
     std::{
-        cmp,
-        collections::{hash_map::Entry, HashMap},
+        cell::RefCell,
+        collections::HashMap,
         env,
         ffi::OsStr,
         fmt, fs,
         io::{self, ErrorKind},
-        path::PathBuf,
+        path::{Path, PathBuf},
+        rc::Rc,
     },
     thiserror::Error,
     url::{ParseError, Url},
@@ -46,7 +48,7 @@ pub struct Arguments {
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     pub log_config: Option<LogConfig>,
     /// The working directory of `paper`.
-    pub working_dir: PathBuf,
+    pub working_dir: PathUrl,
 }
 
 impl TryFrom<ArgMatches<'_>> for Arguments {
@@ -57,9 +59,77 @@ impl TryFrom<ArgMatches<'_>> for Arguments {
         Ok(Self {
             file: value.value_of("file").map(str::to_string),
             log_config: Some(LogConfig::new()?),
-            working_dir: env::current_dir().map_err(|e| Fault::WorkingDir(e.into()))?,
+            working_dir: PathUrl::try_from(env::current_dir().map_err(Fault::WorkingDir)?)?,
         })
     }
+}
+
+/// A URL that is a valid path.
+///
+/// Useful for preventing repeat translations between URL and path formats.
+#[derive(Clone, Debug)]
+pub struct PathUrl {
+    /// The path.
+    path: PathBuf,
+    /// The URL.
+    url: Url,
+}
+
+impl PathUrl {
+    /// Joins `path` to `self`.
+    fn join(&self, path: &str) -> Result<Self, UrlError> {
+        let mut joined_path = self.path.clone();
+
+        joined_path.push(path);
+        joined_path.try_into()
+    }
+
+    /// Returns the language identification of the path.
+    fn language_id(&self) -> &str {
+        self.path
+            .extension()
+            .and_then(OsStr::to_str)
+            .map_or("", |ext| match ext {
+                "rs" => "rust",
+                x => x,
+            })
+    }
+}
+
+impl AsRef<Path> for PathUrl {
+    #[must_use]
+    fn as_ref(&self) -> &Path {
+        self.path.as_ref()
+    }
+}
+
+impl Default for PathUrl {
+    #[must_use]
+    fn default() -> Self {
+        #[allow(clippy::result_expect_used)]
+        // Default path should not fail and failure cannot be propogated.
+        Self::try_from(PathBuf::default()).expect("creating default `PathUrl`")
+    }
+}
+
+impl TryFrom<PathBuf> for PathUrl {
+    type Error = UrlError;
+
+    fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
+        Ok(Self {
+            url: Url::from_directory_path(value.clone())
+                .map_err(|_| UrlError::InvalidDir(value.to_string_lossy().to_string()))?,
+            path: value,
+        })
+    }
+}
+
+/// An error from which the URL utility was unable to recover.
+#[derive(Debug, Error)]
+pub enum UrlError {
+    /// An error occurred while converting a directory path to a URL.
+    #[error("while convert `{0}` to a URL")]
+    InvalidDir(String),
 }
 
 /// An error from which the application was unable to recover.
@@ -77,162 +147,99 @@ pub enum Fault {
     Lsp(#[from] lsp::Fault),
     /// An error while determining the current working directory.
     #[error("while determining working directory: {0}")]
-    WorkingDir(#[from] WorkingDirFault),
-}
-
-/// An error while determining the working directory.
-#[derive(Debug, Error)]
-pub enum WorkingDirFault {
-    /// An io error.
+    WorkingDir(#[source] io::Error),
+    /// An error while converting a directory to a URL.
     #[error("{0}")]
-    Io(#[from] io::Error),
-    /// An error converting working directory to [`Url`].
-    ///
-    /// The argument is the working directory path.
-    ///
-    /// [`Url`]: ../../url/struct.Url.html
-    #[error("unable to convert path `{0}` to url")]
-    Path(String),
+    Url(#[from] UrlError),
+    /// An error occurred while parsing a URL.
+    #[error("while parsing URL: {0}")]
+    ParseUrl(#[from] ParseError),
 }
 
-/// Signifies the business logic of the application.
+/// The processor of the application.
 #[derive(Debug)]
-pub(crate) struct Sheet {
-    /// Signifies the document being viewed.
-    doc: Option<TextDocumentItem>,
-    /// The document wraps long lines.
-    is_wrapped: bool,
-    /// The [`LspServer`]s managed by this document.
-    lsp_servers: HashMap<String, LspServer>,
-    /// Provides handle to be able to modify logger settings.
+pub(crate) struct Processor {
+    /// The currently visible pane.
+    pane: Pane,
+    /// Handle to access and modify logger settings.
+    ///
+    /// [`None`] signifies that logger settings are not dynamically configurable.
     log_config: Option<LogConfig>,
-    /// The input for `command`.
+    /// The input of a command.
     input: String,
     /// The current command to be implemented.
     command: Option<Command>,
     /// The working directory of the application.
-    working_dir: Url,
-    /// The current user selection.
-    cursor: Selection,
-    /// The size of the user interface.
-    ui_size: Size,
+    working_dir: Rc<PathUrl>,
 }
 
-impl Sheet {
-    /// Creates a new [`Sheet`].
-    pub(crate) fn new(arguments: &Arguments) -> Result<Self, Fault> {
-        Ok(Self {
-            doc: None,
-            is_wrapped: false,
-            lsp_servers: HashMap::default(),
+impl Processor {
+    /// Creates a new [`Processor`].
+    pub(crate) fn new(arguments: &Arguments) -> Self {
+        let working_dir = Rc::new(arguments.working_dir.clone());
+
+        Self {
+            pane: Pane::new(&working_dir),
             input: String::new(),
             log_config: arguments.log_config.clone(),
             command: None,
-            working_dir: Url::from_directory_path(arguments.working_dir.clone()).map_err(|_| {
-                WorkingDirFault::Path(arguments.working_dir.to_string_lossy().to_string())
-            })?,
-            cursor: Selection::default(),
-            ui_size: Size::default(),
-        })
+            working_dir,
+        }
     }
 
     /// Performs `operation` and returns the appropriate [`Change`]s.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Change<'_>>, Fault> {
-        match operation {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Update<'_>>, Fault> {
+        // Retrieve here to avoid error. This will not work once changes start modifying the working dir.
+        let working_dir = self.working_dir.path.clone();
+        let change = match operation {
+            Operation::UpdateSetting(setting) => self.update_setting(setting)?,
+            Operation::Confirm(action) => {
+                Some(Change::Question(ShowMessageRequestParams::from(action)))
+            }
             Operation::Reset => {
                 self.input.clear();
-                Ok(Some(Change::Reset))
+                Some(Change::Reset)
             }
-            Operation::Confirm(action) => Ok(Some(Change::Question(
-                ShowMessageRequestParams::from(action),
-            ))),
-            Operation::Quit => Ok(None),
-            Operation::UpdateSetting(setting) => self.update_setting(setting),
-            Operation::Alert(alert) => Ok(Some(Change::Message(alert))),
+            Operation::Alert(alert) => Some(Change::Message(alert)),
             Operation::StartCommand(command) => {
                 let prompt = command.to_string();
 
                 self.command = Some(command);
-                Ok(Some(Change::Input(prompt)))
+                Some(Change::Input(prompt))
             }
             Operation::Collect(c) => {
                 self.input.push(c);
-                Ok(Some(Change::InputChar(c)))
+                Some(Change::InputChar(c))
             }
             Operation::Execute => {
                 if self.command.is_some() {
-                    let file = self.input.clone();
+                    let change = self.pane.open_doc(&self.input);
 
                     self.input.clear();
-                    self.open_file(file)
+                    change
                 } else {
-                    Ok(None)
+                    None
                 }
             }
-            Operation::Move(movement) => {
-                match movement {
-                    Movement::SingleDown => {
-                        self.cursor.move_down(1, self.line_count());
-                    }
-                    Movement::SingleUp => {
-                        self.cursor.move_up(1);
-                    }
-                    Movement::HalfDown => {
-                        self.cursor
-                            .move_down(self.scroll_value(), self.line_count());
-                    }
-                    Movement::HalfUp => {
-                        self.cursor.move_up(self.scroll_value());
-                    }
-                };
+            Operation::Document(doc_op) => self.pane.operate(doc_op),
+            Operation::Quit => None,
+        };
 
-                Ok(self.doc.as_ref().map(|doc| Change::Text {
-                    lines: doc.text.lines(),
-                    is_wrapped: self.is_wrapped,
-                    cursor_position: self.cursor.range.start,
-                }))
-            }
-            Operation::Delete => {
-                if let Some(doc) = &mut self.doc {
-                    doc.version = doc.version.wrapping_add(1);
-                    let mut lines: Vec<&str> = doc.text.lines().collect();
-                    let edit = TextEdit::new(self.cursor.range, lines.drain(self.cursor).collect());
-                    doc.text = lines.join("\n");
-
-                    if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.language_id.clone()) {
-                        lsp_server.did_change(doc, edit)?;
-                    }
-                };
-
-                Ok(self.doc.as_ref().map(|doc| Change::Text {
-                    lines: doc.text.lines(),
-                    is_wrapped: self.is_wrapped,
-                    cursor_position: self.cursor.range.start,
-                }))
-            }
-        }
+        Ok(change.map(|c| {
+            Update::new(
+                print::get_prompt(Context::new_with_dir(ArgMatches::default(), &working_dir))
+                    .replace("[J", ""),
+                c,
+            )
+        }))
     }
 
     /// Updates `self` based on `setting`.
     fn update_setting(&mut self, setting: Setting) -> Result<Option<Change<'_>>, Fault> {
         match setting {
-            Setting::File(file) => self.open_file(file),
-            Setting::Wrap(is_wrapped) => {
-                if self.is_wrapped == is_wrapped {
-                    Ok(None)
-                } else {
-                    self.is_wrapped = is_wrapped;
-                    Ok(self.doc.as_ref().map(|doc| Change::Text {
-                        lines: doc.text.lines(),
-                        is_wrapped,
-                        cursor_position: self.cursor.range.start,
-                    }))
-                }
-            }
-            Setting::Size(size) => {
-                self.ui_size = size.clone();
-                Ok(Some(Change::Size(size)))
-            }
+            Setting::File(file) => Ok(self.pane.open_doc(&file)),
+            Setting::Wrap(is_wrapped) => Ok(self.pane.control_wrap(is_wrapped)),
+            Setting::Size(size) => Ok(Some(self.pane.update_size(size))),
             Setting::StarshipLog(log_level) => {
                 trace!("updating starship log level to `{}`", log_level);
 
@@ -244,73 +251,224 @@ impl Sheet {
             }
         }
     }
+}
 
-    /// Returns the amount to move for scrolling.
-    fn scroll_value(&self) -> u64 {
-        u64::from(self.ui_size.rows.wrapping_div(3))
+/// A view of the document.
+#[derive(Debug, Default)]
+struct Pane {
+    /// The document in the pane.
+    doc: Option<Document>,
+    /// The number of lines by which a scroll moves.
+    scroll_amount: Rc<RefCell<Amount>>,
+    /// The length at which displayed lines may be wrapped.
+    wrap_length: Rc<RefCell<Swival<usize>>>,
+    /// The current working directory.
+    working_dir: Rc<PathUrl>,
+    /// The [`LspServer`]s managed by the application.
+    lsp_servers: HashMap<String, Rc<RefCell<LspServer>>>,
+}
+
+impl Pane {
+    /// Creates a new [`Pane`].
+    fn new(working_dir: &Rc<PathUrl>) -> Self {
+        Self {
+            doc: None,
+            scroll_amount: Rc::new(RefCell::new(Amount(0))),
+            wrap_length: Rc::new(RefCell::new(Swival::default())),
+            lsp_servers: HashMap::default(),
+            working_dir: Rc::clone(working_dir),
+        }
     }
 
-    /// Returns the number of lines in the doc.
-    fn line_count(&self) -> u64 {
-        u64::try_from(self.doc.as_ref().map_or(0, |doc| doc.text.lines().count()))
-            .unwrap_or(u64::max_value())
+    /// Performs `operation` on `self`.
+    fn operate(&mut self, operation: DocOp) -> Option<Change<'_>> {
+        self.doc.as_mut().map(|doc| match operation {
+            DocOp::Move(vector) => doc.move_selection(&vector),
+            DocOp::Delete => doc.delete_selection(),
+        })
     }
 
-    /// Opens `file` as a [`Document`].
-    fn open_file(&mut self, file: String) -> Result<Option<Change<'_>>, Fault> {
-        match self.get_document(file) {
+    /// Opens a document at `path`.
+    fn open_doc(&mut self, path: &str) -> Option<Change<'_>> {
+        match self.create_doc(path) {
             Ok(doc) => {
-                if let Some(old_doc) = &self.doc {
-                    if let Some(lsp_server) = self.lsp_servers.get_mut(&old_doc.language_id) {
-                        lsp_server.did_close(old_doc)?;
-                    }
-                }
-
-                let cmd = match doc.language_id.as_str() {
-                    "rust" => Some("rls"),
-                    _ => None,
-                };
-
-                if let Some(process) = cmd {
-                    let lsp_server = match self.lsp_servers.entry(doc.language_id.clone()) {
-                        Entry::Vacant(entry) => {
-                            entry.insert(LspServer::new(process, &self.working_dir)?)
-                        }
-                        Entry::Occupied(entry) => entry.into_mut(),
-                    };
-
-                    lsp_server.did_open(&doc)?;
-                }
-
-                self.doc = Some(doc);
-                self.cursor = Selection::default();
-
-                Ok(self.doc.as_ref().map(|doc| Change::Text {
-                    lines: doc.text.lines(),
-                    is_wrapped: self.is_wrapped,
-                    cursor_position: self.cursor.range.start,
-                }))
+                let _ = self.doc.replace(doc);
+                self.doc.as_ref().map(Document::text_change)
             }
-            Err(error) => Ok(Some(Change::Message(ShowMessageParams::from(error)))),
+            Err(error) => Some(Change::Message(ShowMessageParams::from(error))),
         }
     }
 
-    /// Creates a [`TextDocumentItem`] from `path`.
-    fn get_document(&self, path: String) -> Result<TextDocumentItem, DocumentError> {
-        let uri = self.working_dir.join(&path).map_err(DocumentError::from)?;
-        let file_path = uri
-            .clone()
-            .to_file_path()
-            .map_err(|_| DocumentError::InvalidPath(uri.to_string()))?;
+    /// Creates a [`Document`] from `path`.
+    fn create_doc(&mut self, path: &str) -> Result<Document, DocumentError> {
+        let doc_path = self.working_dir.join(path)?;
+        let language_id = doc_path.language_id();
+        let lsp_server = self.lsp_servers.get(language_id).cloned();
 
-        let language_id = match file_path.extension().and_then(OsStr::to_str) {
-            Some("rs") => "rust",
-            Some(x) => x,
-            None => "",
+        if lsp_server.is_none() {
+            if let Some(lsp_server) = LspServer::new(language_id, &self.working_dir.url)?
+                .map(|server| Rc::new(RefCell::new(server)))
+            {
+                let _ = self
+                    .lsp_servers
+                    .insert(language_id.to_string(), Rc::clone(&lsp_server));
+            }
         }
-        .to_string();
-        let text = fs::read_to_string(file_path).map_err(|error| match error.kind() {
-            ErrorKind::NotFound => DocumentError::NonExistantFile(path),
+
+        Document::new(doc_path, &self.wrap_length, lsp_server, &self.scroll_amount)
+    }
+
+    /// Sets the flag of the wrap length.
+    fn control_wrap(&mut self, is_wrapped: bool) -> Option<Change<'_>> {
+        if self.wrap_length.borrow_mut().control(is_wrapped) {
+            self.doc.as_mut().map(|doc| doc.text_change())
+        } else {
+            None
+        }
+    }
+
+    /// Updates the size of `self` to match `size`;
+    fn update_size(&mut self, size: Size) -> Change<'_> {
+        self.wrap_length.borrow_mut().set(size.columns.into());
+        self.scroll_amount
+            .borrow_mut()
+            .set(u64::from(size.rows.wrapping_div(3)));
+        Change::Size(size)
+    }
+}
+
+/// A file and the user's current interactions with it.
+#[derive(Debug)]
+struct Document {
+    /// The URL of the document.
+    uri: Url,
+    /// The text of the document.
+    text: Text,
+    /// The current user selection.
+    selection: Selection,
+    /// The [`LspServer`] associated with the document.
+    lsp_server: Option<Rc<RefCell<LspServer>>>,
+    /// The number of lines that a scroll will move.
+    scroll_amount: Rc<RefCell<Amount>>,
+}
+
+impl Document {
+    /// Creates a new [`Document`].
+    fn new(
+        path: PathUrl,
+        wrap_length: &Rc<RefCell<Swival<usize>>>,
+        lsp_server: Option<Rc<RefCell<LspServer>>>,
+        scroll_amount: &Rc<RefCell<Amount>>,
+    ) -> Result<Self, DocumentError> {
+        let text = Text::new(&path, wrap_length)?;
+        let mut selection = Selection::default();
+
+        if !text.is_empty() {
+            selection.set_end_bound(1);
+        }
+
+        if let Some(server) = &lsp_server {
+            server.borrow_mut().did_open(
+                &path.url,
+                path.language_id(),
+                text.version,
+                &text.content,
+            )?;
+        }
+
+        Ok(Self {
+            uri: path.url,
+            text,
+            selection,
+            lsp_server,
+            scroll_amount: Rc::clone(scroll_amount),
+        })
+    }
+
+    /// Deletes the text of the [`Selection`].
+    fn delete_selection(&mut self) -> Change<'_> {
+        self.text.delete_selection(&self.selection);
+        let mut change = self.text_change();
+
+        if let Some(server) = &self.lsp_server {
+            if let Err(e) = server.borrow_mut().did_change(
+                &self.uri,
+                self.text.version,
+                &self.text.content,
+                TextEdit::new(self.selection.range, String::new()),
+            ) {
+                change = Change::Message(e.into());
+            }
+        }
+
+        change
+    }
+
+    /// Returns the [`Change`] for the current status.
+    fn text_change(&self) -> Change<'_> {
+        Change::Text {
+            cursor: self.selection.range,
+            rows: self.text.rows(),
+        }
+    }
+
+    /// Returns the number of lines in `self`.
+    fn line_count(&self) -> u64 {
+        u64::try_from(self.text.content.lines().count()).unwrap_or(u64::max_value())
+    }
+
+    /// Moves the [`Selection`] as described by [`Vector`].
+    fn move_selection(&mut self, vector: &Vector) -> Change<'_> {
+        let amount = match vector.magnitude {
+            Magnitude::Single => 1,
+            Magnitude::Half => self.scroll_amount.borrow().value(),
+        };
+        match vector.direction {
+            Direction::Down => {
+                self.selection.move_down(amount, self.line_count());
+            }
+            Direction::Up => {
+                self.selection.move_up(amount);
+            }
+        }
+
+        self.text_change()
+    }
+}
+
+impl Drop for Document {
+    fn drop(&mut self) {
+        trace!("dropping {:?}", self.uri);
+        if let Some(lsp_server) = &self.lsp_server {
+            if let Err(e) = lsp_server.borrow_mut().did_close(&self.uri) {
+                error!(
+                    "failed to inform language server process about closing {}",
+                    e
+                );
+            }
+        }
+    }
+}
+
+/// The text of a document.
+#[derive(Debug)]
+struct Text {
+    /// The text.
+    content: String,
+    /// The length at which the text will wrap.
+    wrap_length: Rc<RefCell<Swival<usize>>>,
+    /// The version of the text.
+    version: i64,
+}
+
+impl Text {
+    /// Creates a new [`Text`].
+    fn new(
+        path: &PathUrl,
+        wrap_length: &Rc<RefCell<Swival<usize>>>,
+    ) -> Result<Self, DocumentError> {
+        let content = fs::read_to_string(path.clone()).map_err(|error| match error.kind() {
+            ErrorKind::NotFound => DocumentError::NonExistantFile(path.url.to_string()),
             ErrorKind::PermissionDenied
             | ErrorKind::ConnectionRefused
             | ErrorKind::ConnectionReset
@@ -331,22 +489,98 @@ impl Sheet {
             | _ => DocumentError::from(error),
         })?;
 
-        Ok(TextDocumentItem::new(uri, language_id, 0, text))
+        Ok(Self {
+            content,
+            wrap_length: Rc::clone(wrap_length),
+            version: 0,
+        })
+    }
+
+    /// Returns if `self` is empty.
+    fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
+    /// Returns an iterator of [`Row`]s.
+    fn rows(&self) -> Rows<'_> {
+        Rows::new(&self.content, self.wrap_length.borrow().get().cloned())
+    }
+
+    /// Deletes the text defined by `selection`.
+    fn delete_selection(&mut self, selection: &Selection) {
+        let mut newline_indices = self.content.match_indices('\n');
+        if let Some(start_index) = if selection.start_bound == 0 {
+            Some(0)
+        } else {
+            newline_indices
+                .nth(selection.start_bound.saturating_sub(1))
+                .map(|index| index.0.saturating_add(1))
+        } {
+            if let Some((end_index, ..)) = newline_indices.nth(
+                selection
+                    .end_bound
+                    .saturating_sub(selection.start_bound.saturating_add(1)),
+            ) {
+                let _ = self.content.drain(start_index..=end_index);
+                self.version = self.version.wrapping_add(1);
+            }
+        }
     }
 }
 
-impl Drop for Sheet {
-    fn drop(&mut self) {
-        if let Some(doc) = &self.doc {
-            if let Some(lsp_server) = self.lsp_servers.get_mut(&doc.language_id) {
-                if let Err(e) = lsp_server.did_close(doc) {
-                    error!(
-                        "failed to inform language server process about closing {}",
-                        e
-                    );
-                }
-            }
+/// A wrapper around [`u64`].
+///
+/// Used for storing and modifying within a [`RefCell`].
+#[derive(Debug, Default)]
+struct Amount(u64);
+
+impl Amount {
+    /// Returns the value of `self`.
+    const fn value(&self) -> u64 {
+        self.0
+    }
+
+    /// Sets `self` to `amount`.
+    fn set(&mut self, amount: u64) {
+        self.0 = amount;
+    }
+}
+
+/// A `SWItch VALue`, which holds a value and if it is enabled.
+///
+/// Think of it as an [`Option`] where both variants hold a value.
+#[derive(Debug, Default)]
+struct Swival<T> {
+    /// The value.
+    value: T,
+    /// If the value is enabled.
+    is_enabled: bool,
+}
+
+impl<T> Swival<T> {
+    /// Sets the enable flag of `self` to `enable`.
+    fn control(&mut self, enable: bool) -> bool {
+        let is_toggled = enable != self.is_enabled;
+
+        if is_toggled {
+            self.is_enabled = enable;
         }
+
+        is_toggled
+    }
+
+    /// Returns the value of `self` indicating if it is enabled.
+    fn get(&self) -> Option<&T> {
+        if self.is_enabled {
+            Some(&self.value)
+        } else {
+            None
+        }
+    }
+
+    /// Sets the value of `self` to `value`.
+    fn set(&mut self, value: T) {
+        self.value = value;
     }
 }
 
@@ -364,10 +598,7 @@ struct Selection {
 impl Selection {
     /// Moves `self` down by `amount` lines.
     fn move_down(&mut self, amount: u64, line_count: u64) {
-        let end_line = cmp::min(
-            self.range.end.line.saturating_add(amount),
-            line_count.saturating_sub(1),
-        );
+        let end_line = cmp::min(self.range.end.line.saturating_add(amount), line_count);
         self.set_start_bound(
             self.range
                 .start
@@ -432,15 +663,39 @@ pub(crate) enum Command {
 
 /// A movement to the cursor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Movement {
-    /// Moves cursor down by a single line.
-    SingleDown,
-    /// Moves cursor up by a single line.
-    SingleUp,
-    /// Moves cursor down close to half the height.
-    HalfDown,
-    /// Moves cursor up close to half the height.
-    HalfUp,
+pub(crate) struct Vector {
+    /// The direction of the movement.
+    direction: Direction,
+    /// The magnitude of the movement.
+    magnitude: Magnitude,
+}
+
+impl Vector {
+    /// Creates a new [`Vector`].
+    pub(crate) const fn new(direction: Direction, magnitude: Magnitude) -> Self {
+        Self {
+            direction,
+            magnitude,
+        }
+    }
+}
+
+/// Describes the direction of a movement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Direction {
+    /// Towards the bottom.
+    Down,
+    /// Towards the top.
+    Up,
+}
+
+/// Describes the magnitude of a movement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Magnitude {
+    /// Move a single line.
+    Single,
+    /// Move roughly half of a screen.
+    Half,
 }
 
 /// Signifies errors associated with [`Document`].
@@ -449,15 +704,18 @@ enum DocumentError {
     /// Error while parsing url.
     #[error("unable to parse url: {0}")]
     Parse(#[from] ParseError),
-    /// Path is invalid.
-    #[error("path `{0}` is invalid")]
-    InvalidPath(String),
     /// File does not exist.
     #[error("file `{0}` does not exist")]
     NonExistantFile(String),
     /// Io error.
     #[error("io: {0}")]
     Io(#[from] io::Error),
+    /// Error in the language server.
+    #[error("lsp: {0}")]
+    Lsp(#[from] lsp::Fault),
+    /// Error working with a URL.
+    #[error("url: {0}")]
+    Url(#[from] UrlError),
 }
 
 impl From<DocumentError> for ShowMessageParams {
@@ -490,8 +748,15 @@ pub(crate) enum Operation {
     Collect(char),
     /// Executes the current command.
     Execute,
+    /// An operation to edit the text or selection of the document.
+    Document(DocOp),
+}
+
+/// An operation performed on a document.
+#[derive(Debug, PartialEq)]
+pub(crate) enum DocOp {
     /// Moves the cursor.
-    Move(Movement),
+    Move(Vector),
     /// Deletes the current selection.
     Delete,
 }

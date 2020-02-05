@@ -17,12 +17,9 @@ pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
     crate::Arguments,
-    clap::ArgMatches,
     core::{
-        convert::{TryFrom, TryInto},
+        convert::TryFrom,
         fmt::{self, Debug},
-        iter,
-        str::Lines,
         time::Duration,
     },
     crossterm::{
@@ -34,10 +31,9 @@ use {
         ErrorKind,
     },
     log::{trace, warn, LevelFilter},
-    lsp_types::{MessageType, Position, ShowMessageParams, ShowMessageRequestParams},
+    lsp_types::{MessageType, Range, ShowMessageParams, ShowMessageRequestParams},
     notify::{DebouncedEvent, RecommendedWatcher, Watcher},
     serde::Deserialize,
-    starship::{context::Context, print},
     std::{
         collections::VecDeque,
         fs,
@@ -110,8 +106,6 @@ pub(crate) struct Terminal {
     top_line: u64,
     /// Notifies `self` of any events to the config file.
     watcher: ConfigWatcher,
-    /// The working directory of the application.
-    working_dir: PathBuf,
     /// The grid of the terminal.
     grid: Grid,
 }
@@ -131,7 +125,6 @@ impl Terminal {
             top_line: 0,
             watcher,
             config: Config::default(),
-            working_dir: arguments.working_dir.clone(),
             grid: Grid::default(),
         };
 
@@ -148,109 +141,50 @@ impl Terminal {
         Ok(term)
     }
 
-    /// Corrects the top line to ensure the cursor is displayed.
-    fn adjust_for_cursor(&mut self, cursor_line: u64, lines: &Lines<'_>, is_wrapped: bool) {
-        if cursor_line < self.top_line {
-            self.top_line = cursor_line;
-        } else {
-            let mut line_mappings: Vec<usize> = lines
-                .clone()
-                .enumerate()
-                .skip(self.top_line.try_into().unwrap_or(usize::max_value()))
-                .flat_map(|(index, line)| {
-                    let mut row_count: usize = 1;
+    /// Applies `change` to the output.
+    pub(crate) fn apply(&mut self, update: Update<'_>) -> Outcome<()> {
+        match update.change {
+            Change::Text { rows, cursor } => {
+                if cursor.start.line < self.top_line {
+                    self.top_line = cursor.start.line;
+                }
 
-                    if is_wrapped {
-                        row_count = row_count.saturating_add(
-                            line.len()
-                                .saturating_sub(1)
-                                .wrapping_div(usize::from(self.size.columns)),
-                        );
-                    }
+                let mut visible_rows: Vec<Row<'_>> = rows
+                    .clone()
+                    .filter(|row| row.line() >= self.top_line)
+                    .collect();
+                let mut end_line = cursor.end.line;
 
-                    iter::repeat(index).take(row_count)
-                })
-                .collect();
+                if cursor.end.character == 0 {
+                    end_line = end_line.saturating_sub(1);
+                }
 
-            while let Some(first_line_past_bottom) = line_mappings.get(usize::from(self.size.rows))
-            {
-                if usize::try_from(cursor_line).unwrap_or(usize::max_value())
-                    < *first_line_past_bottom
+                while let Some(first_line_past_bottom) = visible_rows
+                    .get(usize::from(self.grid.height))
+                    .map(Row::line)
                 {
-                    break;
-                } else {
-                    let line = line_mappings.remove(0);
-                    self.top_line = self.top_line.saturating_add(1);
+                    if end_line < first_line_past_bottom {
+                        break;
+                    } else {
+                        let line = visible_rows.remove(0).line();
+                        self.top_line = self.top_line.saturating_add(1);
 
-                    while let Some(row_line) = line_mappings.get(0) {
-                        if *row_line == line {
-                            let _ = line_mappings.remove(0);
-                        } else {
-                            break;
+                        while visible_rows.get(0).map(Row::line) == Some(line) {
+                            let _ = visible_rows.remove(0);
                         }
                     }
                 }
-            }
-        }
-    }
 
-    /// Applies `change` to the output.
-    pub(crate) fn apply(&mut self, change: Change<'_>) -> Outcome<()> {
-        match change {
-            Change::Text {
-                lines,
-                is_wrapped,
-                cursor_position,
-            } => {
-                self.adjust_for_cursor(cursor_position.line, &lines, is_wrapped);
+                let top_line = self.top_line;
 
-                let mut lines = lines
-                    .skip(self.top_line.try_into().unwrap_or(usize::max_value()))
-                    .take(usize::from(self.size.rows));
-                let mut row = 0;
-                let cursor_line_from_top = cursor_position.line.checked_sub(self.top_line);
-                let mut line_count = 0;
-
-                while row < self.size.rows {
-                    if let Some(mut line) = lines.next() {
-                        let mut last_row = row;
-
-                        if is_wrapped {
-                            last_row = last_row.saturating_add(
-                                u16::try_from(
-                                    line.len()
-                                        .saturating_sub(1)
-                                        .wrapping_div(usize::from(self.size.columns)),
-                                )
-                                .unwrap_or(u16::max_value()),
-                            );
-                        }
-
-                        for r in row..=last_row {
-                            let printed_line = if line.len() > self.size.columns.into() {
-                                let split = line.split_at(self.size.columns.into());
-                                line = split.1;
-                                split.0
-                            } else {
-                                line
-                            };
-
-                            self.grid.replace_line(
-                                r,
-                                printed_line,
-                                if let Some(line_from_top) = cursor_line_from_top {
-                                    line_count == line_from_top
-                                } else {
-                                    false
-                                },
-                            )?;
-                        }
-
-                        row = last_row.saturating_add(1);
-                        line_count = line_count.saturating_add(1);
-                    } else {
-                        break;
-                    }
+                for (index, row) in rows
+                    .filter(|row| row.line() >= top_line)
+                    .enumerate()
+                    .take(usize::from(self.size.rows.saturating_sub(1)))
+                {
+                    //trace!("index {}, row {:?}", index, row);
+                    self.grid
+                        .replace_line(index, row.text(), row.line() == end_line)?;
                 }
 
                 queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(Fault::Command)?;
@@ -283,13 +217,7 @@ impl Terminal {
             self.out,
             SavePosition,
             MoveTo(0, 0),
-            Print(
-                print::get_prompt(Context::new_with_dir(
-                    ArgMatches::default(),
-                    &self.working_dir
-                ))
-                .replace("[J", "")
-            ),
+            Print(update.header),
             RestorePosition,
         )
         .map_err(Fault::Command)?;
@@ -353,6 +281,92 @@ impl Drop for Terminal {
     }
 }
 
+/// An [`Iterator`] over the rows of a string.
+#[derive(Clone, Debug)]
+pub(crate) struct Rows<'a> {
+    /// The string being iterated over.
+    s: &'a str,
+    /// The maximum size of a row.
+    max_len: usize,
+    /// The index of the current line of the iterator.
+    current_line: u64,
+}
+
+impl<'a> Rows<'a> {
+    /// Creates a new [`Iterator`] over the rows of `s` with a `max_len`.
+    pub(crate) fn new(s: &'a str, max_len: Option<usize>) -> Self {
+        Rows {
+            s,
+            max_len: max_len.unwrap_or(usize::max_value()),
+            current_line: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for Rows<'a> {
+    type Item = Row<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.s.is_empty() {
+            None
+        } else {
+            let (line_len, extra_len) = if let Some(mut newline_len) = self.s.find('\n') {
+                let mut extra = 1;
+
+                if let Some(line_end) = newline_len.checked_sub(1) {
+                    if self.s.get(line_end..=line_end) == Some("\r") {
+                        newline_len = line_end;
+                        extra = 2;
+                    }
+                }
+
+                (newline_len, extra)
+            } else {
+                (self.s.len(), 0)
+            };
+            let (row_len, rm_len) = if line_len > self.max_len {
+                (self.max_len, 0)
+            } else {
+                (line_len, extra_len)
+            };
+            let (row_text, remainder) = self.s.split_at(row_len);
+            let (_, new_s) = remainder.split_at(rm_len);
+            let row = Row {
+                text: row_text,
+                line: self.current_line,
+            };
+
+            if rm_len != 0 {
+                self.current_line = self.current_line.saturating_add(1);
+            }
+
+            self.s = new_s;
+            Some(row)
+        }
+    }
+}
+
+/// Represents a row in the user interface.
+#[derive(Clone, Debug)]
+pub(crate) struct Row<'a> {
+    /// The line of the row.
+    line: u64,
+    /// The text of the row.
+    text: &'a str,
+}
+
+impl Row<'_> {
+    /// Returns the line of `self`.
+    pub(crate) const fn line(&self) -> u64 {
+        self.line
+    }
+
+    /// Returns the text of `self`.
+    pub(crate) const fn text(&self) -> &str {
+        self.text
+    }
+}
+
 /// Triggers a callback if the config file is updated.
 struct ConfigWatcher {
     /// Watches for events on the config file.
@@ -398,13 +412,13 @@ impl Grid {
     }
 
     /// Replaces line in grid at `index` with `new_line`.
-    fn replace_line(&mut self, index: u16, new_line: &str, is_cursor_line: bool) -> Outcome<()> {
-        if let Some(line) = self.lines.get_mut(usize::from(index)) {
+    fn replace_line(&mut self, index: usize, new_line: &str, is_cursor_line: bool) -> Outcome<()> {
+        if let Some(line) = self.lines.get_mut(index) {
             line.replace_range(.., new_line);
         }
 
         self.print(
-            index,
+            u16::try_from(index).unwrap_or(u16::max_value()),
             new_line,
             if is_cursor_line {
                 Some(Color::DarkGrey)
@@ -564,6 +578,21 @@ macro_rules! def_config {
 def_config!(Wrap: bool = false);
 def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 
+/// An update to the user interface.
+pub(crate) struct Update<'a> {
+    /// The update header of the ui.
+    header: String,
+    /// The change of the update.
+    change: Change<'a>,
+}
+
+impl<'a> Update<'a> {
+    /// Creates a new [`Update`].
+    pub(crate) const fn new(header: String, change: Change<'a>) -> Self {
+        Self { header, change }
+    }
+}
+
 /// Signifies a potential modification to the output of the user interface.
 ///
 /// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
@@ -571,12 +600,10 @@ def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 pub(crate) enum Change<'a> {
     /// Text of the current document or how it was displayed was modified.
     Text {
-        /// The lines of the document.
-        lines: Lines<'a>,
-        /// Long lines are wrapped.
-        is_wrapped: bool,
-        /// The cursor position.
-        cursor_position: Position,
+        /// The rows of the current document.
+        rows: Rows<'a>,
+        /// The cursor.
+        cursor: Range,
     },
     /// Message will be displayed to the user.
     Message(ShowMessageParams),
