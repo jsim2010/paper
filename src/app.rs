@@ -6,6 +6,7 @@ use {
     crate::ui::{Change, Setting, Size, Update},
     clap::ArgMatches,
     core::{
+        cmp,
         convert::{TryFrom, TryInto},
         ops::{Bound, RangeBounds},
     },
@@ -20,7 +21,6 @@ use {
     starship::{context::Context, print},
     std::{
         cell::RefCell,
-        cmp,
         collections::HashMap,
         env,
         ffi::OsStr,
@@ -306,7 +306,6 @@ impl Pane {
     fn control_wrap(&mut self, is_wrapped: bool) -> Option<Change> {
         if self.wrap_length.borrow_mut().control(is_wrapped) {
             self.doc.as_mut().map(|doc| {
-                doc.update_rows();
                 doc.text_change()
             })
         } else {
@@ -324,141 +323,57 @@ impl Pane {
 /// A file and the user's current interactions with it.
 #[derive(Debug)]
 struct Document {
-    /// An lsp representation of the document.
-    item: TextDocumentItem,
-    // TODO: This should hold the text string while impl Iterator<Item=Row>.
-    /// The rows of the document.
-    rows: Vec<Row>,
+    uri: Url,
+    text: Text,
     /// The current user selection.
     selection: Selection,
     lsp_server: Option<Rc<RefCell<LspServer>>>,
     scroll_amount: Rc<RefCell<Amount>>,
-    wrap_length: Rc<RefCell<Swival<usize>>>,
 }
 
 impl Document {
     /// Creates a new [`Document`].
     fn new(path: PathUrl, wrap_length: &Rc<RefCell<Swival<usize>>>, lsp_server: Option<Rc<RefCell<LspServer>>>, scroll_amount: &Rc<RefCell<Amount>>) -> Result<Self, DocumentError> {
-        let text = fs::read_to_string(path.clone()).map_err(|error| match error.kind() {
-            ErrorKind::NotFound => DocumentError::NonExistantFile(path.url.to_string()),
-            ErrorKind::PermissionDenied
-            | ErrorKind::ConnectionRefused
-            | ErrorKind::ConnectionReset
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::NotConnected
-            | ErrorKind::AddrInUse
-            | ErrorKind::AddrNotAvailable
-            | ErrorKind::BrokenPipe
-            | ErrorKind::AlreadyExists
-            | ErrorKind::WouldBlock
-            | ErrorKind::InvalidInput
-            | ErrorKind::InvalidData
-            | ErrorKind::TimedOut
-            | ErrorKind::WriteZero
-            | ErrorKind::Interrupted
-            | ErrorKind::Other
-            | ErrorKind::UnexpectedEof
-            | _ => DocumentError::from(error),
-        })?;
+        let text = Text::new(&path, wrap_length)?;
         let mut selection = Selection::default();
 
         if !text.is_empty() {
             selection.set_end_bound(1);
         }
 
-        let item = TextDocumentItem::new(path.url.clone(), path.language_id().to_string(), 0, text);
-
         if let Some(server) = &lsp_server {
-            server.borrow_mut().did_open(&item).unwrap();
+            server.borrow_mut().did_open(&path.url, path.language_id(), text.version, &text.content).unwrap();
         }
 
-        let mut doc = Self {
-            item,
-            rows: Vec::new(),
+        Ok(Self {
+            uri: path.url,
+            text,
             selection,
             lsp_server,
             scroll_amount: Rc::clone(scroll_amount),
-            wrap_length: Rc::clone(wrap_length),
-        };
-
-        doc.update_rows();
-
-        Ok(doc)
+        })
     }
 
     fn delete_selection(&mut self) -> Change {
-        self.item.version = self.item.version.wrapping_add(1);
-        let mut lines: Vec<&str> = self.item.text.lines().collect();
-        let edit = TextEdit::new(self.selection.range, lines.drain(self.selection).collect());
-        self.item.text = lines.join("\n");
-        let cursor_line_count = u64::try_from(self.selection.end_bound.saturating_sub(self.selection.start_bound)).unwrap_or(u64::max_value());
-        self.rows = self.rows.iter().filter_map(|row| {
-            let row_line = usize::try_from(row.line()).unwrap_or(usize::max_value());
-
-            if self.selection.contains(&row_line) {
-                None
-            } else {
-                let mut new_row = row.clone();
-
-                if row_line >= self.selection.end_bound {
-                    new_row.line = new_row.line.saturating_sub(cursor_line_count);
-                }
-
-                Some(new_row)
-            }
-        }).collect();
+        self.text.delete_selection(&self.selection);
 
         if let Some(server) = &self.lsp_server {
-            server.borrow_mut().did_change(&self.item, edit).unwrap();
+            server.borrow_mut().did_change(&self.uri, self.text.version, &self.text.content, TextEdit::new(self.selection.range, String::new())).unwrap();
         }
 
         self.text_change()
     }
 
-    /// Update the rows in `self`.
-    fn update_rows(&mut self) {
-        self.rows = Vec::new();
-
-        for (index, mut line) in self.item.text.lines().enumerate() {
-            let mut is_final = false;
-
-            loop {
-                let row_text = if let Some(length) = self.wrap_length.borrow().get() {
-                    if line.len() > *length {
-                        let split = line.split_at(*length);
-                        line = split.1;
-                        split.0
-                    } else {
-                        is_final = true;
-                        line
-                    }
-                } else {
-                    is_final = true;
-                    line
-                };
-
-                self.rows.push(Row {
-                    line: u64::try_from(index).unwrap_or(u64::max_value()),
-                    text: row_text.to_string(),
-                });
-
-                if is_final {
-                    break;
-                }
-            }
-        }
-    }
-
     fn text_change(&self) -> Change {
         Change::Text {
             cursor: self.selection.range,
-            rows: self.rows.clone(),
+            rows: self.text.rows().collect(),
         }
     }
 
     /// Returns the number of lines in `self`.
     fn line_count(&self) -> u64 {
-        u64::try_from(self.item.text.lines().count())
+        u64::try_from(self.text.content.lines().count())
             .unwrap_or(u64::max_value())
     }
 
@@ -482,14 +397,122 @@ impl Document {
 
 impl Drop for Document {
     fn drop(&mut self) {
-        trace!("dropping {:?}", self.item.uri);
+        trace!("dropping {:?}", self.uri);
         if let Some(lsp_server) = &self.lsp_server {
-            if let Err(e) = lsp_server.borrow_mut().did_close(&self.item) {
+            if let Err(e) = lsp_server.borrow_mut().did_close(&self.uri) {
                 error!(
                     "failed to inform language server process about closing {}",
                     e
                 );
             }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Text {
+    content: String,
+    wrap_length: Rc<RefCell<Swival<usize>>>,
+    version: i64,
+}
+
+impl Text {
+    fn new(path: &PathUrl, wrap_length: &Rc<RefCell<Swival<usize>>>) -> Result<Self, DocumentError> {
+        let content = fs::read_to_string(path.clone()).map_err(|error| match error.kind() {
+            ErrorKind::NotFound => DocumentError::NonExistantFile(path.url.to_string()),
+            ErrorKind::PermissionDenied
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::AddrInUse
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::BrokenPipe
+            | ErrorKind::AlreadyExists
+            | ErrorKind::WouldBlock
+            | ErrorKind::InvalidInput
+            | ErrorKind::InvalidData
+            | ErrorKind::TimedOut
+            | ErrorKind::WriteZero
+            | ErrorKind::Interrupted
+            | ErrorKind::Other
+            | ErrorKind::UnexpectedEof
+            | _ => DocumentError::from(error),
+        })?;
+
+        Ok(Self {
+            content,
+            wrap_length: Rc::clone(wrap_length),
+            version: 0,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
+    fn rows<'a>(&'a self) -> Rows<'a> {
+        Rows::new(&self.content, self.wrap_length.borrow().get().cloned())
+    }
+
+    fn delete_selection(&mut self, selection: &Selection) {
+        let mut newline_indices = self.content.match_indices('\n');
+        let start_index = if selection.start_bound == 0 {
+            0
+        } else {
+            newline_indices.nth(selection.start_bound - 1).unwrap().0 + 1
+        };
+        let end_index = newline_indices.nth(selection.end_bound - 1 - selection.start_bound).unwrap().0;
+        let _ = self.content.drain(start_index..=end_index);
+        self.version = self.version.wrapping_add(1);
+    }
+}
+
+struct Rows<'a> {
+    s: &'a str,
+    max_len: usize,
+    current_line: u64,
+}
+
+impl<'a> Rows<'a> {
+    fn new(s: &'a str, max_len: Option<usize>) -> Self {
+        Rows {s, max_len: max_len.unwrap_or(usize::max_value()), current_line: 0}
+    }
+}
+
+impl Iterator for Rows<'_> {
+    type Item = Row;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.s.is_empty() {
+            None
+        } else {
+            let (line_len, extra_len) = if let Some(newline_len) = self.s.find('\n') {
+                let line_end = newline_len - 1;
+
+                if self.s.get(line_end..=line_end) == Some("\r") {
+                    (line_end, 2)
+                } else {
+                    (newline_len, 1)
+                }
+            } else {
+                (self.s.len(), 0)
+            };
+            let (row_len, rm_len) = if line_len > self.max_len {
+                (self.max_len, 0)
+            } else {
+                (line_len, extra_len)
+            };
+            let (row_text, remainder) = self.s.split_at(row_len);
+            let (_, new_s) = remainder.split_at(rm_len);
+            let row = Row {text: row_text.to_string(), line: self.current_line};
+
+            if rm_len != 0 {
+                self.current_line += 1;
+            }
+
+            self.s = new_s;
+            Some(row)
         }
     }
 }

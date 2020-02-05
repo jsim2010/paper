@@ -100,11 +100,11 @@ impl LspServer {
     }
 
     /// Sends the didOpen notification, if appropriate.
-    pub(crate) fn did_open(&mut self, text_document: &TextDocumentItem) -> Result<(), Fault> {
+    pub(crate) fn did_open(&mut self, uri: &Url, language_id: &str, version: i64, text: &str) -> Result<(), Fault> {
         if self.settings.notify_open_close {
             self.transmitter
                 .notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
-                    text_document: text_document.clone(),
+                    text_document: TextDocumentItem::new(uri.clone(), language_id.to_string(), version, text.to_string()),
                 })?;
         }
 
@@ -114,7 +114,9 @@ impl LspServer {
     /// Sends the didChange notification, if appropriate.
     pub(crate) fn did_change(
         &mut self,
-        text_document: &TextDocumentItem,
+        uri: &Url,
+        version: i64,
+        text: &str,
         edit: TextEdit,
     ) -> Result<(), Fault> {
         if let Some(content_changes) = match self.settings.notify_changes_kind {
@@ -122,7 +124,7 @@ impl LspServer {
             TextDocumentSyncKind::Full => Some(vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
-                text: text_document.text.clone(),
+                text: text.to_string(),
             }]),
             TextDocumentSyncKind::Incremental => Some(vec![TextDocumentContentChangeEvent {
                 range: Some(edit.range),
@@ -133,8 +135,8 @@ impl LspServer {
             self.transmitter
                 .notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
                     text_document: VersionedTextDocumentIdentifier::new(
-                        text_document.uri.clone(),
-                        text_document.version,
+                        uri.clone(),
+                        version,
                     ),
                     content_changes,
                 })?;
@@ -144,11 +146,11 @@ impl LspServer {
     }
 
     /// Sends the didClose notification, if appropriate.
-    pub(crate) fn did_close(&mut self, text_document: &TextDocumentItem) -> Result<(), Fault> {
+    pub(crate) fn did_close(&mut self, uri: &Url) -> Result<(), Fault> {
         if self.settings.notify_open_close {
             self.transmitter
                 .notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
-                    text_document: TextDocumentIdentifier::new(text_document.uri.clone()),
+                    text_document: TextDocumentIdentifier::new(uri.clone()),
                 })?;
         }
 
