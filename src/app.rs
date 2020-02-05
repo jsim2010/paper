@@ -15,7 +15,7 @@ use {
     lsp::LspServer,
     lsp_types::{
         MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams,
-        TextDocumentItem, TextEdit,
+        TextEdit,
     },
     parse_display::Display as ParseDisplay,
     starship::{context::Context, print},
@@ -175,7 +175,9 @@ impl Processor {
     }
 
     /// Performs `operation` and returns the appropriate [`Change`]s.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Update>, Fault> {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Update<'_>>, Fault> {
+        // Retrieve here to avoid error. This will not work once changes start modifying the working dir.
+        let working_dir = self.working_dir.path.clone();
         let change = match operation {
             Operation::UpdateSetting(setting) => self.update_setting(setting)?,
             Operation::Confirm(action) => Some(Change::Question(
@@ -213,7 +215,7 @@ impl Processor {
         Ok(change.map(|c| Update::new(
             print::get_prompt(Context::new_with_dir(
                 ArgMatches::default(),
-                &self.working_dir.path,
+                &working_dir,
             ))
             .replace("[J", ""),
             c,
@@ -221,7 +223,7 @@ impl Processor {
     }
 
     /// Updates `self` based on `setting`.
-    fn update_setting(&mut self, setting: Setting) -> Result<Option<Change>, Fault> {
+    fn update_setting(&mut self, setting: Setting) -> Result<Option<Change<'_>>, Fault> {
         match setting {
             Setting::File(file) => {
                 Ok(self.pane.open_doc(&file))
@@ -268,7 +270,7 @@ impl Pane {
         }
     }
 
-    fn operate(&mut self, operation: DocOp) -> Option<Change> {
+    fn operate(&mut self, operation: DocOp) -> Option<Change<'_>> {
         self.doc.as_mut().map(|doc| {
             match operation {
                 DocOp::Move(vector) => doc.move_selection(vector),
@@ -277,16 +279,14 @@ impl Pane {
         })
     }
 
-    fn open_doc(&mut self, path: &str) -> Option<Change> {
-        Some(match self.create_doc(path) {
+    fn open_doc(&mut self, path: &str) -> Option<Change<'_>> {
+        match self.create_doc(path) {
             Ok(doc) => {
-                let change = doc.text_change();
                 let _ = self.doc.replace(doc);
-
-                change
+                self.doc.as_ref().map(|doc| doc.text_change())
             }
-            Err(error) => Change::Message(ShowMessageParams::from(error)),
-        })
+            Err(error) => Some(Change::Message(ShowMessageParams::from(error))),
+        }
     }
 
     fn create_doc(&mut self, path: &str) -> Result<Document, DocumentError> {
@@ -303,7 +303,7 @@ impl Pane {
         Document::new(doc_path, &self.wrap_length, lsp_server, &self.scroll_amount)
     }
 
-    fn control_wrap(&mut self, is_wrapped: bool) -> Option<Change> {
+    fn control_wrap(&mut self, is_wrapped: bool) -> Option<Change<'_>> {
         if self.wrap_length.borrow_mut().control(is_wrapped) {
             self.doc.as_mut().map(|doc| {
                 doc.text_change()
@@ -313,7 +313,7 @@ impl Pane {
         }
     }
 
-    fn update_size(&mut self, size: Size) -> Change {
+    fn update_size(&mut self, size: Size) -> Change<'_> {
         self.wrap_length.borrow_mut().set(size.columns.into());
         self.scroll_amount.borrow_mut().set(u64::from(size.rows.wrapping_div(3)));
         Change::Size(size)
@@ -354,7 +354,7 @@ impl Document {
         })
     }
 
-    fn delete_selection(&mut self) -> Change {
+    fn delete_selection(&mut self) -> Change<'_> {
         self.text.delete_selection(&self.selection);
 
         if let Some(server) = &self.lsp_server {
@@ -364,7 +364,7 @@ impl Document {
         self.text_change()
     }
 
-    fn text_change(&self) -> Change {
+    fn text_change(&self) -> Change<'_> {
         Change::Text {
             cursor: self.selection.range,
             rows: self.text.rows().collect(),
@@ -377,7 +377,7 @@ impl Document {
             .unwrap_or(u64::max_value())
     }
 
-    fn move_selection(&mut self, vector: Vector) -> Change {
+    fn move_selection(&mut self, vector: Vector) -> Change<'_> {
         let amount = match vector.magnitude {
             Magnitude::Single => 1,
             Magnitude::Half => self.scroll_amount.borrow().value(),
@@ -480,8 +480,8 @@ impl<'a> Rows<'a> {
     }
 }
 
-impl Iterator for Rows<'_> {
-    type Item = Row;
+impl<'a> Iterator for Rows<'a> {
+    type Item = Row<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.s.is_empty() {
@@ -505,7 +505,7 @@ impl Iterator for Rows<'_> {
             };
             let (row_text, remainder) = self.s.split_at(row_len);
             let (_, new_s) = remainder.split_at(rm_len);
-            let row = Row {text: row_text.to_string(), line: self.current_line};
+            let row = Row {text: row_text, line: self.current_line};
 
             if rm_len != 0 {
                 self.current_line += 1;
@@ -562,22 +562,22 @@ impl<T> Swival<T> {
 
 /// Represents a row in the user interface.
 #[derive(Clone, Debug)]
-pub(crate) struct Row {
+pub(crate) struct Row<'a> {
     /// The line of the row.
     line: u64,
     /// The text of the row.
-    text: String,
+    text: &'a str,
 }
 
-impl Row {
+impl Row<'_> {
     /// Returns the line of `self`.
     pub(crate) const fn line(&self) -> u64 {
         self.line
     }
 
     /// Returns the text of `self`.
-    pub(crate) const fn text(&self) -> &String {
-        &self.text
+    pub(crate) const fn text(&self) -> &str {
+        self.text
     }
 }
 

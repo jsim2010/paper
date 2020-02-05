@@ -142,7 +142,7 @@ impl Terminal {
     }
 
     /// Applies `change` to the output.
-    pub(crate) fn apply(&mut self, update: Update) -> Outcome<()> {
+    pub(crate) fn apply(&mut self, update: Update<'_>) -> Outcome<()> {
         match update.change {
             Change::Text {
                 rows,
@@ -152,7 +152,7 @@ impl Terminal {
                     self.top_line = cursor.start.line;
                 }
 
-                let mut visible_rows: Vec<Row> = rows.iter().filter(|row| row.line() >= self.top_line).cloned().collect();
+                let mut visible_rows: Vec<Row<'_>> = rows.iter().filter(|row| row.line() >= self.top_line).cloned().collect();
                 let mut end_line = cursor.end.line;
 
                 if cursor.end.character == 0 {
@@ -489,16 +489,16 @@ def_config!(Wrap: bool = false);
 def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 
 /// An update to the user interface.
-pub(crate) struct Update {
+pub(crate) struct Update<'a> {
     /// The update header of the ui.
     header: String,
     /// The change of the update.
-    change: Change,
+    change: Change<'a>,
 }
 
-impl Update {
+impl<'a> Update<'a> {
     /// Creates a new [`Update`].
-    pub(crate) const fn new(header: String, change: Change) -> Self {
+    pub(crate) const fn new(header: String, change: Change<'a>) -> Self {
         Self {
             header,
             change,
@@ -510,11 +510,11 @@ impl Update {
 ///
 /// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
 #[derive(Clone, Debug)]
-pub(crate) enum Change {
+pub(crate) enum Change<'a> {
     /// Text of the current document or how it was displayed was modified.
     Text {
         /// The rows of the current document.
-        rows: Vec<Row>,
+        rows: Vec<Row<'a>>,
         /// The cursor.
         cursor: Range,
     },
