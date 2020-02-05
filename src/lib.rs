@@ -69,7 +69,7 @@ pub mod ui;
 pub use app::Arguments;
 
 use {
-    app::{Operation, Sheet},
+    app::{Operation, Processor},
     thiserror::Error,
     translate::Interpreter,
     ui::Terminal,
@@ -94,7 +94,7 @@ pub struct Paper {
     /// Manages the user interface.
     ui: Terminal,
     /// Processes application operations.
-    sheet: Sheet,
+    processor: Processor,
 }
 
 impl Paper {
@@ -108,7 +108,7 @@ impl Paper {
     #[inline]
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
-            sheet: Sheet::new(&arguments)?,
+            processor: Processor::new(&arguments),
             interpreter: Interpreter::default(),
             ui: Terminal::new(arguments)?,
         })
@@ -132,12 +132,7 @@ impl Paper {
         Ok(())
     }
 
-    /// Implements a single execution and returns if the program should keep running.
-    ///
-    /// A single run is as follows:
-    /// 1. Receive input.
-    /// 2. Translate input into operations.
-    /// 3. For each operation, execute the operation and output the resulting changes.
+    /// Executes a single run of the runtime loop and returns if the program should keep running.
     #[inline]
     fn step(&mut self) -> Result<bool, Failure> {
         let mut keep_running = true;
@@ -148,8 +143,8 @@ impl Paper {
                     keep_running = false;
                 }
 
-                if let Some(change) = self.sheet.operate(operation)? {
-                    self.ui.apply(change)?;
+                if let Some(update) = self.processor.operate(operation)? {
+                    self.ui.apply(update)?;
                 }
             }
         }

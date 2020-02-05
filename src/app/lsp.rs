@@ -10,8 +10,8 @@ use {
         request::{Initialize, Shutdown},
         ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-        TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+        MessageType, ShowMessageParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+        TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
         VersionedTextDocumentIdentifier,
     },
     std::{
@@ -25,7 +25,9 @@ use {
 /// An error from which the language server was unable to recover.
 #[derive(Debug, Error)]
 pub enum Fault {
-    /// An error from which a language server utility was unable to recover.
+    /// An error from [`utils`].
+    ///
+    /// [`utils`]: utils/index.html
     #[error("{0}")]
     Util(#[from] utils::Fault),
     /// An error while accessing an IO of the language server process.
@@ -40,6 +42,20 @@ pub enum Fault {
     /// An error while killing a language server process.
     #[error("unable to kill language server process: {0}")]
     Kill(#[source] io::Error),
+    /// Language server for given language identifier is unknown.
+    #[error("language server for `{0}` is unknown")]
+    LanguageId(String),
+}
+
+impl From<Fault> for ShowMessageParams {
+    #[inline]
+    #[must_use]
+    fn from(value: Fault) -> Self {
+        Self {
+            typ: MessageType::Error,
+            message: value.to_string(),
+        }
+    }
 }
 
 /// Represents a language server process.
@@ -58,45 +74,59 @@ pub(crate) struct LspServer {
 }
 
 impl LspServer {
-    /// Creates a new `LspServer` represented by `process_cmd`.
-    pub(crate) fn new(process_cmd: &str, root: &Url) -> Result<Self, Fault> {
-        let mut server = ServerProcess::new(process_cmd)?;
-        let mut transmitter = LspTransmitter::new(server.stdin()?);
-        let receiver = LspReceiver::new(server.stdout()?, &transmitter);
+    /// Creates a new `LspServer` for `language_id`.
+    pub(crate) fn new(language_id: &str, root: &Url) -> Result<Option<Self>, Fault> {
+        Ok(if let Some(mut server) = ServerProcess::new(language_id)? {
+            let mut transmitter = LspTransmitter::new(server.stdin()?);
+            let receiver = LspReceiver::new(server.stdout()?, &transmitter);
 
-        #[allow(deprecated)] // root_path is a required field.
-        let settings = LspSettings::from(transmitter.request::<Initialize>(
-            InitializeParams {
-                process_id: Some(u64::from(process::id())),
-                root_path: None,
-                root_uri: Some(root.clone()),
-                initialization_options: None,
-                capabilities: ClientCapabilities::default(),
-                trace: None,
-                workspace_folders: None,
-                client_info: None,
-            },
-            &receiver,
-        )?);
+            #[allow(deprecated)] // root_path is a required field.
+            let settings = LspSettings::from(transmitter.request::<Initialize>(
+                InitializeParams {
+                    process_id: Some(u64::from(process::id())),
+                    root_path: None,
+                    root_uri: Some(root.clone()),
+                    initialization_options: None,
+                    capabilities: ClientCapabilities::default(),
+                    trace: None,
+                    workspace_folders: None,
+                    client_info: None,
+                },
+                &receiver,
+            )?);
 
-        transmitter.notify::<Initialized>(InitializedParams {})?;
+            transmitter.notify::<Initialized>(InitializedParams {})?;
 
-        Ok(Self {
-            // error_processor must be created before server is moved.
-            error_processor: LspErrorProcessor::new(server.stderr()?),
-            server,
-            transmitter,
-            settings,
-            receiver,
+            Some(Self {
+                // error_processor must be created before server is moved.
+                error_processor: LspErrorProcessor::new(server.stderr()?),
+                server,
+                transmitter,
+                settings,
+                receiver,
+            })
+        } else {
+            None
         })
     }
 
     /// Sends the didOpen notification, if appropriate.
-    pub(crate) fn did_open(&mut self, text_document: &TextDocumentItem) -> Result<(), Fault> {
+    pub(crate) fn did_open(
+        &mut self,
+        uri: &Url,
+        language_id: &str,
+        version: i64,
+        text: &str,
+    ) -> Result<(), Fault> {
         if self.settings.notify_open_close {
             self.transmitter
                 .notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
-                    text_document: text_document.clone(),
+                    text_document: TextDocumentItem::new(
+                        uri.clone(),
+                        language_id.to_string(),
+                        version,
+                        text.to_string(),
+                    ),
                 })?;
         }
 
@@ -106,7 +136,9 @@ impl LspServer {
     /// Sends the didChange notification, if appropriate.
     pub(crate) fn did_change(
         &mut self,
-        text_document: &TextDocumentItem,
+        uri: &Url,
+        version: i64,
+        text: &str,
         edit: TextEdit,
     ) -> Result<(), Fault> {
         if let Some(content_changes) = match self.settings.notify_changes_kind {
@@ -114,7 +146,7 @@ impl LspServer {
             TextDocumentSyncKind::Full => Some(vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
-                text: text_document.text.clone(),
+                text: text.to_string(),
             }]),
             TextDocumentSyncKind::Incremental => Some(vec![TextDocumentContentChangeEvent {
                 range: Some(edit.range),
@@ -124,10 +156,7 @@ impl LspServer {
         } {
             self.transmitter
                 .notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
-                    text_document: VersionedTextDocumentIdentifier::new(
-                        text_document.uri.clone(),
-                        text_document.version,
-                    ),
+                    text_document: VersionedTextDocumentIdentifier::new(uri.clone(), version),
                     content_changes,
                 })?;
         }
@@ -136,11 +165,11 @@ impl LspServer {
     }
 
     /// Sends the didClose notification, if appropriate.
-    pub(crate) fn did_close(&mut self, text_document: &TextDocumentItem) -> Result<(), Fault> {
+    pub(crate) fn did_close(&mut self, uri: &Url) -> Result<(), Fault> {
         if self.settings.notify_open_close {
             self.transmitter
                 .notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
-                    text_document: TextDocumentIdentifier::new(text_document.uri.clone()),
+                    text_document: TextDocumentIdentifier::new(uri.clone()),
                 })?;
         }
 
@@ -174,15 +203,24 @@ struct ServerProcess(Child);
 
 impl ServerProcess {
     /// Creates a new [`ServerProcess`].
-    fn new(process_cmd: &str) -> Result<Self, Fault> {
-        Ok(Self(
-            Command::new(process_cmd)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| Fault::Spawn(process_cmd.to_string(), e))?,
-        ))
+    fn new(language_id: &str) -> Result<Option<Self>, Fault> {
+        let command = match language_id {
+            "rust" => Some("rls"),
+            _ => None,
+        };
+
+        Ok(if let Some(cmd) = command {
+            Some(Self(
+                Command::new(cmd)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| Fault::Spawn(cmd.to_string(), e))?,
+            ))
+        } else {
+            None
+        })
     }
 
     /// Returns the stderr of the process.
