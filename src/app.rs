@@ -3,7 +3,7 @@ pub mod logging;
 pub mod lsp;
 
 use {
-    crate::ui::{Change, Setting, Size, Update},
+    crate::ui::{Rows, Change, Setting, Size, Update},
     clap::ArgMatches,
     core::{
         cmp,
@@ -367,7 +367,7 @@ impl Document {
     fn text_change(&self) -> Change<'_> {
         Change::Text {
             cursor: self.selection.range,
-            rows: self.text.rows().collect(),
+            rows: self.text.rows(),
         }
     }
 
@@ -468,55 +468,6 @@ impl Text {
     }
 }
 
-struct Rows<'a> {
-    s: &'a str,
-    max_len: usize,
-    current_line: u64,
-}
-
-impl<'a> Rows<'a> {
-    fn new(s: &'a str, max_len: Option<usize>) -> Self {
-        Rows {s, max_len: max_len.unwrap_or(usize::max_value()), current_line: 0}
-    }
-}
-
-impl<'a> Iterator for Rows<'a> {
-    type Item = Row<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.s.is_empty() {
-            None
-        } else {
-            let (line_len, extra_len) = if let Some(newline_len) = self.s.find('\n') {
-                let line_end = newline_len - 1;
-
-                if self.s.get(line_end..=line_end) == Some("\r") {
-                    (line_end, 2)
-                } else {
-                    (newline_len, 1)
-                }
-            } else {
-                (self.s.len(), 0)
-            };
-            let (row_len, rm_len) = if line_len > self.max_len {
-                (self.max_len, 0)
-            } else {
-                (line_len, extra_len)
-            };
-            let (row_text, remainder) = self.s.split_at(row_len);
-            let (_, new_s) = remainder.split_at(rm_len);
-            let row = Row {text: row_text, line: self.current_line};
-
-            if rm_len != 0 {
-                self.current_line += 1;
-            }
-
-            self.s = new_s;
-            Some(row)
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 struct Amount(u64);
 
@@ -557,27 +508,6 @@ impl<T> Swival<T> {
 
     fn set(&mut self, value: T) {
         self.value = value;
-    }
-}
-
-/// Represents a row in the user interface.
-#[derive(Clone, Debug)]
-pub(crate) struct Row<'a> {
-    /// The line of the row.
-    line: u64,
-    /// The text of the row.
-    text: &'a str,
-}
-
-impl Row<'_> {
-    /// Returns the line of `self`.
-    pub(crate) const fn line(&self) -> u64 {
-        self.line
-    }
-
-    /// Returns the text of `self`.
-    pub(crate) const fn text(&self) -> &str {
-        self.text
     }
 }
 

@@ -16,7 +16,7 @@
 pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
-    crate::{Arguments, app::Row},
+    crate::Arguments,
     core::{
         convert::TryFrom,
         fmt::{self, Debug},
@@ -152,7 +152,7 @@ impl Terminal {
                     self.top_line = cursor.start.line;
                 }
 
-                let mut visible_rows: Vec<Row<'_>> = rows.iter().filter(|row| row.line() >= self.top_line).cloned().collect();
+                let mut visible_rows: Vec<Row<'_>> = rows.clone().filter(|row| row.line() >= self.top_line).collect();
                 let mut end_line = cursor.end.line;
 
                 if cursor.end.character == 0 {
@@ -174,7 +174,7 @@ impl Terminal {
 
                 let top_line = self.top_line;
 
-                for (index, row) in rows.iter().filter(|row| row.line() >= top_line).enumerate().take(usize::from(self.size.rows.saturating_sub(1))) {
+                for (index, row) in rows.filter(|row| row.line() >= top_line).enumerate().take(usize::from(self.size.rows.saturating_sub(1))) {
                     //trace!("index {}, row {:?}", index, row);
                     self.grid.replace_line(
                         index,
@@ -274,6 +274,77 @@ impl Drop for Terminal {
         if execute!(self.out, LeaveAlternateScreen).is_err() {
             warn!("Failed to leave alternate screen");
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Rows<'a> {
+    s: &'a str,
+    max_len: usize,
+    current_line: u64,
+}
+
+impl<'a> Rows<'a> {
+    pub(crate) fn new(s: &'a str, max_len: Option<usize>) -> Self {
+        Rows {s, max_len: max_len.unwrap_or(usize::max_value()), current_line: 0}
+    }
+}
+
+impl<'a> Iterator for Rows<'a> {
+    type Item = Row<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.s.is_empty() {
+            None
+        } else {
+            let (line_len, extra_len) = if let Some(newline_len) = self.s.find('\n') {
+                let line_end = newline_len - 1;
+
+                if self.s.get(line_end..=line_end) == Some("\r") {
+                    (line_end, 2)
+                } else {
+                    (newline_len, 1)
+                }
+            } else {
+                (self.s.len(), 0)
+            };
+            let (row_len, rm_len) = if line_len > self.max_len {
+                (self.max_len, 0)
+            } else {
+                (line_len, extra_len)
+            };
+            let (row_text, remainder) = self.s.split_at(row_len);
+            let (_, new_s) = remainder.split_at(rm_len);
+            let row = Row {text: row_text, line: self.current_line};
+
+            if rm_len != 0 {
+                self.current_line += 1;
+            }
+
+            self.s = new_s;
+            Some(row)
+        }
+    }
+}
+
+/// Represents a row in the user interface.
+#[derive(Clone, Debug)]
+pub(crate) struct Row<'a> {
+    /// The line of the row.
+    line: u64,
+    /// The text of the row.
+    text: &'a str,
+}
+
+impl Row<'_> {
+    /// Returns the line of `self`.
+    pub(crate) const fn line(&self) -> u64 {
+        self.line
+    }
+
+    /// Returns the text of `self`.
+    pub(crate) const fn text(&self) -> &str {
+        self.text
     }
 }
 
@@ -514,7 +585,7 @@ pub(crate) enum Change<'a> {
     /// Text of the current document or how it was displayed was modified.
     Text {
         /// The rows of the current document.
-        rows: Vec<Row<'a>>,
+        rows: Rows<'a>,
         /// The cursor.
         cursor: Range,
     },
