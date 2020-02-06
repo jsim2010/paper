@@ -230,7 +230,7 @@ impl Terminal {
             self.out.flush().map_err(Fault::Flush)?;
         }
 
-        Ok(is_quitting)
+        Ok(!is_quitting)
     }
 
     /// Checks for updates to [`Config`] and adds any changes the changed settings list.

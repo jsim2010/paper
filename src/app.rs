@@ -10,6 +10,7 @@ use {
     core::{
         cmp,
         convert::{TryFrom, TryInto},
+        fmt,
         ops::{Bound, RangeBounds},
     },
     log::{error, trace},
@@ -18,20 +19,19 @@ use {
     lsp_types::{
         MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams, TextEdit,
     },
-    parse_display::Display as ParseDisplay,
     starship::{context::Context, print},
     std::{
         cell::RefCell,
         collections::HashMap,
         env,
         ffi::OsStr,
-        fmt, fs,
+        fs,
         io::{self, ErrorKind},
         path::{Path, PathBuf},
         rc::Rc,
     },
     thiserror::Error,
-    translate::Interpreter,
+    translate::{Command, Direction, DocOp, Interpreter, Magnitude, Operation, Vector},
     url::{ParseError, Url},
 };
 
@@ -106,12 +106,25 @@ impl AsRef<Path> for PathUrl {
     }
 }
 
+impl AsRef<Url> for PathUrl {
+    #[must_use]
+    fn as_ref(&self) -> &Url {
+        &self.url
+    }
+}
+
 impl Default for PathUrl {
     #[must_use]
     fn default() -> Self {
         #[allow(clippy::result_expect_used)]
         // Default path should not fail and failure cannot be propogated.
         Self::try_from(PathBuf::default()).expect("creating default `PathUrl`")
+    }
+}
+
+impl fmt::Display for PathUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.url)
     }
 }
 
@@ -231,12 +244,12 @@ impl Processor {
                     let change = self.pane.open_doc(&self.input);
 
                     self.input.clear();
-                    change
+                    Some(change)
                 } else {
                     None
                 }
             }
-            Operation::Document(doc_op) => self.pane.operate(doc_op),
+            Operation::Document(doc_op) => Some(self.pane.operate(doc_op)),
             Operation::Quit => Some(Change::Quit),
         };
 
@@ -253,7 +266,7 @@ impl Processor {
     /// Updates `self` based on `setting`.
     fn update_setting(&mut self, setting: Setting) -> Result<Option<Change<'_>>, Fault> {
         match setting {
-            Setting::File(file) => Ok(self.pane.open_doc(&file)),
+            Setting::File(file) => Ok(Some(self.pane.open_doc(&file))),
             Setting::Wrap(is_wrapped) => Ok(self.pane.control_wrap(is_wrapped)),
             Setting::Size(size) => Ok(Some(self.pane.update_size(size))),
             Setting::StarshipLog(log_level) => {
@@ -297,21 +310,36 @@ impl Pane {
     }
 
     /// Performs `operation` on `self`.
-    fn operate(&mut self, operation: DocOp) -> Option<Change<'_>> {
-        self.doc.as_mut().map(|doc| match operation {
-            DocOp::Move(vector) => doc.move_selection(&vector),
-            DocOp::Delete => doc.delete_selection(),
-        })
+    fn operate(&mut self, operation: DocOp) -> Change<'_> {
+        if let Some(doc) = &mut self.doc {
+            match operation {
+                DocOp::Move(vector) => doc.move_selection(&vector),
+                DocOp::Delete => doc.delete_selection(),
+                DocOp::Save => doc.save(),
+            }
+        } else {
+            Change::Message(ShowMessageParams {
+                typ: MessageType::Info,
+                message: format!(
+                    "There is no open document on which to perform {}",
+                    operation
+                ),
+            })
+        }
     }
 
     /// Opens a document at `path`.
-    fn open_doc(&mut self, path: &str) -> Option<Change<'_>> {
+    fn open_doc(&mut self, path: &str) -> Change<'_> {
         match self.create_doc(path) {
             Ok(doc) => {
                 let _ = self.doc.replace(doc);
-                self.doc.as_ref().map(Document::text_change)
+                #[allow(clippy::option_expect_used)] // Replace guarantees that self.doc is Some.
+                self.doc
+                    .as_ref()
+                    .expect("retrieving `Document` in `Pane`")
+                    .text_change()
             }
-            Err(error) => Some(Change::Message(ShowMessageParams::from(error))),
+            Err(error) => Change::Message(ShowMessageParams::from(error)),
         }
     }
 
@@ -322,7 +350,7 @@ impl Pane {
         let lsp_server = self.lsp_servers.get(language_id).cloned();
 
         if lsp_server.is_none() {
-            if let Some(lsp_server) = LspServer::new(language_id, &self.working_dir.url)?
+            if let Some(lsp_server) = LspServer::new(language_id, &self.working_dir.as_ref())?
                 .map(|server| Rc::new(RefCell::new(server)))
             {
                 let _ = self
@@ -356,8 +384,8 @@ impl Pane {
 /// A file and the user's current interactions with it.
 #[derive(Debug)]
 struct Document {
-    /// The URL of the document.
-    uri: Url,
+    /// The path of the document.
+    path: PathUrl,
     /// The text of the document.
     text: Text,
     /// The current user selection.
@@ -384,20 +412,41 @@ impl Document {
         }
 
         if let Some(server) = &lsp_server {
-            server.borrow_mut().did_open(
-                &path.url,
-                path.language_id(),
-                text.version,
-                &text.content,
-            )?;
+            server
+                .borrow_mut()
+                .did_open(&path, path.language_id(), text.version, &text.content)?;
         }
 
         Ok(Self {
-            uri: path.url,
+            path,
             text,
             selection,
             lsp_server,
             scroll_amount: Rc::clone(scroll_amount),
+        })
+    }
+
+    /// Saves the document.
+    fn save(&self) -> Change<'_> {
+        let change = self.lsp_server.as_ref().and_then(|server| {
+            server
+                .borrow_mut()
+                .will_save(&self.path)
+                .err()
+                .map(|e| Change::Message(e.into()))
+        });
+
+        change.unwrap_or_else(|| {
+            Change::Message(match fs::write(&self.path, &self.text.content) {
+                Ok(..) => ShowMessageParams {
+                    typ: MessageType::Info,
+                    message: format!("Saved document `{}`", self.path),
+                },
+                Err(e) => ShowMessageParams {
+                    typ: MessageType::Error,
+                    message: format!("Failed to save document `{}`: {}", self.path, e),
+                },
+            })
         })
     }
 
@@ -408,7 +457,7 @@ impl Document {
 
         if let Some(server) = &self.lsp_server {
             if let Err(e) = server.borrow_mut().did_change(
-                &self.uri,
+                &self.path,
                 self.text.version,
                 &self.text.content,
                 TextEdit::new(self.selection.range, String::new()),
@@ -435,11 +484,11 @@ impl Document {
 
     /// Moves the [`Selection`] as described by [`Vector`].
     fn move_selection(&mut self, vector: &Vector) -> Change<'_> {
-        let amount = match vector.magnitude {
+        let amount = match vector.magnitude() {
             Magnitude::Single => 1,
             Magnitude::Half => self.scroll_amount.borrow().value(),
         };
-        match vector.direction {
+        match vector.direction() {
             Direction::Down => {
                 self.selection.move_down(amount, self.line_count());
             }
@@ -454,9 +503,9 @@ impl Document {
 
 impl Drop for Document {
     fn drop(&mut self) {
-        trace!("dropping {:?}", self.uri);
+        trace!("dropping {:?}", self.path);
         if let Some(lsp_server) = &self.lsp_server {
-            if let Err(e) = lsp_server.borrow_mut().did_close(&self.uri) {
+            if let Err(e) = lsp_server.borrow_mut().did_close(&self.path) {
                 error!(
                     "failed to inform language server process about closing {}",
                     e
@@ -484,7 +533,7 @@ impl Text {
         wrap_length: &Rc<RefCell<Swival<usize>>>,
     ) -> Result<Self, DocumentError> {
         let content = fs::read_to_string(path.clone()).map_err(|error| match error.kind() {
-            ErrorKind::NotFound => DocumentError::NonExistantFile(path.url.to_string()),
+            ErrorKind::NotFound => DocumentError::NonExistantFile(path.to_string()),
             ErrorKind::PermissionDenied
             | ErrorKind::ConnectionRefused
             | ErrorKind::ConnectionReset
@@ -669,51 +718,6 @@ impl RangeBounds<usize> for Selection {
     }
 }
 
-/// Signifies a command that a user can give to the application.
-#[derive(Debug, ParseDisplay, PartialEq)]
-pub(crate) enum Command {
-    /// Opens a given file.
-    #[display("Open <file>")]
-    Open,
-}
-
-/// A movement to the cursor.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Vector {
-    /// The direction of the movement.
-    direction: Direction,
-    /// The magnitude of the movement.
-    magnitude: Magnitude,
-}
-
-impl Vector {
-    /// Creates a new [`Vector`].
-    pub(crate) const fn new(direction: Direction, magnitude: Magnitude) -> Self {
-        Self {
-            direction,
-            magnitude,
-        }
-    }
-}
-
-/// Describes the direction of a movement.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Direction {
-    /// Towards the bottom.
-    Down,
-    /// Towards the top.
-    Up,
-}
-
-/// Describes the magnitude of a movement.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Magnitude {
-    /// Move a single line.
-    Single,
-    /// Move roughly half of a screen.
-    Half,
-}
-
 /// Signifies errors associated with [`Document`].
 #[derive(Debug, Error)]
 enum DocumentError {
@@ -741,63 +745,6 @@ impl From<DocumentError> for ShowMessageParams {
         Self {
             typ: MessageType::Log,
             message: value.to_string(),
-        }
-    }
-}
-
-/// Signifies actions that can be performed by the application.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Operation {
-    /// Resets the application.
-    Reset,
-    /// Confirms that the action is desired.
-    Confirm(ConfirmAction),
-    /// Quits the application.
-    Quit,
-    /// Updates a setting.
-    UpdateSetting(Setting),
-    /// Alerts the user with a message.
-    Alert(ShowMessageParams),
-    /// Open input box for a command.
-    StartCommand(Command),
-    /// Input to input box.
-    Collect(char),
-    /// Executes the current command.
-    Execute,
-    /// An operation to edit the text or selection of the document.
-    Document(DocOp),
-}
-
-/// An operation performed on a document.
-#[derive(Debug, PartialEq)]
-pub(crate) enum DocOp {
-    /// Moves the cursor.
-    Move(Vector),
-    /// Deletes the current selection.
-    Delete,
-}
-
-/// Signifies actions that require a confirmation prior to their execution.
-#[derive(Debug, PartialEq)]
-pub(crate) enum ConfirmAction {
-    /// Quit the application.
-    Quit,
-}
-
-impl fmt::Display for ConfirmAction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "You have input that you want to quit the application.\nPlease confirm this action by pressing `y`. To cancel this action, press any other key.")
-    }
-}
-
-impl From<ConfirmAction> for ShowMessageRequestParams {
-    #[inline]
-    #[must_use]
-    fn from(value: ConfirmAction) -> Self {
-        Self {
-            typ: MessageType::Info,
-            message: value.to_string(),
-            actions: None,
         }
     }
 }

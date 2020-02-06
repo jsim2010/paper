@@ -6,13 +6,15 @@ use {
     lsp_types::{
         notification::{
             DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
+            WillSaveTextDocument,
         },
         request::{Initialize, Shutdown},
         ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-        MessageType, ShowMessageParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-        TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
-        VersionedTextDocumentIdentifier,
+        MessageType, ShowMessageParams, SynchronizationCapability, TextDocumentClientCapabilities,
+        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+        TextDocumentSaveReason, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+        VersionedTextDocumentIdentifier, WillSaveTextDocumentParams,
     },
     std::{
         io,
@@ -75,19 +77,55 @@ pub(crate) struct LspServer {
 
 impl LspServer {
     /// Creates a new `LspServer` for `language_id`.
-    pub(crate) fn new(language_id: &str, root: &Url) -> Result<Option<Self>, Fault> {
+    pub(crate) fn new<U>(language_id: &str, root: U) -> Result<Option<Self>, Fault>
+    where
+        U: AsRef<Url>,
+    {
         Ok(if let Some(mut server) = ServerProcess::new(language_id)? {
             let mut transmitter = LspTransmitter::new(server.stdin()?);
             let receiver = LspReceiver::new(server.stdout()?, &transmitter);
+            let capabilities = ClientCapabilities {
+                workspace: None,
+                text_document: Some(TextDocumentClientCapabilities {
+                    synchronization: Some(SynchronizationCapability {
+                        dynamic_registration: None,
+                        will_save: Some(true),
+                        will_save_wait_until: None,
+                        did_save: None,
+                    }),
+                    completion: None,
+                    hover: None,
+                    signature_help: None,
+                    references: None,
+                    document_highlight: None,
+                    document_symbol: None,
+                    formatting: None,
+                    range_formatting: None,
+                    on_type_formatting: None,
+                    declaration: None,
+                    definition: None,
+                    type_definition: None,
+                    implementation: None,
+                    code_action: None,
+                    code_lens: None,
+                    document_link: None,
+                    color_provider: None,
+                    rename: None,
+                    publish_diagnostics: None,
+                    folding_range: None,
+                }),
+                window: None,
+                experimental: None,
+            };
 
             #[allow(deprecated)] // root_path is a required field.
             let settings = LspSettings::from(transmitter.request::<Initialize>(
                 InitializeParams {
                     process_id: Some(u64::from(process::id())),
                     root_path: None,
-                    root_uri: Some(root.clone()),
+                    root_uri: Some(root.as_ref().clone()),
                     initialization_options: None,
-                    capabilities: ClientCapabilities::default(),
+                    capabilities,
                     trace: None,
                     workspace_folders: None,
                     client_info: None,
@@ -111,18 +149,21 @@ impl LspServer {
     }
 
     /// Sends the didOpen notification, if appropriate.
-    pub(crate) fn did_open(
+    pub(crate) fn did_open<U>(
         &mut self,
-        uri: &Url,
+        uri: U,
         language_id: &str,
         version: i64,
         text: &str,
-    ) -> Result<(), Fault> {
+    ) -> Result<(), Fault>
+    where
+        U: AsRef<Url>,
+    {
         if self.settings.notify_open_close {
             self.transmitter
                 .notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
                     text_document: TextDocumentItem::new(
-                        uri.clone(),
+                        uri.as_ref().clone(),
                         language_id.to_string(),
                         version,
                         text.to_string(),
@@ -134,13 +175,16 @@ impl LspServer {
     }
 
     /// Sends the didChange notification, if appropriate.
-    pub(crate) fn did_change(
+    pub(crate) fn did_change<U>(
         &mut self,
-        uri: &Url,
+        uri: U,
         version: i64,
         text: &str,
         edit: TextEdit,
-    ) -> Result<(), Fault> {
+    ) -> Result<(), Fault>
+    where
+        U: AsRef<Url>,
+    {
         if let Some(content_changes) = match self.settings.notify_changes_kind {
             TextDocumentSyncKind::None => None,
             TextDocumentSyncKind::Full => Some(vec![TextDocumentContentChangeEvent {
@@ -156,7 +200,10 @@ impl LspServer {
         } {
             self.transmitter
                 .notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
-                    text_document: VersionedTextDocumentIdentifier::new(uri.clone(), version),
+                    text_document: VersionedTextDocumentIdentifier::new(
+                        uri.as_ref().clone(),
+                        version,
+                    ),
                     content_changes,
                 })?;
         }
@@ -164,12 +211,31 @@ impl LspServer {
         Ok(())
     }
 
+    /// Sends the willSave notification, if appropriate.
+    pub(crate) fn will_save<U>(&mut self, uri: U) -> Result<(), Fault>
+    where
+        U: AsRef<Url>,
+    {
+        if self.settings.notify_save {
+            self.transmitter
+                .notify::<WillSaveTextDocument>(WillSaveTextDocumentParams {
+                    text_document: TextDocumentIdentifier::new(uri.as_ref().clone()),
+                    reason: TextDocumentSaveReason::Manual,
+                })?;
+        }
+
+        Ok(())
+    }
+
     /// Sends the didClose notification, if appropriate.
-    pub(crate) fn did_close(&mut self, uri: &Url) -> Result<(), Fault> {
+    pub(crate) fn did_close<U>(&mut self, uri: U) -> Result<(), Fault>
+    where
+        U: AsRef<Url>,
+    {
         if self.settings.notify_open_close {
             self.transmitter
                 .notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
-                    text_document: TextDocumentIdentifier::new(uri.clone()),
+                    text_document: TextDocumentIdentifier::new(uri.as_ref().clone()),
                 })?;
         }
 
@@ -265,6 +331,8 @@ struct LspSettings {
     notify_open_close: bool,
     /// How the client should send change notifications.
     notify_changes_kind: TextDocumentSyncKind,
+    /// The client should send save notifications.
+    notify_save: bool,
 }
 
 impl Default for LspSettings {
@@ -272,6 +340,7 @@ impl Default for LspSettings {
         Self {
             notify_open_close: false,
             notify_changes_kind: TextDocumentSyncKind::None,
+            notify_save: false,
         }
     }
 }
@@ -295,6 +364,10 @@ impl From<InitializeResult> for LspSettings {
 
                     if let Some(change) = options.change {
                         settings.notify_changes_kind = change;
+                    }
+
+                    if let Some(will_save) = options.will_save {
+                        settings.notify_save = will_save;
                     }
                 }
             }
