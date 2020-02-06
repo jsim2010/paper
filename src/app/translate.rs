@@ -1,14 +1,139 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
-    crate::{
-        app::{Command, ConfirmAction, Direction, DocOp, Magnitude, Operation, Vector},
-        ui::{Input, Key},
-    },
-    core::fmt::Debug,
+    crate::ui::{Input, Key, Setting},
+    core::fmt::{self, Debug},
     enum_map::{enum_map, Enum, EnumMap},
-    lsp_types::{MessageType, ShowMessageParams},
+    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     parse_display::Display as ParseDisplay,
 };
+
+/// Signifies actions that can be performed by the application.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Operation {
+    /// Resets the application.
+    Reset,
+    /// Confirms that the action is desired.
+    Confirm(ConfirmAction),
+    /// Quits the application.
+    Quit,
+    /// Updates a setting.
+    UpdateSetting(Setting),
+    /// Alerts the user with a message.
+    Alert(ShowMessageParams),
+    /// Open input box for a command.
+    StartCommand(Command),
+    /// Input to input box.
+    Collect(char),
+    /// Executes the current command.
+    Execute,
+    /// An operation to edit the text or selection of the document.
+    Document(DocOp),
+}
+
+/// Signifies actions that require a confirmation prior to their execution.
+#[derive(Debug, PartialEq)]
+pub(crate) enum ConfirmAction {
+    /// Quit the application.
+    Quit,
+}
+
+impl fmt::Display for ConfirmAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "You have input that you want to quit the application.\nPlease confirm this action by pressing `y`. To cancel this action, press any other key.")
+    }
+}
+
+impl From<ConfirmAction> for ShowMessageRequestParams {
+    #[inline]
+    #[must_use]
+    fn from(value: ConfirmAction) -> Self {
+        Self {
+            typ: MessageType::Info,
+            message: value.to_string(),
+            actions: None,
+        }
+    }
+}
+
+/// Signifies a command that a user can give to the application.
+#[derive(Debug, ParseDisplay, PartialEq)]
+pub(crate) enum Command {
+    /// Opens a given file.
+    #[display("Open <file>")]
+    Open,
+}
+
+/// An operation performed on a document.
+#[derive(Debug, PartialEq)]
+pub(crate) enum DocOp {
+    /// Moves the cursor.
+    Move(Vector),
+    /// Deletes the current selection.
+    Delete,
+    /// Saves the document.
+    Save,
+}
+
+impl fmt::Display for DocOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Move(..) => "selection movement",
+                Self::Delete => "deletion",
+                Self::Save => "save",
+            }
+        )
+    }
+}
+
+/// A movement to the cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Vector {
+    /// The direction of the movement.
+    direction: Direction,
+    /// The magnitude of the movement.
+    magnitude: Magnitude,
+}
+
+impl Vector {
+    /// Creates a new [`Vector`].
+    pub(crate) const fn new(direction: Direction, magnitude: Magnitude) -> Self {
+        Self {
+            direction,
+            magnitude,
+        }
+    }
+
+    /// Returns the direction of `self`.
+    pub(crate) const fn direction(&self) -> &Direction {
+        &self.direction
+    }
+
+    /// Returns the magnitude of `self`.
+    pub(crate) const fn magnitude(&self) -> &Magnitude {
+        &self.magnitude
+    }
+}
+
+/// Describes the direction of a movement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Direction {
+    /// Towards the bottom.
+    Down,
+    /// Towards the top.
+    Up,
+}
+
+/// Describes the magnitude of a movement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Magnitude {
+    /// Move a single line.
+    Single,
+    /// Move roughly half of a screen.
+    Half,
+}
 
 /// Manages interpretation for the application.
 ///
@@ -134,9 +259,12 @@ impl ViewInterpreter {
             Key::Esc => {
                 output.add_op(Operation::Reset);
             }
-            Key::Char('q') => {
+            Key::Char('w') => {
                 output.add_op(Operation::Confirm(ConfirmAction::Quit));
                 output.set_mode(Mode::Confirm);
+            }
+            Key::Char('s') => {
+                output.add_op(Operation::Document(DocOp::Save));
             }
             Key::Char('o') => {
                 output.add_op(Operation::StartCommand(Command::Open));
@@ -331,22 +459,22 @@ mod test {
             assert_eq!(int.mode, Mode::View);
         }
 
-        /// The `q` key shall confirm the user wants to quit.
+        /// The `Ctrl-w` key shall confirm the user wants to quit.
         #[test]
         fn quit() {
             let mut int = view_mode();
 
             assert_eq!(
                 int.translate(Input::Key {
-                    key: Key::Char('q'),
-                    modifiers: Modifiers::empty(),
+                    key: Key::Char('w'),
+                    modifiers: Modifiers::CONTROL,
                 }),
                 Some(Operation::Confirm(ConfirmAction::Quit))
             );
             assert_eq!(int.mode, Mode::Confirm);
         }
 
-        /// The `o` key shall request the name of the document to be opened.
+        /// The `Ctrl-o` key shall request the name of the document to be opened.
         #[test]
         fn open() {
             let mut int = view_mode();
@@ -354,11 +482,26 @@ mod test {
             assert_eq!(
                 int.translate(Input::Key {
                     key: Key::Char('o'),
-                    modifiers: Modifiers::empty(),
+                    modifiers: Modifiers::CONTROL,
                 }),
                 Some(Operation::StartCommand(Command::Open))
             );
             assert_eq!(int.mode, Mode::Collect);
+        }
+
+        /// The `Ctrl-s` key shall save the document.
+        #[test]
+        fn save() {
+            let mut int = view_mode();
+
+            assert_eq!(
+                int.translate(Input::Key {
+                    key: Key::Char('s'),
+                    modifiers: Modifiers::CONTROL,
+                }),
+                Some(Operation::Document(DocOp::Save))
+            );
+            assert_eq!(int.mode, Mode::View);
         }
 
         /// The 'j' key shall move the cursor down.
