@@ -22,8 +22,8 @@ pub(crate) struct Interpreter {
 }
 
 impl Interpreter {
-    /// Returns the [`Operation`]s that map to `input` given the current [`Mode`].
-    pub(crate) fn translate(&mut self, input: Input) -> Vec<Operation> {
+    /// Returns the [`Operation`] that maps to `input` given the current [`Mode`].
+    pub(crate) fn translate(&mut self, input: Input) -> Option<Operation> {
         #[allow(clippy::indexing_slicing)] // EnumMap guarantees indexing will not panic.
         let output = self.map[self.mode].decode(input);
 
@@ -31,7 +31,7 @@ impl Interpreter {
             self.mode = mode;
         }
 
-        output.operations
+        output.operation
     }
 }
 
@@ -62,7 +62,7 @@ impl Default for Interpreter {
 #[allow(clippy::unreachable)] // unreachable added by derive(Enum).
 #[derive(Copy, Clone, Debug, Enum, Eq, ParseDisplay, PartialEq, Hash)]
 #[display(style = "CamelCase")]
-pub(crate) enum Mode {
+enum Mode {
     /// Displays the current file.
     View,
     /// Confirms the user's action
@@ -80,9 +80,9 @@ impl Default for Mode {
 
 /// Signifies the data gleaned from user input.
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct Output {
-    /// The operations to be run.
-    operations: Vec<Operation>,
+struct Output {
+    /// The operation to be run.
+    operation: Option<Operation>,
     /// The mode to switch to.
     ///
     /// If None, interpreter should not switch modes.
@@ -97,7 +97,7 @@ impl Output {
 
     /// Adds `operation` to `self`.
     fn add_op(&mut self, operation: Operation) {
-        self.operations.push(operation);
+        let _ = self.operation.replace(operation);
     }
 
     /// Sets the mode of `self` to `mode`.
@@ -113,14 +113,14 @@ impl Output {
 }
 
 /// Defines the functionality to convert [`Input`] to [`Output`].
-pub(crate) trait ModeInterpreter: Debug {
+trait ModeInterpreter: Debug {
     /// Converts `input` to [`Operation`]s.
     fn decode(&self, input: Input) -> Output;
 }
 
 /// The [`ModeInterpreter`] for [`Mode::View`].
 #[derive(Clone, Debug)]
-pub(crate) struct ViewInterpreter {}
+struct ViewInterpreter {}
 
 impl ViewInterpreter {
     /// Creates a `ViewInterpreter`.
@@ -216,7 +216,7 @@ impl ModeInterpreter for ViewInterpreter {
 
 /// The [`ModeInterpreter`] for [`Mode::Confirm`].
 #[derive(Clone, Debug)]
-pub(crate) struct ConfirmInterpreter {}
+struct ConfirmInterpreter {}
 
 impl ConfirmInterpreter {
     /// Creates a new `ConfirmInterpreter`.
@@ -294,112 +294,158 @@ impl ModeInterpreter for CollectInterpreter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::ui::Modifiers;
+    use crate::ui::{Glitch, Modifiers, Setting};
 
-    fn char_input(c: char) -> Input {
-        key_input(Key::Char(c))
-    }
-
-    fn key_input(key: Key) -> Input {
-        Input::Key {
-            key,
-            modifiers: Modifiers::empty(),
-        }
-    }
-
-    fn output(operation: Operation, mode: Mode) -> Output {
-        Output {
-            operations: vec![operation],
-            new_mode: Some(mode),
-        }
-    }
-
-    fn keep_mode(operation: Operation) -> Output {
-        Output {
-            operations: vec![operation],
-            new_mode: None,
-        }
-    }
-
-    /// Tests decoding user input while in the View mode.
+    /// Tests decoding user input while the [`Interpreter`] is in [`Mode::View`].
     mod view {
         use super::*;
 
-        static INTERPRETER: ViewInterpreter = ViewInterpreter::new();
+        fn view_mode() -> Interpreter {
+            Interpreter::default()
+        }
+
+        /// Receiving a glitch shall display the message.
+        #[test]
+        fn glitch() {
+            let mut int = view_mode();
+
+            assert_eq!(
+                int.translate(Input::Glitch(Glitch::WatcherConnection)),
+                Some(Operation::Alert(ShowMessageParams {
+                    typ: MessageType::Error,
+                    message: "config file watcher disconnected".to_string(),
+                }))
+            );
+            assert_eq!(int.mode, Mode::View);
+        }
+
+        /// A new setting shall be forwarded to the application.
+        #[test]
+        fn setting() {
+            let mut int = view_mode();
+
+            assert_eq!(
+                int.translate(Input::Setting(Setting::Wrap(true))),
+                Some(Operation::UpdateSetting(Setting::Wrap(true)))
+            );
+            assert_eq!(int.mode, Mode::View);
+        }
 
         /// The `q` key shall confirm the user wants to quit.
         #[test]
         fn quit() {
+            let mut int = view_mode();
+
             assert_eq!(
-                INTERPRETER.decode(char_input('q')),
-                output(Operation::Confirm(ConfirmAction::Quit), Mode::Confirm)
+                int.translate(Input::Key {
+                    key: Key::Char('q'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Confirm(ConfirmAction::Quit))
             );
+            assert_eq!(int.mode, Mode::Confirm);
         }
 
         /// The `o` key shall request the name of the document to be opened.
         #[test]
         fn open() {
+            let mut int = view_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('o'))),
-                output(Operation::StartCommand(Command::Open), Mode::Collect)
+                int.translate(Input::Key {
+                    key: Key::Char('o'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::StartCommand(Command::Open))
             );
+            assert_eq!(int.mode, Mode::Collect);
         }
 
         /// The 'j' key shall move the cursor down.
         #[test]
         fn move_down() {
+            let mut int = view_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('j'))),
-                keep_mode(Operation::Document(DocOp::Move(Vector::new(
+                int.translate(Input::Key {
+                    key: Key::Char('j'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
                     Magnitude::Single
                 ))))
             );
+            assert_eq!(int.mode, Mode::View);
         }
 
         /// The 'k' key shall move the cursor up.
         #[test]
         fn move_up() {
+            let mut int = view_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('k'))),
-                keep_mode(Operation::Document(DocOp::Move(Vector::new(
+                int.translate(Input::Key {
+                    key: Key::Char('k'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
                     Magnitude::Single
                 ))))
             );
+            assert_eq!(int.mode, Mode::View);
         }
 
         /// The 'J' key shall scroll the document down.
         #[test]
         fn scroll_down() {
+            let mut int = view_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('J'))),
-                keep_mode(Operation::Document(DocOp::Move(Vector::new(
+                int.translate(Input::Key {
+                    key: Key::Char('J'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
                     Magnitude::Half
                 ))))
             );
+            assert_eq!(int.mode, Mode::View);
         }
 
         /// The 'K' key shall scroll the document up.
         #[test]
         fn scroll_up() {
+            let mut int = view_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('K'))),
-                keep_mode(Operation::Document(DocOp::Move(Vector::new(
+                int.translate(Input::Key {
+                    key: Key::Char('K'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
                     Magnitude::Half
                 ))))
             );
+            assert_eq!(int.mode, Mode::View);
         }
 
         /// The 'd' key shall delete the current selection.
         #[test]
         fn delete() {
+            let mut int = view_mode();
+
             assert_eq!(
-                INTERPRETER.decode(char_input('d')),
-                keep_mode(Operation::Document(DocOp::Delete))
+                int.translate(Input::Key {
+                    key: Key::Char('d'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Document(DocOp::Delete))
             );
+            assert_eq!(int.mode, Mode::View);
         }
     }
 
@@ -407,32 +453,50 @@ mod test {
     mod confirm {
         use super::*;
 
-        static INTERPRETER: ConfirmInterpreter = ConfirmInterpreter::new();
+        fn confirm_mode() -> Interpreter {
+            let mut int = Interpreter::default();
+            int.mode = Mode::Confirm;
+            int
+        }
 
         /// The `y` key shall confirm the action.
         #[test]
         fn confirm() {
+            let mut int = confirm_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('y'))),
-                keep_mode(Operation::Quit)
+                int.translate(Input::Key {
+                    key: Key::Char('y'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Quit)
             );
         }
 
         /// Any other key shall cancel the action, resetting the application to View mode.
         #[test]
         fn cancel() {
+            let mut int = confirm_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('n'))),
-                output(Operation::Reset, Mode::View)
+                int.translate(Input::Key {
+                    key: Key::Char('n'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Reset)
             );
+            assert_eq!(int.mode, Mode::View);
+
+            int = confirm_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('c'))),
-                output(Operation::Reset, Mode::View)
+                int.translate(Input::Key {
+                    key: Key::Char('1'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Reset)
             );
-            assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('1'))),
-                output(Operation::Reset, Mode::View)
-            );
+            assert_eq!(int.mode, Mode::View);
         }
     }
 
@@ -441,41 +505,77 @@ mod test {
     mod collect {
         use super::*;
 
-        static INTERPRETER: CollectInterpreter = CollectInterpreter::new();
+        fn collect_mode() -> Interpreter {
+            let mut int = Interpreter::default();
+            int.mode = Mode::Collect;
+            int
+        }
 
         /// The `Esc` key shall return to [`Mode::View`].
         #[test]
         fn reset() {
+            let mut int = collect_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Esc)),
-                output(Operation::Reset, Mode::View)
+                int.translate(Input::Key {
+                    key: Key::Esc,
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Reset)
             );
+            assert_eq!(int.mode, Mode::View);
         }
 
         /// All char keys shall be collected.
         #[test]
         fn collect() {
+            let mut int = collect_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('a'))),
-                keep_mode(Operation::Collect('a'))
+                int.translate(Input::Key {
+                    key: Key::Char('a'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Collect('a'))
             );
+            assert_eq!(int.mode, Mode::Collect);
+
+            int = collect_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('.'))),
-                keep_mode(Operation::Collect('.'))
+                int.translate(Input::Key {
+                    key: Key::Char('.'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Collect('.'))
             );
+            assert_eq!(int.mode, Mode::Collect);
+
+            int = collect_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Char('1'))),
-                keep_mode(Operation::Collect('1'))
+                int.translate(Input::Key {
+                    key: Key::Char('1'),
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Collect('1'))
             );
+            assert_eq!(int.mode, Mode::Collect);
         }
 
         /// The `Enter` key shall execute the command and return to [`Mode::View`].
         #[test]
         fn execute() {
+            let mut int = collect_mode();
+
             assert_eq!(
-                INTERPRETER.decode(key_input(Key::Enter)),
-                output(Operation::Execute, Mode::View)
+                int.translate(Input::Key {
+                    key: Key::Enter,
+                    modifiers: Modifiers::empty(),
+                }),
+                Some(Operation::Execute)
             );
+            assert_eq!(int.mode, Mode::View);
         }
     }
 }
