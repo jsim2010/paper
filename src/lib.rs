@@ -60,20 +60,15 @@
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
     clippy::unreachable, // unreachable added by derive(Enum).
     clippy::use_debug, // Flags debug formatting in Debug trait.
+    single_use_lifetimes, // Flags PartialEq derive.
 )]
 
 pub mod app;
-mod translate;
 pub mod ui;
 
 pub use app::Arguments;
 
-use {
-    app::{Operation, Processor},
-    thiserror::Error,
-    translate::Interpreter,
-    ui::Terminal,
-};
+use {app::Processor, thiserror::Error, ui::Terminal};
 
 /// An instance of the `paper` program.
 ///
@@ -89,8 +84,6 @@ use {
 /// ```
 #[derive(Debug)]
 pub struct Paper {
-    /// Translates input into operations.
-    interpreter: Interpreter,
     /// Manages the user interface.
     ui: Terminal,
     /// Processes application operations.
@@ -109,7 +102,6 @@ impl Paper {
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
             processor: Processor::new(&arguments),
-            interpreter: Interpreter::default(),
             ui: Terminal::new(arguments)?,
         })
     }
@@ -138,14 +130,8 @@ impl Paper {
         let mut keep_running = true;
 
         if let Some(input) = self.ui.input()? {
-            for operation in self.interpreter.translate(input) {
-                if let Operation::Quit = operation {
-                    keep_running = false;
-                }
-
-                if let Some(update) = self.processor.operate(operation)? {
-                    self.ui.apply(update)?;
-                }
+            if let Some(output) = self.processor.process(input)? {
+                keep_running = self.ui.apply(output)?;
             }
         }
 

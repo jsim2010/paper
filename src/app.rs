@@ -2,8 +2,10 @@
 pub mod logging;
 pub mod lsp;
 
+mod translate;
+
 use {
-    crate::ui::{Change, Rows, Setting, Size, Update},
+    crate::ui::{Change, Input, Output, Rows, Setting, Size},
     clap::ArgMatches,
     core::{
         cmp,
@@ -29,6 +31,7 @@ use {
         rc::Rc,
     },
     thiserror::Error,
+    translate::Interpreter,
     url::{ParseError, Url},
 };
 
@@ -171,6 +174,8 @@ pub(crate) struct Processor {
     command: Option<Command>,
     /// The working directory of the application.
     working_dir: Rc<PathUrl>,
+    /// Translates input into operations.
+    interpreter: Interpreter,
 }
 
 impl Processor {
@@ -184,11 +189,21 @@ impl Processor {
             log_config: arguments.log_config.clone(),
             command: None,
             working_dir,
+            interpreter: Interpreter::default(),
         }
     }
 
+    /// Processes `input` and generates [`Output`].
+    pub(crate) fn process(&mut self, input: Input) -> Result<Option<Output<'_>>, Fault> {
+        Ok(if let Some(operation) = self.interpreter.translate(input) {
+            self.operate(operation)?
+        } else {
+            None
+        })
+    }
+
     /// Performs `operation` and returns the appropriate [`Change`]s.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Update<'_>>, Fault> {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Output<'_>>, Fault> {
         // Retrieve here to avoid error. This will not work once changes start modifying the working dir.
         let working_dir = self.working_dir.path.clone();
         let change = match operation {
@@ -222,11 +237,11 @@ impl Processor {
                 }
             }
             Operation::Document(doc_op) => self.pane.operate(doc_op),
-            Operation::Quit => None,
+            Operation::Quit => Some(Change::Quit),
         };
 
         Ok(change.map(|c| {
-            Update::new(
+            Output::new(
                 // For now, must deal with fact that StarshipConfig included in Context is very difficult to edit (must edit the TOML Value). Thus for now, the starship.toml config file must be configured correctly.
                 print::get_prompt(Context::new_with_dir(ArgMatches::default(), &working_dir))
                     .replace("[J", ""),

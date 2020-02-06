@@ -142,88 +142,95 @@ impl Terminal {
     }
 
     /// Applies `change` to the output.
-    pub(crate) fn apply(&mut self, update: Update<'_>) -> Outcome<()> {
-        let header = update.header;
+    pub(crate) fn apply(&mut self, update: Output<'_>) -> Outcome<bool> {
+        let is_quitting = update.change == Change::Quit;
 
-        match update.change {
-            Change::Text { rows, cursor } => {
-                if cursor.start.line < self.top_line {
-                    self.top_line = cursor.start.line;
-                }
+        if !is_quitting {
+            let header = update.header;
 
-                let mut visible_rows: Vec<Row<'_>> = rows
-                    .clone()
-                    .filter(|row| row.line() >= self.top_line)
-                    .collect();
-                let mut end_line = cursor.end.line;
+            match update.change {
+                Change::Text { rows, cursor } => {
+                    if cursor.start.line < self.top_line {
+                        self.top_line = cursor.start.line;
+                    }
 
-                if cursor.end.character == 0 {
-                    end_line = end_line.saturating_sub(1);
-                }
+                    let mut visible_rows: Vec<Row<'_>> = rows
+                        .clone()
+                        .filter(|row| row.line() >= self.top_line)
+                        .collect();
+                    let mut end_line = cursor.end.line;
 
-                while let Some(first_line_past_bottom) = visible_rows
-                    .get(usize::from(self.grid.height))
-                    .map(Row::line)
-                {
-                    if end_line < first_line_past_bottom {
-                        break;
-                    } else {
-                        let line = visible_rows.remove(0).line();
-                        self.top_line = self.top_line.saturating_add(1);
+                    if cursor.end.character == 0 {
+                        end_line = end_line.saturating_sub(1);
+                    }
 
-                        while visible_rows.get(0).map(Row::line) == Some(line) {
-                            let _ = visible_rows.remove(0);
+                    while let Some(first_line_past_bottom) = visible_rows
+                        .get(usize::from(self.grid.height))
+                        .map(Row::line)
+                    {
+                        if end_line < first_line_past_bottom {
+                            break;
+                        } else {
+                            let line = visible_rows.remove(0).line();
+                            self.top_line = self.top_line.saturating_add(1);
+
+                            while visible_rows.get(0).map(Row::line) == Some(line) {
+                                let _ = visible_rows.remove(0);
+                            }
                         }
                     }
+
+                    let top_line = self.top_line;
+
+                    for (index, row) in rows
+                        .filter(|row| row.line() >= top_line)
+                        .enumerate()
+                        .take(usize::from(self.size.rows.saturating_sub(1)))
+                    {
+                        //trace!("index {}, row {:?}", index, row);
+                        self.grid
+                            .replace_line(index, row.text(), row.line() == end_line)?;
+                    }
+
+                    queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(Fault::Command)?;
                 }
-
-                let top_line = self.top_line;
-
-                for (index, row) in rows
-                    .filter(|row| row.line() >= top_line)
-                    .enumerate()
-                    .take(usize::from(self.size.rows.saturating_sub(1)))
-                {
-                    //trace!("index {}, row {:?}", index, row);
-                    self.grid
-                        .replace_line(index, row.text(), row.line() == end_line)?;
+                Change::Message(alert) => {
+                    trace!("alert: {:?} {}", alert.typ, alert.message);
+                    self.grid.add_alert(&alert.message, alert.typ)?;
                 }
+                Change::Question(question) => {
+                    self.grid.add_alert(&question.message, question.typ)?;
+                }
+                Change::Reset => {
+                    self.grid.reset()?;
+                }
+                Change::Input(title) => {
+                    self.grid.add_input(title)?;
+                }
+                Change::Size(size) => {
+                    self.size = size;
+                    // Subtract 1 to account for header.
+                    self.grid.resize(self.size.rows.saturating_sub(1));
+                }
+                Change::InputChar(c) => {
+                    queue!(self.out, Print(c)).map_err(Fault::Command)?;
+                }
+                Change::Quit => {}
+            }
 
-                queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(Fault::Command)?;
-            }
-            Change::Message(alert) => {
-                trace!("alert: {:?} {}", alert.typ, alert.message);
-                self.grid.add_alert(&alert.message, alert.typ)?;
-            }
-            Change::Question(question) => {
-                self.grid.add_alert(&question.message, question.typ)?;
-            }
-            Change::Reset => {
-                self.grid.reset()?;
-            }
-            Change::Input(title) => {
-                self.grid.add_input(title)?;
-            }
-            Change::Size(size) => {
-                self.size = size;
-                // Subtract 1 to account for header.
-                self.grid.resize(self.size.rows.saturating_sub(1));
-            }
-            Change::InputChar(c) => {
-                queue!(self.out, Print(c)).map_err(Fault::Command)?;
-            }
+            queue!(
+                self.out,
+                SavePosition,
+                MoveTo(0, 0),
+                Print(header),
+                RestorePosition,
+            )
+            .map_err(Fault::Command)?;
+
+            self.out.flush().map_err(Fault::Flush)?;
         }
 
-        queue!(
-            self.out,
-            SavePosition,
-            MoveTo(0, 0),
-            Print(header),
-            RestorePosition,
-        )
-        .map_err(Fault::Command)?;
-
-        self.out.flush().map_err(Fault::Flush)
+        Ok(is_quitting)
     }
 
     /// Checks for updates to [`Config`] and adds any changes the changed settings list.
@@ -283,7 +290,7 @@ impl Drop for Terminal {
 }
 
 /// An [`Iterator`] over the rows of a string.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Rows<'a> {
     /// The string being iterated over.
     s: &'a str,
@@ -580,15 +587,15 @@ def_config!(Wrap: bool = false);
 def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 
 /// An update to the user interface.
-pub(crate) struct Update<'a> {
+pub(crate) struct Output<'a> {
     /// The update header of the ui.
     header: String,
     /// The change of the update.
     change: Change<'a>,
 }
 
-impl<'a> Update<'a> {
-    /// Creates a new [`Update`].
+impl<'a> Output<'a> {
+    /// Creates a new [`Output`].
     pub(crate) const fn new(header: String, change: Change<'a>) -> Self {
         Self { header, change }
     }
@@ -597,7 +604,7 @@ impl<'a> Update<'a> {
 /// Signifies a potential modification to the output of the user interface.
 ///
 /// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Change<'a> {
     /// Text of the current document or how it was displayed was modified.
     Text {
@@ -618,6 +625,8 @@ pub(crate) enum Change<'a> {
     Size(Size),
     /// Add a char to the input box.
     InputChar(char),
+    /// Quits the application.
+    Quit,
 }
 
 /// Signifies a configuration.

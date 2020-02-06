@@ -22,8 +22,8 @@ pub(crate) struct Interpreter {
 }
 
 impl Interpreter {
-    /// Returns the [`Operation`]s that map to `input` given the current [`Mode`].
-    pub(crate) fn translate(&mut self, input: Input) -> Vec<Operation> {
+    /// Returns the [`Operation`] that maps to `input` given the current [`Mode`].
+    pub(crate) fn translate(&mut self, input: Input) -> Option<Operation> {
         #[allow(clippy::indexing_slicing)] // EnumMap guarantees indexing will not panic.
         let output = self.map[self.mode].decode(input);
 
@@ -31,7 +31,7 @@ impl Interpreter {
             self.mode = mode;
         }
 
-        output.operations
+        output.operation
     }
 }
 
@@ -81,8 +81,8 @@ impl Default for Mode {
 /// Signifies the data gleaned from user input.
 #[derive(Debug, Default, PartialEq)]
 struct Output {
-    /// The operations to be run.
-    operations: Vec<Operation>,
+    /// The operation to be run.
+    operation: Option<Operation>,
     /// The mode to switch to.
     ///
     /// If None, interpreter should not switch modes.
@@ -97,7 +97,7 @@ impl Output {
 
     /// Adds `operation` to `self`.
     fn add_op(&mut self, operation: Operation) {
-        self.operations.push(operation);
+        let _ = self.operation.replace(operation);
     }
 
     /// Sets the mode of `self` to `mode`.
@@ -294,7 +294,7 @@ impl ModeInterpreter for CollectInterpreter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::ui::{Glitch, Setting, Modifiers};
+    use crate::ui::{Glitch, Modifiers, Setting};
 
     /// Tests decoding user input while the [`Interpreter`] is in [`Mode::View`].
     mod view {
@@ -311,10 +311,10 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::Glitch(Glitch::WatcherConnection)),
-                vec![Operation::Alert(ShowMessageParams {
+                Some(Operation::Alert(ShowMessageParams {
                     typ: MessageType::Error,
                     message: "config file watcher disconnected".to_string(),
-                })]
+                }))
             );
             assert_eq!(int.mode, Mode::View);
         }
@@ -326,7 +326,7 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::Setting(Setting::Wrap(true))),
-                vec![Operation::UpdateSetting(Setting::Wrap(true))]
+                Some(Operation::UpdateSetting(Setting::Wrap(true)))
             );
             assert_eq!(int.mode, Mode::View);
         }
@@ -341,7 +341,7 @@ mod test {
                     key: Key::Char('q'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Confirm(ConfirmAction::Quit)],
+                Some(Operation::Confirm(ConfirmAction::Quit))
             );
             assert_eq!(int.mode, Mode::Confirm);
         }
@@ -356,7 +356,7 @@ mod test {
                     key: Key::Char('o'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::StartCommand(Command::Open)]
+                Some(Operation::StartCommand(Command::Open))
             );
             assert_eq!(int.mode, Mode::Collect);
         }
@@ -371,10 +371,10 @@ mod test {
                     key: Key::Char('j'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Document(DocOp::Move(Vector::new(
+                Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
                     Magnitude::Single
-                )))]
+                ))))
             );
             assert_eq!(int.mode, Mode::View);
         }
@@ -389,10 +389,10 @@ mod test {
                     key: Key::Char('k'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Document(DocOp::Move(Vector::new(
+                Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
                     Magnitude::Single
-                )))]
+                ))))
             );
             assert_eq!(int.mode, Mode::View);
         }
@@ -407,10 +407,10 @@ mod test {
                     key: Key::Char('J'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Document(DocOp::Move(Vector::new(
+                Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
                     Magnitude::Half
-                )))]
+                ))))
             );
             assert_eq!(int.mode, Mode::View);
         }
@@ -425,10 +425,10 @@ mod test {
                     key: Key::Char('K'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Document(DocOp::Move(Vector::new(
+                Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
                     Magnitude::Half
-                )))]
+                ))))
             );
             assert_eq!(int.mode, Mode::View);
         }
@@ -443,7 +443,7 @@ mod test {
                     key: Key::Char('d'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Document(DocOp::Delete)]
+                Some(Operation::Document(DocOp::Delete))
             );
             assert_eq!(int.mode, Mode::View);
         }
@@ -469,7 +469,7 @@ mod test {
                     key: Key::Char('y'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Quit],
+                Some(Operation::Quit)
             );
         }
 
@@ -483,7 +483,7 @@ mod test {
                     key: Key::Char('n'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Reset],
+                Some(Operation::Reset)
             );
             assert_eq!(int.mode, Mode::View);
 
@@ -494,7 +494,7 @@ mod test {
                     key: Key::Char('1'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Reset],
+                Some(Operation::Reset)
             );
             assert_eq!(int.mode, Mode::View);
         }
@@ -521,7 +521,7 @@ mod test {
                     key: Key::Esc,
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Reset]
+                Some(Operation::Reset)
             );
             assert_eq!(int.mode, Mode::View);
         }
@@ -536,7 +536,7 @@ mod test {
                     key: Key::Char('a'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Collect('a')]
+                Some(Operation::Collect('a'))
             );
             assert_eq!(int.mode, Mode::Collect);
 
@@ -547,7 +547,7 @@ mod test {
                     key: Key::Char('.'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Collect('.')]
+                Some(Operation::Collect('.'))
             );
             assert_eq!(int.mode, Mode::Collect);
 
@@ -558,7 +558,7 @@ mod test {
                     key: Key::Char('1'),
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Collect('1')]
+                Some(Operation::Collect('1'))
             );
             assert_eq!(int.mode, Mode::Collect);
         }
@@ -573,7 +573,7 @@ mod test {
                     key: Key::Enter,
                     modifiers: Modifiers::empty(),
                 }),
-                vec![Operation::Execute]
+                Some(Operation::Execute)
             );
             assert_eq!(int.mode, Mode::View);
         }
