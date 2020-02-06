@@ -1,10 +1,5 @@
 name: Validate Project
-on:
-  push:
-    paths:
-      - "Cargo.toml"
-      - "justfile"
-      - "src/*"
+on: [push]
 
 jobs:
   validate:
