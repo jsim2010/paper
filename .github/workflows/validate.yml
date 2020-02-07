@@ -7,7 +7,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: update rust
-      run: rustup update 1.41.0
+      run: rustup update 1.41.0 && cargo -V
     - name: validate_format
       run: cargo fmt -- --check
     - name: build
