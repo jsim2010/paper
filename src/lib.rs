@@ -55,7 +55,6 @@
 )]
 // Temporary allows.
 #![allow(
-    clippy::missing_inline_in_public_items, // Flags methods in derived traits.
     clippy::multiple_crate_versions, // Requires redox_users update to avoid multiple versions of rand_core.
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
     clippy::unreachable, // unreachable added by derive(Enum).
