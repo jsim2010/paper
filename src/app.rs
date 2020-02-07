@@ -5,12 +5,12 @@ pub mod lsp;
 mod translate;
 
 use {
-    crate::ui::{Change, Input, Output, Rows, Setting, Size},
+    // TODO: Move everything out of ui.
+    crate::io::{PathUrl, Input, Output, UrlError, ui::{Change, Rows, Setting, Size}},
     clap::ArgMatches,
     core::{
         cmp,
-        convert::{TryFrom, TryInto},
-        fmt,
+        convert::TryFrom,
         ops::{Bound, RangeBounds},
     },
     log::{error, trace},
@@ -23,135 +23,14 @@ use {
     std::{
         cell::RefCell,
         collections::HashMap,
-        env,
-        ffi::OsStr,
         fs,
         io::{self, ErrorKind},
-        path::{Path, PathBuf},
         rc::Rc,
     },
     thiserror::Error,
     translate::{Command, Direction, DocOp, Interpreter, Magnitude, Operation, Vector},
-    url::{ParseError, Url},
+    url::ParseError,
 };
-
-/// Configures the initialization of `paper`.
-#[derive(Clone, Debug, Default)]
-pub struct Arguments {
-    /// The file to be viewed.
-    ///
-    /// [`None`] indicates that the display should be empty.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    pub file: Option<String>,
-    /// Configures the logger.
-    ///
-    /// [`None`] indicates that `paper` will not configure logging during runtime.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    pub log_config: Option<LogConfig>,
-    /// The working directory of `paper`.
-    pub working_dir: PathUrl,
-}
-
-impl TryFrom<ArgMatches<'_>> for Arguments {
-    type Error = Fault;
-
-    #[inline]
-    fn try_from(value: ArgMatches<'_>) -> Result<Self, Self::Error> {
-        Ok(Self {
-            file: value.value_of("file").map(str::to_string),
-            log_config: Some(LogConfig::new()?),
-            working_dir: PathUrl::try_from(env::current_dir().map_err(Fault::WorkingDir)?)?,
-        })
-    }
-}
-
-/// A URL that is a valid path.
-///
-/// Useful for preventing repeat translations between URL and path formats.
-#[derive(Clone, Debug)]
-pub struct PathUrl {
-    /// The path.
-    path: PathBuf,
-    /// The URL.
-    url: Url,
-}
-
-impl PathUrl {
-    /// Joins `path` to `self`.
-    fn join(&self, path: &str) -> Result<Self, UrlError> {
-        let mut joined_path = self.path.clone();
-
-        joined_path.push(path);
-        joined_path.try_into()
-    }
-
-    /// Returns the language identification of the path.
-    fn language_id(&self) -> &str {
-        self.path
-            .extension()
-            .and_then(OsStr::to_str)
-            .map_or("", |ext| match ext {
-                "rs" => "rust",
-                x => x,
-            })
-    }
-}
-
-impl AsRef<Path> for PathUrl {
-    #[inline]
-    #[must_use]
-    fn as_ref(&self) -> &Path {
-        self.path.as_ref()
-    }
-}
-
-impl AsRef<Url> for PathUrl {
-    #[inline]
-    #[must_use]
-    fn as_ref(&self) -> &Url {
-        &self.url
-    }
-}
-
-impl Default for PathUrl {
-    #[inline]
-    #[must_use]
-    fn default() -> Self {
-        #[allow(clippy::result_expect_used)]
-        // Default path should not fail and failure cannot be propogated.
-        Self::try_from(PathBuf::default()).expect("creating default `PathUrl`")
-    }
-}
-
-impl fmt::Display for PathUrl {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.url)
-    }
-}
-
-impl TryFrom<PathBuf> for PathUrl {
-    type Error = UrlError;
-
-    #[inline]
-    fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
-        Ok(Self {
-            url: Url::from_directory_path(value.clone())
-                .map_err(|_| UrlError::InvalidDir(value.to_string_lossy().to_string()))?,
-            path: value,
-        })
-    }
-}
-
-/// An error from which the URL utility was unable to recover.
-#[derive(Debug, Error)]
-pub enum UrlError {
-    /// An error occurred while converting a directory path to a URL.
-    #[error("while convert `{0}` to a URL")]
-    InvalidDir(String),
-}
 
 /// An error from which the application was unable to recover.
 #[derive(Debug, Error)]
@@ -169,9 +48,6 @@ pub enum Fault {
     /// An error while determining the current working directory.
     #[error("while determining working directory: {0}")]
     WorkingDir(#[source] io::Error),
-    /// An error while converting a directory to a URL.
-    #[error("{0}")]
-    Url(#[from] UrlError),
     /// An error occurred while parsing a URL.
     #[error("while parsing URL: {0}")]
     ParseUrl(#[from] ParseError),
@@ -198,74 +74,84 @@ pub(crate) struct Processor {
 
 impl Processor {
     /// Creates a new [`Processor`].
-    pub(crate) fn new(arguments: &Arguments) -> Self {
-        let working_dir = Rc::new(arguments.working_dir.clone());
+    pub(crate) fn new(root_dir: &PathUrl) -> Result<Self, Fault> {
+        let working_dir = Rc::new(root_dir.clone());
 
-        Self {
-            pane: Pane::new(&working_dir),
-            input: String::new(),
-            log_config: arguments.log_config.clone(),
-            command: None,
-            working_dir,
-            interpreter: Interpreter::default(),
-        }
+        LogConfig::new().map(|log_config| {
+            Self {
+                pane: Pane::new(&working_dir),
+                input: String::new(),
+                log_config: Some(log_config),
+                command: None,
+                working_dir,
+                interpreter: Interpreter::default(),
+            }
+        }).map_err(Fault::from)
     }
 
     /// Processes `input` and generates [`Output`].
-    pub(crate) fn process(&mut self, input: Input) -> Result<Option<Output<'_>>, Fault> {
+    pub(crate) fn process(&mut self, input: Input) -> Result<Vec<Output<'_>>, Fault> {
         Ok(if let Some(operation) = self.interpreter.translate(input) {
             self.operate(operation)?
         } else {
-            None
+            Vec::new()
         })
     }
 
     /// Performs `operation` and returns the appropriate [`Change`]s.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Option<Output<'_>>, Fault> {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Result<Vec<Output<'_>>, Fault> {
+        let mut outputs = Vec::new();
         // Retrieve here to avoid error. This will not work once changes start modifying the working dir.
-        let working_dir = self.working_dir.path.clone();
-        let change = match operation {
-            Operation::UpdateSetting(setting) => self.update_setting(setting)?,
+        let working_dir = self.working_dir.as_ref().clone();
+        match operation {
+            Operation::UpdateSetting(setting) => {
+                if let Some(change) = self.update_setting(setting)? {
+                    outputs.push(Output::Change(change));
+                }
+            }
             Operation::Confirm(action) => {
-                Some(Change::Question(ShowMessageRequestParams::from(action)))
+                outputs.push(Output::Change(Change::Question(ShowMessageRequestParams::from(action))));
             }
             Operation::Reset => {
                 self.input.clear();
-                Some(Change::Reset)
+                outputs.push(Output::Change(Change::Reset));
             }
-            Operation::Alert(alert) => Some(Change::Message(alert)),
+            Operation::Alert(alert) => {
+                outputs.push(Output::Change(Change::Message(alert)));
+            }
             Operation::StartCommand(command) => {
                 let prompt = command.to_string();
 
                 self.command = Some(command);
-                Some(Change::Input(prompt))
+                outputs.push(Output::Change(Change::Input(prompt)));
             }
             Operation::Collect(c) => {
                 self.input.push(c);
-                Some(Change::InputChar(c))
+                outputs.push(Output::Change(Change::InputChar(c)));
             }
             Operation::Execute => {
                 if self.command.is_some() {
                     let change = self.pane.open_doc(&self.input);
 
                     self.input.clear();
-                    Some(change)
-                } else {
-                    None
+                    outputs.push(Output::Change(change));
                 }
             }
-            Operation::Document(doc_op) => Some(self.pane.operate(doc_op)),
-            Operation::Quit => Some(Change::Quit),
+            Operation::Document(doc_op) => {
+                outputs.push(Output::Change(self.pane.operate(doc_op)));
+            }
+            Operation::Quit => {
+                outputs.push(Output::Change(Change::Quit));
+            }
         };
 
-        Ok(change.map(|c| {
-            Output::new(
-                // For now, must deal with fact that StarshipConfig included in Context is very difficult to edit (must edit the TOML Value). Thus for now, the starship.toml config file must be configured correctly.
-                print::get_prompt(Context::new_with_dir(ArgMatches::default(), &working_dir))
-                    .replace("[J", ""),
-                c,
-            )
-        }))
+        outputs.push(Output::SetHeader(
+            // For now, must deal with fact that StarshipConfig included in Context is very difficult to edit (must edit the TOML Value). Thus for now, the starship.toml config file must be configured correctly.
+            print::get_prompt(Context::new_with_dir(ArgMatches::default(), &working_dir))
+                .replace("[J", ""),
+        ));
+
+        Ok(outputs)
     }
 
     /// Updates `self` based on `setting`.
@@ -738,8 +624,8 @@ enum DocumentError {
     /// Error in the language server.
     #[error("lsp: {0}")]
     Lsp(#[from] lsp::Fault),
-    /// Error working with a URL.
-    #[error("url: {0}")]
+    /// Url error.
+    #[error("{0}")]
     Url(#[from] UrlError),
 }
 

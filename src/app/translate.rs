@@ -1,6 +1,6 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
-    crate::ui::{Input, Key, Setting},
+    crate::io::{Input, ui::{self, Key, Setting}},
     core::fmt::{self, Debug},
     enum_map::{enum_map, Enum, EnumMap},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
@@ -323,19 +323,24 @@ impl ModeInterpreter for ViewInterpreter {
         let mut output = Output::new();
 
         match input {
-            Input::Setting(config) => {
-                output.add_op(Operation::UpdateSetting(config));
+            Input::User(user_input) => match user_input {
+                ui::Input::Setting(config) => {
+                    output.add_op(Operation::UpdateSetting(config));
+                }
+                ui::Input::Key { key, .. } => {
+                    Self::decode_key(key, &mut output);
+                }
+                ui::Input::Glitch(fault) => {
+                    output.add_op(Operation::Alert(ShowMessageParams {
+                        typ: MessageType::Error,
+                        message: format!("{}", fault),
+                    }));
+                }
+                ui::Input::Mouse | ui::Input::Resize { .. } => {}
             }
-            Input::Key { key, .. } => {
-                Self::decode_key(key, &mut output);
+            Input::File(file) => {
+                output.add_op(Operation::UpdateSetting(Setting::File(file)));
             }
-            Input::Glitch(fault) => {
-                output.add_op(Operation::Alert(ShowMessageParams {
-                    typ: MessageType::Error,
-                    message: format!("{}", fault),
-                }));
-            }
-            Input::Mouse | Input::Resize { .. } => {}
         }
 
         output
@@ -358,19 +363,22 @@ impl ModeInterpreter for ConfirmInterpreter {
         let mut output = Output::new();
 
         match input {
-            Input::Key {
-                key: Key::Char('y'),
-                ..
-            } => {
-                output.add_op(Operation::Quit);
+            Input::User(user_input) => match user_input {
+                ui::Input::Key {
+                    key: Key::Char('y'),
+                    ..
+                } => {
+                    output.add_op(Operation::Quit);
+                }
+                ui::Input::Key { .. }
+                | ui::Input::Mouse
+                | ui::Input::Resize { .. }
+                | ui::Input::Setting(..)
+                | ui::Input::Glitch(..) => {
+                    output.reset();
+                }
             }
-            Input::Key { .. }
-            | Input::Mouse
-            | Input::Resize { .. }
-            | Input::Setting(..)
-            | Input::Glitch(..) => {
-                output.reset();
-            }
+            Input::File(..) => {}
         }
 
         output
@@ -393,25 +401,28 @@ impl ModeInterpreter for CollectInterpreter {
         let mut output = Output::new();
 
         match input {
-            Input::Key { key: Key::Esc, .. } => {
-                output.reset();
+            Input::User(user_input) => match user_input {
+                ui::Input::Key { key: Key::Esc, .. } => {
+                    output.reset();
+                }
+                ui::Input::Key {
+                    key: Key::Enter, ..
+                } => {
+                    output.add_op(Operation::Execute);
+                    output.set_mode(Mode::View);
+                }
+                ui::Input::Key {
+                    key: Key::Char(c), ..
+                } => {
+                    output.add_op(Operation::Collect(c));
+                }
+                ui::Input::Key { .. }
+                | ui::Input::Mouse
+                | ui::Input::Resize { .. }
+                | ui::Input::Setting(..)
+                | ui::Input::Glitch(..) => {}
             }
-            Input::Key {
-                key: Key::Enter, ..
-            } => {
-                output.add_op(Operation::Execute);
-                output.set_mode(Mode::View);
-            }
-            Input::Key {
-                key: Key::Char(c), ..
-            } => {
-                output.add_op(Operation::Collect(c));
-            }
-            Input::Key { .. }
-            | Input::Mouse
-            | Input::Resize { .. }
-            | Input::Setting(..)
-            | Input::Glitch(..) => {}
+            Input::File(..) => {}
         }
 
         output

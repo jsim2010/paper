@@ -16,7 +16,6 @@
 pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
-    crate::Arguments,
     core::{
         convert::TryFrom,
         fmt::{self, Debug},
@@ -112,7 +111,7 @@ pub(crate) struct Terminal {
 
 impl Terminal {
     /// Creates a new [`Terminal`].
-    pub(crate) fn new(arguments: Arguments) -> Outcome<Self> {
+    pub(crate) fn new() -> Outcome<Self> {
         let config_file = dirs::home_dir()
             .ok_or(Fault::HomeDir)?
             .join(".config/paper.toml");
@@ -132,23 +131,17 @@ impl Terminal {
             .push_back(Setting::Size(get_terminal_size()?));
         term.add_config_updates(config_file);
 
-        if let Some(file) = arguments.file {
-            term.changed_settings.push_back(Setting::File(file));
-        }
-
         // Store all previous terminal output.
         execute!(term.out, EnterAlternateScreen, Hide).map_err(Fault::Command)?;
         Ok(term)
     }
 
     /// Applies `change` to the output.
-    pub(crate) fn apply(&mut self, update: Output<'_>) -> Outcome<bool> {
-        let is_quitting = update.change == Change::Quit;
+    pub(crate) fn apply(&mut self, change: Change<'_>) -> Outcome<bool> {
+        let is_quitting = change == Change::Quit;
 
         if !is_quitting {
-            let header = update.header;
-
-            match update.change {
+            match change {
                 Change::Text { rows, cursor } => {
                     if cursor.start.line < self.top_line {
                         self.top_line = cursor.start.line;
@@ -218,19 +211,24 @@ impl Terminal {
                 Change::Quit => {}
             }
 
-            queue!(
-                self.out,
-                SavePosition,
-                MoveTo(0, 0),
-                Print(header),
-                RestorePosition,
-            )
-            .map_err(Fault::Command)?;
-
             self.out.flush().map_err(Fault::Flush)?;
         }
 
         Ok(!is_quitting)
+    }
+
+    pub(crate) fn write_header(&mut self, header: String) -> Result<(), Fault> {
+        queue!(
+            self.out,
+            SavePosition,
+            MoveTo(0, 0),
+            Print(header),
+            RestorePosition,
+        )
+        .map_err(Fault::Command)?;
+
+        self.out.flush().map_err(Fault::Flush)?;
+        Ok(())
     }
 
     /// Checks for updates to [`Config`] and adds any changes the changed settings list.
@@ -248,7 +246,7 @@ impl Terminal {
     /// Returns the input from the user.
     ///
     /// Configuration modifications are returned prior to returning all other inputs.
-    pub(crate) fn input(&mut self) -> Outcome<Option<Input>> {
+    pub(crate) fn pull(&mut self) -> Result<Option<Input>, Fault> {
         match self.watcher.notify.try_recv() {
             Ok(event) => {
                 if let DebouncedEvent::Write(config_file) = event {
