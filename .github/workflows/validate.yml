@@ -6,6 +6,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
+    - name: update rust
+      run: rustup update stable
     - name: validate_format
       run: cargo fmt -- --check
     - name: build
