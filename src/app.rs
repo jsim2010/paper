@@ -100,6 +100,7 @@ impl PathUrl {
 }
 
 impl AsRef<Path> for PathUrl {
+    #[inline]
     #[must_use]
     fn as_ref(&self) -> &Path {
         self.path.as_ref()
@@ -107,6 +108,7 @@ impl AsRef<Path> for PathUrl {
 }
 
 impl AsRef<Url> for PathUrl {
+    #[inline]
     #[must_use]
     fn as_ref(&self) -> &Url {
         &self.url
@@ -114,6 +116,7 @@ impl AsRef<Url> for PathUrl {
 }
 
 impl Default for PathUrl {
+    #[inline]
     #[must_use]
     fn default() -> Self {
         #[allow(clippy::result_expect_used)]
@@ -123,6 +126,7 @@ impl Default for PathUrl {
 }
 
 impl fmt::Display for PathUrl {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.url)
     }
@@ -131,6 +135,7 @@ impl fmt::Display for PathUrl {
 impl TryFrom<PathBuf> for PathUrl {
     type Error = UrlError;
 
+    #[inline]
     fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
         Ok(Self {
             url: Url::from_directory_path(value.clone())
