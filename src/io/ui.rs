@@ -44,7 +44,7 @@ pub enum CreateUiError {
     ///
     /// [`crossterm`]: ../../crossterm/index.html
     #[error("while executing terminal command: {0}")]
-    Command(#[source] ErrorKind),
+    Command(#[from] ErrorKind),
 }
 
 /// An error while pulling input.
@@ -77,6 +77,7 @@ pub(crate) struct Terminal {
     grid: Grid,
 }
 
+#[allow(clippy::unused_self)] // For pull(), will be used when user interface becomes a trait.
 impl Terminal {
     /// Creates a new [`Terminal`].
     pub(crate) fn new() -> Result<Self, CreateUiError> {
@@ -175,6 +176,7 @@ impl Terminal {
         Ok(!is_quitting)
     }
 
+    /// Writes the header.
     pub(crate) fn write_header(&mut self, header: String) -> Result<(), PushError> {
         queue!(
             self.out,
@@ -191,8 +193,7 @@ impl Terminal {
     /// Returns the input from the user.
     ///
     /// Configuration modifications are returned prior to returning all other inputs.
-    pub(crate) fn pull(&mut self) -> Result<Option<Input>, PullError> {
-
+    pub(crate) fn pull(&self) -> Result<Option<Input>, PullError> {
         Ok(if event::poll(Duration::from_secs(0)).map_err(PullError)? {
             Some(event::read().map_err(PullError)?.into())
         } else {

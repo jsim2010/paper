@@ -22,7 +22,7 @@ use {
         path::{Path, PathBuf},
         sync::mpsc::{self, Receiver, TryRecvError},
     },
-    ui::{Terminal, Change, CreateUiError},
+    ui::{CreateUiError, Terminal, Change},
     url::Url,
     thiserror::Error,
 };
@@ -96,10 +96,12 @@ pub(crate) enum Glitch {
     ConfigFormat(#[from] toml::de::Error),
 }
 
+/// The interface.
 #[derive(Debug)]
 pub(crate) struct Interface {
     /// Manages the user interface.
     user_interface: Terminal,
+    /// The inputs of the interface.
     inputs: VecDeque<Input>,
     /// Notifies `self` of any events to the config file.
     watcher: ConfigWatcher,
@@ -108,6 +110,7 @@ pub(crate) struct Interface {
 }
 
 impl Interface {
+    /// Creates a new interface.
     pub(crate) fn new(arguments: Arguments) -> Result<Self, CreateInterfaceError> {
         let config_file = dirs::home_dir()
             .ok_or(CreateInterfaceError::HomeDir)?
@@ -138,7 +141,7 @@ impl Interface {
     fn add_config_updates(&mut self, config_file: PathBuf) {
         match self.config.update(config_file) {
             Ok(settings) => {
-                self.inputs.append(&mut settings.iter().map(|setting| Input::Config(setting.clone())).collect());
+                self.inputs.append(&mut settings.iter().map(|setting| Input::Config(*setting)).collect());
             }
             Err(glitch) => {
                 self.inputs.push_back(Input::Glitch(glitch));
@@ -146,6 +149,7 @@ impl Interface {
         }
     }
 
+    /// Pulls an [`Input`].
     pub(crate) fn pull(&mut self) -> Result<Option<Input>, PullError> {
         match self.watcher.notify.try_recv() {
             Ok(event) => {
@@ -166,9 +170,10 @@ impl Interface {
         }
     }
 
+    /// Pushes `output`.
     pub(crate) fn push(&mut self, output: Output<'_>) -> Result<bool, PushError> {
         match output {
-            Output::Change(change) => self.user_interface.apply(change).map_err(|e| e.into()),
+            Output::Change(change) => self.user_interface.apply(change),
             Output::SetHeader(header) => {
                 self.user_interface.write_header(header)?;
                 Ok(true)
@@ -322,7 +327,7 @@ def_config!(Wrap: bool = false);
 def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 
 /// Signifies a configuration.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Setting {
     /// If the document shall wrap long text.
     Wrap(bool),
@@ -356,22 +361,30 @@ impl fmt::Debug for ConfigWatcher {
     }
 }
 
+/// An input.
 #[derive(Debug)]
 pub(crate) enum Input {
+    /// A file to be opened.
     File(String),
+    /// An input from the user.
     User(ui::Input),
+    /// A configuration.
     Config(Setting),
+    /// A glitch.
     Glitch(Glitch),
 }
 
 impl From<ui::Input> for Input {
     fn from(value: ui::Input) -> Self {
-        Input::User(value)
+        Self::User(value)
     }
 }
 
+/// An output.
 #[derive(Debug)]
 pub(crate) enum Output<'a> {
+    /// Change the ui.
     Change(Change<'a>),
+    /// Set the header.
     SetHeader(String),
 }

@@ -10,6 +10,7 @@ use {
 /// Signifies actions that can be performed by the application.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Operation {
+    /// Resizes the user interface.
     Size(ui::Size),
     /// Resets the application.
     Reset,
@@ -29,6 +30,7 @@ pub(crate) enum Operation {
     Execute,
     /// An operation to edit the text or selection of the document.
     Document(DocOp),
+    /// Opens a file.
     OpenFile(String),
 }
 
