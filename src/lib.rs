@@ -141,12 +141,16 @@ impl Paper {
 /// An error from which `paper` was unable to recover.
 #[derive(Debug, Error)]
 pub enum Failure {
+    /// An error while parsing the arguments.
     #[error("failed to read arguments: {0}")]
     Arguments(#[from] IntoArgumentsError),
+    /// An error while creating the interface.
     #[error("failed to create interface: {0}")]
     Interface(#[from] CreateInterfaceError),
+    /// An error while pulling the input.
     #[error("failed to retrieve input: {0}")]
     Input(#[from] PullError),
+    /// An error while pushing output.
     #[error("failed to apply output: {0}")]
     Output(#[from] PushError),
     /// An error from [`app`].

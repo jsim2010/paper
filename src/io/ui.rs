@@ -29,115 +29,74 @@ use {
         terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
         ErrorKind,
     },
-    log::{trace, warn, LevelFilter},
+    log::{trace, warn},
     lsp_types::{MessageType, Range, ShowMessageParams, ShowMessageRequestParams},
-    notify::{DebouncedEvent, RecommendedWatcher, Watcher},
-    serde::Deserialize,
     std::{
-        collections::VecDeque,
-        fs,
         io::{self, Stdout, Write},
-        path::PathBuf,
-        sync::mpsc::{self, Receiver, TryRecvError},
     },
     thiserror::Error,
 };
 
-/// Represents the return type of all functions that may fail.
-type Outcome<T> = Result<T, Fault>;
-
-/// An error from which the user interface was unable to recover.
+/// An error while creating the user interface.
 #[derive(Debug, Error)]
-pub enum Fault {
-    /// An error while creating the config file watcher.
-    #[error("while creating config file watcher: {0}")]
-    Watcher(#[from] notify::Error),
-    /// An error while retrieving the home directory of the user.
-    #[error("unable to determine home directory of user")]
-    HomeDir,
-    /// An error while retrieving the size of the terminal.
-    #[error("while determining terminal size: {0}")]
-    TerminalSize(#[source] ErrorKind),
+pub enum CreateUiError {
     /// An error while executing a [`crossterm`] command.
     ///
     /// [`crossterm`]: ../../crossterm/index.html
     #[error("while executing terminal command: {0}")]
     Command(#[source] ErrorKind),
-    /// An error while reading terminal events.
-    #[error("while reading terminal events: {0}")]
-    Event(#[source] ErrorKind),
+}
+
+/// An error while pulling input.
+#[derive(Debug, Error)]
+#[error("{0}")]
+pub struct PullError(#[source] ErrorKind);
+
+/// An error while pushing to the user interface.
+#[derive(Debug, Error)]
+pub enum PushError {
+    /// An error while executing a [`crossterm`] command.
+    ///
+    /// [`crossterm`]: ../../crossterm/index.html
+    #[error("while executing terminal command: {0}")]
+    Command(#[source] ErrorKind),
     /// Error while flushing terminal output.
     #[error("while flushing terminal output: {0}")]
     Flush(#[source] io::Error),
-}
-
-/// An error in the user interface that is recoverable.
-///
-/// Until a glitch is resolved, certain functionality may not be properly completed.
-#[derive(Debug, Error)]
-pub(crate) enum Glitch {
-    /// Config file watcher disconnected.
-    #[error("config file watcher disconnected")]
-    WatcherConnection,
-    /// Unable to read config file.
-    #[error("unable to read config file: {0}")]
-    ReadConfig(#[source] io::Error),
-    /// Unable to convert config file to Config.
-    #[error("config file invalid format: {0}")]
-    ConfigFormat(#[from] toml::de::Error),
 }
 
 /// The user interface provided by a terminal.
 pub(crate) struct Terminal {
     /// The output of the application.
     out: Stdout,
-    /// The current configuration of the application.
-    config: Config,
-    /// Configs that have been input.
-    ///
-    /// Command arguments are viewed as config input so that all processing of arguments is performed within the main application loop.
-    changed_settings: VecDeque<Setting>,
-    /// A list of the glitches that have occurred in the user interface.
-    glitches: Vec<Glitch>,
     /// The size of the terminal.
     size: Size,
     /// The index of the first line of the document that may be displayed.
     top_line: u64,
-    /// Notifies `self` of any events to the config file.
-    watcher: ConfigWatcher,
     /// The grid of the terminal.
     grid: Grid,
 }
 
 impl Terminal {
     /// Creates a new [`Terminal`].
-    pub(crate) fn new() -> Outcome<Self> {
-        let config_file = dirs::home_dir()
-            .ok_or(Fault::HomeDir)?
-            .join(".config/paper.toml");
-        let watcher = ConfigWatcher::new(&config_file)?;
+    pub(crate) fn new() -> Result<Self, CreateUiError> {
         let mut term = Self {
             out: io::stdout(),
-            changed_settings: VecDeque::default(),
-            glitches: Vec::default(),
-            size: Size::default(),
+            size: Size {
+                rows: 0,
+                columns: 0,
+            },
             top_line: 0,
-            watcher,
-            config: Config::default(),
             grid: Grid::default(),
         };
 
-        term.changed_settings
-            .push_back(Setting::Size(get_terminal_size()?));
-        term.add_config_updates(config_file);
-
         // Store all previous terminal output.
-        execute!(term.out, EnterAlternateScreen, Hide).map_err(Fault::Command)?;
+        execute!(term.out, EnterAlternateScreen, Hide).map_err(CreateUiError::Command)?;
         Ok(term)
     }
 
     /// Applies `change` to the output.
-    pub(crate) fn apply(&mut self, change: Change<'_>) -> Outcome<bool> {
+    pub(crate) fn apply(&mut self, change: Change<'_>) -> Result<bool, PushError> {
         let is_quitting = change == Change::Quit;
 
         if !is_quitting {
@@ -180,12 +139,11 @@ impl Terminal {
                         .enumerate()
                         .take(usize::from(self.size.rows.saturating_sub(1)))
                     {
-                        //trace!("index {}, row {:?}", index, row);
                         self.grid
                             .replace_line(index, row.text(), row.line() == end_line)?;
                     }
 
-                    queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(Fault::Command)?;
+                    queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(PushError::Command)?;
                 }
                 Change::Message(alert) => {
                     trace!("alert: {:?} {}", alert.typ, alert.message);
@@ -206,18 +164,18 @@ impl Terminal {
                     self.grid.resize(self.size.rows.saturating_sub(1));
                 }
                 Change::InputChar(c) => {
-                    queue!(self.out, Print(c)).map_err(Fault::Command)?;
+                    queue!(self.out, Print(c)).map_err(PushError::Command)?;
                 }
                 Change::Quit => {}
             }
 
-            self.out.flush().map_err(Fault::Flush)?;
+            self.out.flush().map_err(PushError::Flush)?;
         }
 
         Ok(!is_quitting)
     }
 
-    pub(crate) fn write_header(&mut self, header: String) -> Result<(), Fault> {
+    pub(crate) fn write_header(&mut self, header: String) -> Result<(), PushError> {
         queue!(
             self.out,
             SavePosition,
@@ -225,48 +183,18 @@ impl Terminal {
             Print(header),
             RestorePosition,
         )
-        .map_err(Fault::Command)?;
+        .map_err(PushError::Command)?;
 
-        self.out.flush().map_err(Fault::Flush)?;
-        Ok(())
-    }
-
-    /// Checks for updates to [`Config`] and adds any changes the changed settings list.
-    fn add_config_updates(&mut self, config_file: PathBuf) {
-        match self.config.update(config_file) {
-            Ok(mut settings) => {
-                self.changed_settings.append(&mut settings);
-            }
-            Err(glitch) => {
-                self.glitches.push(glitch);
-            }
-        }
+        self.out.flush().map_err(PushError::Flush)
     }
 
     /// Returns the input from the user.
     ///
     /// Configuration modifications are returned prior to returning all other inputs.
-    pub(crate) fn pull(&mut self) -> Result<Option<Input>, Fault> {
-        match self.watcher.notify.try_recv() {
-            Ok(event) => {
-                if let DebouncedEvent::Write(config_file) = event {
-                    self.add_config_updates(config_file);
-                }
-            }
-            Err(TryRecvError::Empty) => (),
-            Err(TryRecvError::Disconnected) => {
-                self.glitches.push(Glitch::WatcherConnection);
-            }
-        }
+    pub(crate) fn pull(&mut self) -> Result<Option<Input>, PullError> {
 
-        // First check errors, then settings, then terminal input.
-        Ok(if let Some(glitch) = self.glitches.pop() {
-            Some(Input::Glitch(glitch))
-        } else if let Some(setting) = self.changed_settings.pop_front() {
-            trace!("retrieved setting: `{:?}`", setting);
-            Some(Input::Setting(setting))
-        } else if event::poll(Duration::from_secs(0)).map_err(Fault::Event)? {
-            Some(event::read().map_err(Fault::Event)?.into())
+        Ok(if event::poll(Duration::from_secs(0)).map_err(PullError)? {
+            Some(event::read().map_err(PullError)?.into())
         } else {
             None
         })
@@ -373,26 +301,6 @@ impl Row<'_> {
     }
 }
 
-/// Triggers a callback if the config file is updated.
-struct ConfigWatcher {
-    /// Watches for events on the config file.
-    #[allow(dead_code)] // watcher must must be owned to avoid being dropped.
-    watcher: RecommendedWatcher,
-    /// Receives events generated by `watcher`.
-    notify: Receiver<DebouncedEvent>,
-}
-
-impl ConfigWatcher {
-    /// Creates a new [`ConfigWatcher`].
-    fn new(config_file: &PathBuf) -> Result<Self, notify::Error> {
-        let (tx, notify) = mpsc::channel();
-        let mut watcher = notify::watcher(tx, Duration::from_secs(0))?;
-
-        watcher.watch(config_file, notify::RecursiveMode::NonRecursive)?;
-        Ok(Self { watcher, notify })
-    }
-}
-
 /// Signifies the primary output of the terminal.
 struct Grid {
     /// The output of the application.
@@ -418,7 +326,7 @@ impl Grid {
     }
 
     /// Replaces line in grid at `index` with `new_line`.
-    fn replace_line(&mut self, index: usize, new_line: &str, is_cursor_line: bool) -> Outcome<()> {
+    fn replace_line(&mut self, index: usize, new_line: &str, is_cursor_line: bool) -> Result<(), PushError> {
         if let Some(line) = self.lines.get_mut(index) {
             line.replace_range(.., new_line);
         }
@@ -431,12 +339,11 @@ impl Grid {
             } else {
                 None
             },
-        )?;
-        Ok(())
+        )
     }
 
     /// Adds an alert box over the grid.
-    fn add_alert(&mut self, message: &str, context: MessageType) -> Outcome<()> {
+    fn add_alert(&mut self, message: &str, context: MessageType) -> Result<(), PushError> {
         trace!("lines {:?}", message.lines().next());
         for line in message.lines() {
             self.print(
@@ -456,7 +363,7 @@ impl Grid {
     }
 
     /// Adds an input box beginning with `prompt`
-    fn add_input(&mut self, mut prompt: String) -> Outcome<()> {
+    fn add_input(&mut self, mut prompt: String) -> Result<(), PushError> {
         prompt.push_str(": ");
         self.print(self.height.saturating_sub(1), &prompt, None)?;
         self.is_showing_input = true;
@@ -464,25 +371,25 @@ impl Grid {
     }
 
     /// Prints `s` at `row` of the grid.
-    fn print(&mut self, row: u16, s: &str, background_color: Option<Color>) -> Outcome<()> {
+    fn print(&mut self, row: u16, s: &str, background_color: Option<Color>) -> Result<(), PushError> {
         // Add 1 to account for header.
-        queue!(self.out, MoveTo(0, row.saturating_add(1))).map_err(Fault::Command)?;
+        queue!(self.out, MoveTo(0, row.saturating_add(1))).map_err(PushError::Command)?;
 
         if let Some(color) = background_color {
-            queue!(self.out, SetBackgroundColor(color)).map_err(Fault::Command)?;
+            queue!(self.out, SetBackgroundColor(color)).map_err(PushError::Command)?;
         }
 
-        queue!(self.out, Print(s), Clear(ClearType::UntilNewLine)).map_err(Fault::Command)?;
+        queue!(self.out, Print(s), Clear(ClearType::UntilNewLine)).map_err(PushError::Command)?;
 
         if background_color.is_some() {
-            queue!(self.out, ResetColor).map_err(Fault::Command)?;
+            queue!(self.out, ResetColor).map_err(PushError::Command)?;
         }
 
         Ok(())
     }
 
     /// Removes all temporary boxes and re-displays the full grid.
-    fn reset(&mut self) -> Outcome<()> {
+    fn reset(&mut self) -> Result<(), PushError> {
         if self.alert_line_count != 0 {
             for row in 0..self.alert_line_count {
                 self.print(
@@ -530,75 +437,6 @@ impl Default for Grid {
     }
 }
 
-/// Signifies any configurable parameter of the application.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct Config {
-    /// If the application wraps long lines.
-    wrap: Wrap,
-    /// The [`LevelFilter`] of the starship library.
-    starship_log: StarshipLog,
-}
-
-impl Config {
-    /// Reads the config file into a `Config`.
-    fn read(config_file: PathBuf) -> Result<Self, Glitch> {
-        // TODO: Replace Faults.
-        fs::read_to_string(config_file)
-            .map_err(Glitch::ReadConfig)
-            .and_then(|config_string| toml::from_str(&config_string).map_err(Glitch::ConfigFormat))
-    }
-
-    /// Updates `self` to match paper's config file, returning any changed [`Setting`]s.
-    fn update(&mut self, config_file: PathBuf) -> Result<VecDeque<Setting>, Glitch> {
-        let mut settings = VecDeque::new();
-        let config = Self::read(config_file)?;
-
-        if self.wrap != config.wrap {
-            self.wrap = config.wrap;
-            settings.push_back(Setting::Wrap(self.wrap.0));
-        }
-
-        if self.starship_log != config.starship_log {
-            self.starship_log = config.starship_log;
-            settings.push_back(Setting::StarshipLog(self.starship_log.0));
-        }
-
-        Ok(settings)
-    }
-}
-
-macro_rules! def_config {
-    ($name:ident: $ty:ty = $default:expr) => {
-        #[derive(Debug, Deserialize, PartialEq)]
-        struct $name($ty);
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self($default)
-            }
-        }
-    };
-}
-
-def_config!(Wrap: bool = false);
-def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
-
-/// An update to the user interface.
-pub(crate) struct Output<'a> {
-    /// The update header of the ui.
-    header: String,
-    /// The change of the update.
-    change: Change<'a>,
-}
-
-impl<'a> Output<'a> {
-    /// Creates a new [`Output`].
-    pub(crate) const fn new(header: String, change: Change<'a>) -> Self {
-        Self { header, change }
-    }
-}
-
 /// Signifies a potential modification to the output of the user interface.
 ///
 /// It is not always true that a `Change` will require a modification of the user interface output. For example, if a range of the document that is not currently displayed is changed.
@@ -627,21 +465,8 @@ pub(crate) enum Change<'a> {
     Quit,
 }
 
-/// Signifies a configuration.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Setting {
-    /// The file path of the document.
-    File(String),
-    /// If the document shall wrap long text.
-    Wrap(bool),
-    /// The size of the terminal.
-    Size(Size),
-    /// The level at which starship records shall be logged.
-    StarshipLog(LevelFilter),
-}
-
 /// Signifies the size of a terminal.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Size {
     /// The number of rows.
     pub(crate) rows: u16,
@@ -649,17 +474,21 @@ pub(crate) struct Size {
     pub(crate) columns: u16,
 }
 
+impl Default for Size {
+    fn default() -> Self {
+        Self {
+            rows: 20,
+            columns: 80,
+        }
+    }
+}
+
 /// Signifies input provided by the user.
 #[derive(Debug)]
 pub(crate) enum Input {
     /// Signifies a new terminal size.
     #[allow(dead_code)] // False positive.
-    Resize {
-        /// The new number of rows.
-        rows: u16,
-        /// The new number of columns.
-        columns: u16,
-    },
+    Size(Size),
     /// Signifies a mouse action.
     Mouse,
     /// Signifies a key being pressed.
@@ -670,16 +499,12 @@ pub(crate) enum Input {
         /// Modifier keys pressed at the same time as `key`.
         modifiers: Modifiers,
     },
-    /// Signifies a changed [`Setting`].
-    Setting(Setting),
-    /// Signifies an error in the user interface that is recoverable.
-    Glitch(Glitch),
 }
 
 impl From<Event> for Input {
     fn from(value: Event) -> Self {
         match value {
-            Event::Resize(columns, rows) => Self::Resize { rows, columns },
+            Event::Resize(columns, rows) => Self::Size (Size{ rows, columns }),
             Event::Mouse(..) => Self::Mouse,
             Event::Key(key) => Self::Key {
                 key: key.code,
@@ -690,8 +515,12 @@ impl From<Event> for Input {
 }
 
 /// Returns the size of the terminal.
-fn get_terminal_size() -> Outcome<Size> {
-    let (columns, rows) = terminal::size().map_err(Fault::TerminalSize)?;
-
-    Ok(Size { rows, columns })
+pub(crate) fn get_size() -> Size {
+    match terminal::size() {
+        Ok((columns, rows)) => Size {rows, columns},
+        Err(e) => {
+            warn!("unable to retrieve size of terminal: {}", e);
+            Size::default()
+        }
+    }
 }

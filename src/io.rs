@@ -1,28 +1,39 @@
+//! Implements the interface for all input and output to the application.
 pub mod ui;
 
+pub use ui::{PushError, PullError};
+
 use {
+    notify::{DebouncedEvent, RecommendedWatcher, Watcher},
+    serde::Deserialize,
     clap::ArgMatches,
     core::{
         convert::{TryFrom, TryInto},
         fmt,
+        time::Duration,
     },
-    log::trace,
+    log::LevelFilter,
     std::{
+        fs,
         collections::VecDeque,
         env,
         io,
         ffi::OsStr,
         path::{Path, PathBuf},
+        sync::mpsc::{self, Receiver, TryRecvError},
     },
-    ui::{Terminal, Change},
+    ui::{Terminal, Change, CreateUiError},
     url::Url,
     thiserror::Error,
 };
 
+/// An error while parsing arguments.
 #[derive(Debug, Error)]
 pub enum IntoArgumentsError{
+    /// An error determing the root directory.
     #[error("current working directory is invalid: {0}")]
     RootDir(#[from] io::Error),
+    /// An error with a URL.
     #[error("root directory is invalid: {0}")]
     Url(#[from] UrlError),
 }
@@ -52,6 +63,7 @@ impl TryFrom<ArgMatches<'_>> for Arguments {
     }
 }
 
+/// An error while creating the interface.
 #[derive(Debug, Error)]
 pub enum CreateInterfaceError {
     /// An error while working with a Url.
@@ -59,58 +71,106 @@ pub enum CreateInterfaceError {
     Url(#[from] UrlError),
     /// An error while creating the user interface.
     #[error("{0}")]
-    Ui(#[from] ui::Fault),
+    CreateUi(#[from] CreateUiError),
+    /// An error while retrieving the home directory of the user.
+    #[error("unable to determine home directory of user")]
+    HomeDir,
+    /// An error while creating the config file watcher.
+    #[error("while creating config file watcher: {0}")]
+    Watcher(#[from] notify::Error),
 }
 
+/// An error in the user interface that is recoverable.
+///
+/// Until a glitch is resolved, certain functionality may not be properly completed.
 #[derive(Debug, Error)]
-pub enum PullError {
-    /// An error within the user interface.
-    #[error("{0}")]
-    Ui(#[from] ui::Fault),
-}
-
-#[derive(Debug, Error)]
-pub enum PushError {
-    #[error("{0}")]
-    Ui(#[from] ui::Fault),
+pub(crate) enum Glitch {
+    /// Config file watcher disconnected.
+    #[error("config file watcher disconnected")]
+    WatcherConnection,
+    /// Unable to read config file.
+    #[error("unable to read config file: {0}")]
+    ReadConfig(#[source] io::Error),
+    /// Unable to convert config file to Config.
+    #[error("config file invalid format: {0}")]
+    ConfigFormat(#[from] toml::de::Error),
 }
 
 #[derive(Debug)]
 pub(crate) struct Interface {
     /// Manages the user interface.
-    ui: Terminal,
+    user_interface: Terminal,
     inputs: VecDeque<Input>,
+    /// Notifies `self` of any events to the config file.
+    watcher: ConfigWatcher,
+    /// The current configuration of the application.
+    config: Config,
 }
 
 impl Interface {
     pub(crate) fn new(arguments: Arguments) -> Result<Self, CreateInterfaceError> {
-        Terminal::new().map(|ui| {
+        let config_file = dirs::home_dir()
+            .ok_or(CreateInterfaceError::HomeDir)?
+            .join(".config/paper.toml");
+        let watcher = ConfigWatcher::new(&config_file)?;
+        Terminal::new().map(|user_interface| {
             let mut inputs = VecDeque::new();
+
+            inputs.push_back(Input::User(ui::Input::Size(ui::get_size())));
 
             if let Some(file) = arguments.file {
                 inputs.push_back(Input::File(file));
             }
 
-            Self {
-                ui,
+            let mut interface = Self {
+                user_interface,
                 inputs,
-            }
+                watcher,
+                config: Config::default(),
+            };
+            
+            interface.add_config_updates(config_file);
+            interface
         }).map_err(|e| e.into())
     }
 
+    /// Checks for updates to [`Config`] and adds any changes the changed settings list.
+    fn add_config_updates(&mut self, config_file: PathBuf) {
+        match self.config.update(config_file) {
+            Ok(settings) => {
+                self.inputs.append(&mut settings.iter().map(|setting| Input::Config(setting.clone())).collect());
+            }
+            Err(glitch) => {
+                self.inputs.push_back(Input::Glitch(glitch));
+            }
+        }
+    }
+
     pub(crate) fn pull(&mut self) -> Result<Option<Input>, PullError> {
+        match self.watcher.notify.try_recv() {
+            Ok(event) => {
+                if let DebouncedEvent::Write(config_file) = event {
+                    self.add_config_updates(config_file);
+                }
+            }
+            Err(TryRecvError::Empty) => (),
+            Err(TryRecvError::Disconnected) => {
+                self.inputs.push_back(Input::Glitch(Glitch::WatcherConnection));
+            }
+        }
+
         if let Some(input) = self.inputs.pop_front() {
             Ok(Some(input))
         } else {
-            Ok(self.ui.pull()?.map(Input::from))
+            Ok(self.user_interface.pull()?.map(Input::from))
         }
     }
 
     pub(crate) fn push(&mut self, output: Output<'_>) -> Result<bool, PushError> {
         match output {
-            Output::Change(change) => self.ui.apply(change).map_err(|e| e.into()),
+            Output::Change(change) => self.user_interface.apply(change).map_err(|e| e.into()),
             Output::SetHeader(header) => {
-                self.ui.write_header(header);
+                self.user_interface.write_header(header)?;
                 Ok(true)
             }
         }
@@ -208,10 +268,100 @@ impl TryFrom<PathBuf> for PathUrl {
     }
 }
 
+/// Signifies any configurable parameter of the application.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Config {
+    /// If the application wraps long lines.
+    wrap: Wrap,
+    /// The [`LevelFilter`] of the starship library.
+    starship_log: StarshipLog,
+}
+
+impl Config {
+    /// Reads the config file into a `Config`.
+    fn read(config_file: PathBuf) -> Result<Self, Glitch> {
+        fs::read_to_string(config_file)
+            .map_err(Glitch::ReadConfig)
+            .and_then(|config_string| toml::from_str(&config_string).map_err(Glitch::ConfigFormat))
+    }
+
+    /// Updates `self` to match paper's config file, returning any changed [`Setting`]s.
+    fn update(&mut self, config_file: PathBuf) -> Result<VecDeque<Setting>, Glitch> {
+        let mut settings = VecDeque::new();
+        let config = Self::read(config_file)?;
+
+        if self.wrap != config.wrap {
+            self.wrap = config.wrap;
+            settings.push_back(Setting::Wrap(self.wrap.0));
+        }
+
+        if self.starship_log != config.starship_log {
+            self.starship_log = config.starship_log;
+            settings.push_back(Setting::StarshipLog(self.starship_log.0));
+        }
+
+        Ok(settings)
+    }
+}
+
+macro_rules! def_config {
+    ($name:ident: $ty:ty = $default:expr) => {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct $name($ty);
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self($default)
+            }
+        }
+    };
+}
+
+def_config!(Wrap: bool = false);
+def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
+
+/// Signifies a configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Setting {
+    /// If the document shall wrap long text.
+    Wrap(bool),
+    /// The level at which starship records shall be logged.
+    StarshipLog(LevelFilter),
+}
+
+/// Triggers a callback if the config file is updated.
+struct ConfigWatcher {
+    /// Watches for events on the config file.
+    #[allow(dead_code)] // watcher must must be owned to avoid being dropped.
+    watcher: RecommendedWatcher,
+    /// Receives events generated by `watcher`.
+    notify: Receiver<DebouncedEvent>,
+}
+
+impl ConfigWatcher {
+    /// Creates a new [`ConfigWatcher`].
+    fn new(config_file: &PathBuf) -> Result<Self, notify::Error> {
+        let (tx, notify) = mpsc::channel();
+        let mut watcher = notify::watcher(tx, Duration::from_secs(0))?;
+
+        watcher.watch(config_file, notify::RecursiveMode::NonRecursive)?;
+        Ok(Self { watcher, notify })
+    }
+}
+
+impl fmt::Debug for ConfigWatcher {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum Input {
     File(String),
     User(ui::Input),
+    Config(Setting),
+    Glitch(Glitch),
 }
 
 impl From<ui::Input> for Input {

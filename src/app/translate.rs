@@ -1,6 +1,6 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
-    crate::io::{Input, ui::{self, Key, Setting}},
+    crate::io::{Input, Setting, ui::{self, Key}},
     core::fmt::{self, Debug},
     enum_map::{enum_map, Enum, EnumMap},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
@@ -10,6 +10,7 @@ use {
 /// Signifies actions that can be performed by the application.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Operation {
+    Size(ui::Size),
     /// Resets the application.
     Reset,
     /// Confirms that the action is desired.
@@ -28,6 +29,7 @@ pub(crate) enum Operation {
     Execute,
     /// An operation to edit the text or selection of the document.
     Document(DocOp),
+    OpenFile(String),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
@@ -324,22 +326,25 @@ impl ModeInterpreter for ViewInterpreter {
 
         match input {
             Input::User(user_input) => match user_input {
-                ui::Input::Setting(config) => {
-                    output.add_op(Operation::UpdateSetting(config));
-                }
                 ui::Input::Key { key, .. } => {
                     Self::decode_key(key, &mut output);
                 }
-                ui::Input::Glitch(fault) => {
-                    output.add_op(Operation::Alert(ShowMessageParams {
-                        typ: MessageType::Error,
-                        message: format!("{}", fault),
-                    }));
+                ui::Input::Size(size) => {
+                    output.add_op(Operation::Size(size));
                 }
-                ui::Input::Mouse | ui::Input::Resize { .. } => {}
+                ui::Input::Mouse => {}
             }
             Input::File(file) => {
-                output.add_op(Operation::UpdateSetting(Setting::File(file)));
+                output.add_op(Operation::OpenFile(file));
+            }
+            Input::Glitch(glitch) => {
+                output.add_op(Operation::Alert(ShowMessageParams {
+                    typ: MessageType::Error,
+                    message: format!("{}", glitch),
+                }));
+            }
+            Input::Config(setting) => {
+                output.add_op(Operation::UpdateSetting(setting));
             }
         }
 
@@ -372,13 +377,11 @@ impl ModeInterpreter for ConfirmInterpreter {
                 }
                 ui::Input::Key { .. }
                 | ui::Input::Mouse
-                | ui::Input::Resize { .. }
-                | ui::Input::Setting(..)
-                | ui::Input::Glitch(..) => {
+                | ui::Input::Size { .. } => {
                     output.reset();
                 }
             }
-            Input::File(..) => {}
+            Input::File(..) | Input::Glitch(..) | Input::Config(..) => {}
         }
 
         output
@@ -418,11 +421,9 @@ impl ModeInterpreter for CollectInterpreter {
                 }
                 ui::Input::Key { .. }
                 | ui::Input::Mouse
-                | ui::Input::Resize { .. }
-                | ui::Input::Setting(..)
-                | ui::Input::Glitch(..) => {}
+                | ui::Input::Size { .. } => {}
             }
-            Input::File(..) => {}
+            Input::File(..) | Input::Glitch(..) | Input::Config(..) => {}
         }
 
         output

@@ -6,7 +6,7 @@ mod translate;
 
 use {
     // TODO: Move everything out of ui.
-    crate::io::{PathUrl, Input, Output, UrlError, ui::{Change, Rows, Setting, Size}},
+    crate::io::{PathUrl, Input, Output, UrlError, Setting, ui::{Change, Rows, Size}},
     clap::ArgMatches,
     core::{
         cmp,
@@ -109,6 +109,9 @@ impl Processor {
                     outputs.push(Output::Change(change));
                 }
             }
+            Operation::Size(size) => {
+                outputs.push(Output::Change(self.pane.update_size(size)));
+            }
             Operation::Confirm(action) => {
                 outputs.push(Output::Change(Change::Question(ShowMessageRequestParams::from(action))));
             }
@@ -143,6 +146,9 @@ impl Processor {
             Operation::Quit => {
                 outputs.push(Output::Change(Change::Quit));
             }
+            Operation::OpenFile(file) => {
+                outputs.push(Output::Change(self.pane.open_doc(&file)));
+            }
         };
 
         outputs.push(Output::SetHeader(
@@ -157,9 +163,7 @@ impl Processor {
     /// Updates `self` based on `setting`.
     fn update_setting(&mut self, setting: Setting) -> Result<Option<Change<'_>>, Fault> {
         match setting {
-            Setting::File(file) => Ok(Some(self.pane.open_doc(&file))),
             Setting::Wrap(is_wrapped) => Ok(self.pane.control_wrap(is_wrapped)),
-            Setting::Size(size) => Ok(Some(self.pane.update_size(size))),
             Setting::StarshipLog(log_level) => {
                 trace!("updating starship log level to `{}`", log_level);
 
