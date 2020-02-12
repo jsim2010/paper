@@ -331,7 +331,7 @@ impl ModeInterpreter for ViewInterpreter {
                 ui::Input::Key { key, .. } => {
                     Self::decode_key(key, &mut output);
                 }
-                ui::Input::Size(size) => {
+                ui::Input::Resize(size) => {
                     output.add_op(Operation::Size(size));
                 }
                 ui::Input::Mouse => {}
@@ -379,7 +379,7 @@ impl ModeInterpreter for ConfirmInterpreter {
                 }
                 ui::Input::Key { .. }
                 | ui::Input::Mouse
-                | ui::Input::Size { .. } => {
+                | ui::Input::Resize { .. } => {
                     output.reset();
                 }
             }
@@ -423,7 +423,7 @@ impl ModeInterpreter for CollectInterpreter {
                 }
                 ui::Input::Key { .. }
                 | ui::Input::Mouse
-                | ui::Input::Size { .. } => {}
+                | ui::Input::Resize { .. } => {}
             }
             Input::File(..) | Input::Glitch(..) | Input::Config(..) => {}
         }

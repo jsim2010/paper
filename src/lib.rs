@@ -67,7 +67,7 @@ pub mod io;
 
 pub use io::Arguments;
 
-use {app::Processor, thiserror::Error, io::{PullError, PushError, CreateInterfaceError, IntoArgumentsError, Interface}};
+use {app::Processor, thiserror::Error, io::{PullError, FlushError, PushError, CreateInterfaceError, IntoArgumentsError, Interface}};
 
 /// An instance of the `paper` program.
 ///
@@ -132,6 +132,8 @@ impl Paper {
             for output in self.processor.process(input)? {
                 keep_running &= self.io.push(output)?;
             }
+
+            self.io.flush()?;
         }
 
         Ok(keep_running)
@@ -153,6 +155,9 @@ pub enum Failure {
     /// An error while pushing output.
     #[error("failed to apply output: {0}")]
     Output(#[from] PushError),
+    /// An error while flushing output.
+    #[error("failed to flush output: {0}")]
+    Flush(#[from] FlushError),
     /// An error from [`app`].
     ///
     /// [`app`]: app/index.html

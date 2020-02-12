@@ -6,7 +6,7 @@ mod translate;
 
 use {
     // TODO: Move everything out of ui.
-    crate::io::{PathUrl, Input, Output, UrlError, Setting, ui::{Change, Rows, Size}},
+    crate::io::{PathUrl, Input, Output, UrlError, Setting, ui::{Display, Rows, Size}},
     clap::ArgMatches,
     core::{
         cmp,
@@ -98,7 +98,7 @@ impl Processor {
         })
     }
 
-    /// Performs `operation` and returns the appropriate [`Change`]s.
+    /// Performs `operation` and returns the appropriate [`Display`]s.
     pub(crate) fn operate(&mut self, operation: Operation) -> Result<Vec<Output<'_>>, Fault> {
         let mut outputs = Vec::new();
         // Retrieve here to avoid error. This will not work once changes start modifying the working dir.
@@ -110,27 +110,28 @@ impl Processor {
                 }
             }
             Operation::Size(size) => {
+                trace!("resize {:?}", size);
                 outputs.push(Output::Change(self.pane.update_size(size)));
             }
             Operation::Confirm(action) => {
-                outputs.push(Output::Change(Change::Question(ShowMessageRequestParams::from(action))));
+                outputs.push(Output::Change(Display::Question(ShowMessageRequestParams::from(action))));
             }
             Operation::Reset => {
                 self.input.clear();
-                outputs.push(Output::Change(Change::Reset));
+                outputs.push(Output::Change(Display::Reset));
             }
             Operation::Alert(alert) => {
-                outputs.push(Output::Change(Change::Message(alert)));
+                outputs.push(Output::Change(Display::Message(alert)));
             }
             Operation::StartCommand(command) => {
                 let prompt = command.to_string();
 
                 self.command = Some(command);
-                outputs.push(Output::Change(Change::Input(prompt)));
+                outputs.push(Output::Change(Display::Intake(prompt)));
             }
             Operation::Collect(c) => {
                 self.input.push(c);
-                outputs.push(Output::Change(Change::InputChar(c)));
+                outputs.push(Output::Change(Display::Char(c)));
             }
             Operation::Execute => {
                 if self.command.is_some() {
@@ -144,24 +145,24 @@ impl Processor {
                 outputs.push(Output::Change(self.pane.operate(doc_op)));
             }
             Operation::Quit => {
-                outputs.push(Output::Change(Change::Quit));
+                outputs.push(Output::Quit);
             }
             Operation::OpenFile(file) => {
                 outputs.push(Output::Change(self.pane.open_doc(&file)));
             }
         };
 
-        outputs.push(Output::SetHeader(
+        outputs.push(Output::Change(Display::Header(
             // For now, must deal with fact that StarshipConfig included in Context is very difficult to edit (must edit the TOML Value). Thus for now, the starship.toml config file must be configured correctly.
             print::get_prompt(Context::new_with_dir(ArgMatches::default(), &working_dir))
                 .replace("[J", ""),
-        ));
+        )));
 
         Ok(outputs)
     }
 
     /// Updates `self` based on `setting`.
-    fn update_setting(&mut self, setting: Setting) -> Result<Option<Change<'_>>, Fault> {
+    fn update_setting(&mut self, setting: Setting) -> Result<Option<Display<'_>>, Fault> {
         match setting {
             Setting::Wrap(is_wrapped) => Ok(self.pane.control_wrap(is_wrapped)),
             Setting::StarshipLog(log_level) => {
@@ -185,6 +186,7 @@ struct Pane {
     /// The number of lines by which a scroll moves.
     scroll_amount: Rc<RefCell<Amount>>,
     /// The length at which displayed lines may be wrapped.
+    // TODO: Remove wrap_length and move functionality into io::ui.
     wrap_length: Rc<RefCell<Swival<usize>>>,
     /// The current working directory.
     working_dir: Rc<PathUrl>,
@@ -205,7 +207,7 @@ impl Pane {
     }
 
     /// Performs `operation` on `self`.
-    fn operate(&mut self, operation: DocOp) -> Change<'_> {
+    fn operate(&mut self, operation: DocOp) -> Display<'_> {
         if let Some(doc) = &mut self.doc {
             match operation {
                 DocOp::Move(vector) => doc.move_selection(&vector),
@@ -213,7 +215,7 @@ impl Pane {
                 DocOp::Save => doc.save(),
             }
         } else {
-            Change::Message(ShowMessageParams {
+            Display::Message(ShowMessageParams {
                 typ: MessageType::Info,
                 message: format!(
                     "There is no open document on which to perform {}",
@@ -224,7 +226,7 @@ impl Pane {
     }
 
     /// Opens a document at `path`.
-    fn open_doc(&mut self, path: &str) -> Change<'_> {
+    fn open_doc(&mut self, path: &str) -> Display<'_> {
         match self.create_doc(path) {
             Ok(doc) => {
                 let _ = self.doc.replace(doc);
@@ -234,7 +236,7 @@ impl Pane {
                     .expect("retrieving `Document` in `Pane`")
                     .text_change()
             }
-            Err(error) => Change::Message(ShowMessageParams::from(error)),
+            Err(error) => Display::Message(ShowMessageParams::from(error)),
         }
     }
 
@@ -258,7 +260,7 @@ impl Pane {
     }
 
     /// Sets the flag of the wrap length.
-    fn control_wrap(&mut self, is_wrapped: bool) -> Option<Change<'_>> {
+    fn control_wrap(&mut self, is_wrapped: bool) -> Option<Display<'_>> {
         if self.wrap_length.borrow_mut().control(is_wrapped) {
             self.doc.as_mut().map(|doc| doc.text_change())
         } else {
@@ -267,12 +269,12 @@ impl Pane {
     }
 
     /// Updates the size of `self` to match `size`;
-    fn update_size(&mut self, size: Size) -> Change<'_> {
+    fn update_size(&mut self, size: Size) -> Display<'_> {
         self.wrap_length.borrow_mut().set(size.columns.into());
         self.scroll_amount
             .borrow_mut()
             .set(u64::from(size.rows.wrapping_div(3)));
-        Change::Size(size)
+        Display::Resize(size)
     }
 }
 
@@ -322,17 +324,17 @@ impl Document {
     }
 
     /// Saves the document.
-    fn save(&self) -> Change<'_> {
+    fn save(&self) -> Display<'_> {
         let change = self.lsp_server.as_ref().and_then(|server| {
             server
                 .borrow_mut()
                 .will_save(&self.path)
                 .err()
-                .map(|e| Change::Message(e.into()))
+                .map(|e| Display::Message(e.into()))
         });
 
         change.unwrap_or_else(|| {
-            Change::Message(match fs::write(&self.path, &self.text.content) {
+            Display::Message(match fs::write(&self.path, &self.text.content) {
                 Ok(..) => ShowMessageParams {
                     typ: MessageType::Info,
                     message: format!("Saved document `{}`", self.path),
@@ -346,7 +348,7 @@ impl Document {
     }
 
     /// Deletes the text of the [`Selection`].
-    fn delete_selection(&mut self) -> Change<'_> {
+    fn delete_selection(&mut self) -> Display<'_> {
         self.text.delete_selection(&self.selection);
         let mut change = self.text_change();
 
@@ -357,17 +359,17 @@ impl Document {
                 &self.text.content,
                 TextEdit::new(self.selection.range, String::new()),
             ) {
-                change = Change::Message(e.into());
+                change = Display::Message(e.into());
             }
         }
 
         change
     }
 
-    /// Returns the [`Change`] for the current status.
-    fn text_change(&self) -> Change<'_> {
-        Change::Text {
-            cursor: self.selection.range,
+    /// Returns the [`Display`] for the current status.
+    fn text_change(&self) -> Display<'_> {
+        Display::Body {
+            selection: self.selection.range,
             rows: self.text.rows(),
         }
     }
@@ -378,7 +380,7 @@ impl Document {
     }
 
     /// Moves the [`Selection`] as described by [`Vector`].
-    fn move_selection(&mut self, vector: &Vector) -> Change<'_> {
+    fn move_selection(&mut self, vector: &Vector) -> Display<'_> {
         let amount = match vector.magnitude() {
             Magnitude::Single => 1,
             Magnitude::Half => self.scroll_amount.borrow().value(),

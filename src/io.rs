@@ -1,7 +1,7 @@
 //! Implements the interface for all input and output to the application.
 pub mod ui;
 
-pub use ui::{PushError, PullError};
+pub(crate) use ui::FlushError;
 
 use {
     notify::{DebouncedEvent, RecommendedWatcher, Watcher},
@@ -22,7 +22,7 @@ use {
         path::{Path, PathBuf},
         sync::mpsc::{self, Receiver, TryRecvError},
     },
-    ui::{CreateUiError, Terminal, Change},
+    ui::{Terminal, Display, CommandError, TerminalSize},
     url::Url,
     thiserror::Error,
 };
@@ -36,6 +36,22 @@ pub enum IntoArgumentsError{
     /// An error with a URL.
     #[error("root directory is invalid: {0}")]
     Url(#[from] UrlError),
+}
+
+/// An error while pushing output.
+#[derive(Debug, Error)]
+pub enum PushError {
+    /// An error in the ui.
+    #[error("{0}")]
+    Ui(#[from] CommandError),
+}
+
+/// An error while pulling input.
+#[derive(Debug, Error)]
+pub enum PullError {
+    /// An error from the ui.
+    #[error("{0}")]
+    Ui(#[from] CommandError),
 }
 
 /// Configures the initialization of `paper`.
@@ -71,7 +87,7 @@ pub enum CreateInterfaceError {
     Url(#[from] UrlError),
     /// An error while creating the user interface.
     #[error("{0}")]
-    CreateUi(#[from] CreateUiError),
+    CreateUi(#[from] CommandError),
     /// An error while retrieving the home directory of the user.
     #[error("unable to determine home directory of user")]
     HomeDir,
@@ -119,11 +135,7 @@ impl Interface {
         Terminal::new().map(|user_interface| {
             let mut inputs = VecDeque::new();
 
-            inputs.push_back(Input::User(ui::Input::Size(ui::get_size())));
-
-            if let Some(file) = arguments.file {
-                inputs.push_back(Input::File(file));
-            }
+            inputs.push_back(Input::User(TerminalSize::get().into()));
 
             let mut interface = Self {
                 user_interface,
@@ -133,6 +145,11 @@ impl Interface {
             };
             
             interface.add_config_updates(config_file);
+
+            if let Some(file) = arguments.file {
+                interface.inputs.push_back(Input::File(file));
+            }
+
             interface
         }).map_err(|e| e.into())
     }
@@ -172,13 +189,22 @@ impl Interface {
 
     /// Pushes `output`.
     pub(crate) fn push(&mut self, output: Output<'_>) -> Result<bool, PushError> {
+        let mut keep_running = true;
+
         match output {
-            Output::Change(change) => self.user_interface.apply(change),
-            Output::SetHeader(header) => {
-                self.user_interface.write_header(header)?;
-                Ok(true)
+            Output::Change(change) => {
+                self.user_interface.push(change)?;
+            }
+            Output::Quit => {
+                keep_running = false;
             }
         }
+
+        Ok(keep_running)
+    }
+
+    pub(crate) fn flush(&mut self) -> Result<(), FlushError> {
+        self.user_interface.flush()
     }
 }
 
@@ -384,7 +410,6 @@ impl From<ui::Input> for Input {
 #[derive(Debug)]
 pub(crate) enum Output<'a> {
     /// Change the ui.
-    Change(Change<'a>),
-    /// Set the header.
-    SetHeader(String),
+    Change(Display<'a>),
+    Quit,
 }
