@@ -12,6 +12,7 @@ use {
         fmt,
         time::Duration,
     },
+    lsp_types::{ShowMessageRequestParams, ShowMessageParams, TextEdit},
     log::LevelFilter,
     std::{
         fs,
@@ -22,7 +23,7 @@ use {
         path::{Path, PathBuf},
         sync::mpsc::{self, Receiver, TryRecvError},
     },
-    ui::{Terminal, Display, CommandError, TerminalSize},
+    ui::{Size, Terminal, CommandError, TerminalSize, Selection},
     url::Url,
     thiserror::Error,
 };
@@ -192,8 +193,38 @@ impl Interface {
         let mut keep_running = true;
 
         match output {
-            Output::Change(change) => {
-                self.user_interface.push(change)?;
+            Output::OpenDoc {url: _, language_id: _, version: _, text} => {
+                self.user_interface.open_doc(text)?;
+            }
+            Output::Wrap {is_wrapped, selection } => {
+                self.user_interface.wrap(is_wrapped, selection)?;
+            }
+            Output::EditDoc {edit, selection} => {
+                self.user_interface.edit(edit, selection)?;
+            }
+            Output::MoveSelection { selection } => {
+                self.user_interface.move_selection(selection)?;
+            }
+            Output::SetHeader {header} => {
+                self.user_interface.set_header(header)?;
+            }
+            Output::Notify { message } => {
+                self.user_interface.notify(message)?;
+            }
+            Output::Question { request } => {
+                self.user_interface.question(request)?;
+            }
+            Output::StartIntake { title } => {
+                self.user_interface.start_intake(title)?;
+            }
+            Output::Reset => {
+                self.user_interface.reset()?;
+            }
+            Output::Resize { size } => {
+                self.user_interface.resize(size);
+            }
+            Output::Write { ch } => {
+                self.user_interface.write(ch)?;
             }
             Output::Quit => {
                 keep_running = false;
@@ -409,7 +440,41 @@ impl From<ui::Input> for Input {
 /// An output.
 #[derive(Debug)]
 pub(crate) enum Output<'a> {
-    /// Change the ui.
-    Change(Display<'a>),
+    OpenDoc {
+        url: &'a PathUrl,
+        language_id: &'a str,
+        version: i64,
+        text: &'a str,
+    },
+    Wrap {
+        is_wrapped: bool,
+        selection: &'a Selection,
+    },
+    EditDoc {
+        edit: TextEdit,
+        selection: &'a Selection,
+    },
+    MoveSelection {
+        selection: &'a Selection,
+    },
+    SetHeader {
+        header: String,
+    },
+    Notify {
+        message: ShowMessageParams,
+    },
+    Question {
+        request: ShowMessageRequestParams,
+    },
+    StartIntake {
+        title: String,
+    },
+    Reset,
+    Resize {
+        size: Size,
+    },
+    Write {
+        ch: char,
+    },
     Quit,
 }

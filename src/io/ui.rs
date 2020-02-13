@@ -14,6 +14,7 @@ pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 
 use {
     core::{
+        cmp,
         convert::TryFrom,
         fmt::{self, Debug},
         time::Duration,
@@ -26,10 +27,11 @@ use {
         terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
         ErrorKind,
     },
-    log::{trace, warn},
-    lsp_types::{MessageType, Range, ShowMessageParams, ShowMessageRequestParams},
+    log::warn,
+    lsp_types::{MessageType, Range, TextEdit, ShowMessageParams, ShowMessageRequestParams, Position},
     std::{
         io::{self, Stdout, Write},
+        collections::VecDeque,
     },
     thiserror::Error,
 };
@@ -82,39 +84,51 @@ impl Terminal {
         })
     }
 
-    /// Applies `display` to the terminal output pipeline.
-    ///
-    /// It is not guaranteed that all outputs have been displayed until [`Terminal::flush()`] has been called.
-    pub(crate) fn push(&mut self, display: Display<'_>) -> Result<(), CommandError> {
-        match display {
-            Display::Header(header) => {
-                queue!(self.out, SavePosition, MoveTo(0, 0), Print(header), RestorePosition)?;
-            }
-            Display::Body { rows, selection } => {
-                self.body.print(rows, selection)?;
-            }
-            Display::Message(alert) => {
-                self.body.add_alert(&alert.message, alert.typ)?;
-            }
-            Display::Question(question) => {
-                // TODO: Add implementation to use actions.
-                self.body.add_alert(&question.message, question.typ)?;
-            }
-            Display::Reset => {
-                self.body.reset()?;
-            }
-            Display::Intake(title) => {
-                self.body.add_intake(title)?;
-            }
-            Display::Resize(size) => {
-                self.body.resize(size.rows);
-            }
-            Display::Char(c) => {
-                queue!(self.out, Print(c))?;
-            }
-        }
+    pub(crate) fn open_doc(&mut self, text: &str) -> Result<(), CommandError> {
+        self.body.set_text(text)
+    }
+    
+    pub(crate) fn wrap(&mut self, is_wrapped: bool, selection: &Selection) -> Result<(), CommandError> {
+        self.body.is_wrapped = is_wrapped;
+        self.body.refresh(selection)
+    }
 
-        Ok(())
+    pub(crate) fn edit(&mut self, edit: TextEdit, selection: &Selection) -> Result<(), CommandError> {
+        self.body.edit(edit);
+        self.body.refresh(selection)
+    }
+    
+    pub(crate) fn move_selection(&mut self, selection: &Selection) -> Result<(), CommandError> {
+        self.body.refresh(selection)
+    }
+
+    pub(crate) fn set_header(&mut self, header: String) -> Result<(), CommandError> {
+        queue!(self.out, SavePosition, MoveTo(0, 0), Print(header), RestorePosition).map_err(|e| e.into())
+    }
+
+    pub(crate) fn notify(&mut self, message: ShowMessageParams) -> Result<(), CommandError> {
+        self.body.add_alert(&message.message, message.typ)
+    }
+    
+    pub(crate) fn question(&mut self, request: ShowMessageRequestParams) -> Result<(), CommandError> {
+        // TODO: Add implementation to use actions.
+        self.body.add_alert(&request.message, request.typ)
+    }
+
+    pub(crate) fn start_intake(&mut self, title: String) -> Result<(), CommandError> {
+        self.body.add_intake(title)
+    }
+
+    pub(crate) fn reset(&mut self) -> Result<(), CommandError> {
+        self.body.reset()
+    }
+
+    pub(crate) fn resize(&mut self, size: Size) {
+        self.body.size = size;
+    }
+
+    pub(crate) fn write(&mut self, ch: char) -> Result<(), CommandError> {
+        queue!(self.out, Print(ch)).map_err(|e| e.into())
     }
 
     /// Flushes the terminal output.
@@ -181,41 +195,16 @@ impl From<TerminalSize> for Input {
     }
 }
 
-/// A modification to the user display.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Display<'a> {
-    /// Set the header.
-    Header(String),
-    /// Set the body.
-    Body {
-        /// The rows of the current document.
-        rows: Rows<'a>,
-        /// The range of the current selection.
-        selection: Range,
-    },
-    /// Add a message over the top rows of the body.
-    Message(ShowMessageParams),
-    /// Add a message over the top rows of the body and request a response.
-    Question(ShowMessageRequestParams),
-    /// Clear items on top of the body.
-    Reset,
-    /// Add an intake box that starts with the given prompt.
-    Intake(String),
-    /// Resize the terminal to accomodate a body of the given size.
-    Resize(Size),
-    /// Write a [`char`] to the current cursor location.
-    Char(char),
-}
-
 /// The dimensions of a grid of [`char`]s.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Size {
     /// The number of rows.
-    pub(crate) rows: u16,
+    pub(crate) rows: UiUnit,
     /// The number of columns.
-    pub(crate) columns: u16,
+    pub(crate) columns: UiUnit,
 }
 
+/// The [`Size`] of the terminal.
 pub(crate) type TerminalSize = Size;
 
 impl TerminalSize {
@@ -241,112 +230,75 @@ impl Default for TerminalSize {
     }
 }
 
-/// A row of text in the user interface.
-///
-/// Facilitates wrapping long lines onto multiple rows.
-#[derive(Clone, Debug)]
-pub(crate) struct Row<'a> {
-    /// The line index of the row.
-    line: u64,
-    /// The text of the row.
-    text: &'a str,
-}
-
-/// An iterator that yields [`Row`]s from a string of text.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Rows<'a> {
-    /// The string of text.
-    text: &'a str,
-    /// The maximum allowed length of a row.
-    max_len: usize,
-    /// The [`LineInfo`] for `text`.
-    line_info: LineInfo,
-}
-
-impl<'a> Rows<'a> {
-    /// Creates a new iterator that yields the [`Row`]s of `text` with `max_len`.
-    ///
-    /// Assumes that `text` is the full document starting at line index 0.  Setting `max_len` to [`None`] indicates there is no maximum allowed length.
-    pub(crate) fn new(text: &'a str, max_len: Option<usize>) -> Self {
-        Rows {
-            text,
-            max_len: max_len.unwrap_or(usize::max_value()),
-            line_info: LineInfo::new(text, 0),
-        }
-    }
-}
-
-impl<'a> Iterator for Rows<'a> {
-    type Item = Row<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.text.is_empty() {
-            None
-        } else {
-            let row_info = self.line_info.take_row_info(self.max_len);
-            let (row_text, remainder) = self.text.split_at(row_info.length.text);
-            let (_, new_text) = remainder.split_at(row_info.length.newline);
-            self.text = new_text;
-
-            if row_info.is_end_of_line() {
-                self.line_info.index = self.line_info.index.saturating_add(1);
-                self.line_info = LineInfo::new(self.text, self.line_info.index);
-            }
-
-            Some(Row {
-                text: row_text,
-                line: row_info.index,
-            })
-        }
-    }
-}
+/// The type the user interface uses.
+type UiUnit = u16;
 
 /// The part of the output that displays the content of the document.
 struct Body {
     /// The output of the application.
     out: Stdout,
-    /// The rows of text displayed by the body.
-    rows: Vec<String>,
+    lines: Vec<String>,
+    text: String,
     /// The number of rows currently covered by an alert.
-    alert_rows: u16,
+    alert_rows: UiUnit,
     /// If the intake box is current active.
     is_intake_active: bool,
-    /// The total number of rows.
-    height: u16,
+    /// The size of the body.
+    size: Size,
     /// The index of the first line of the document to be displayed.
     top_line: u64,
+    /// If the text is wrapped.
+    is_wrapped: bool,
 }
 
 impl Body {
-    /// Resizes grid to have `height` number of rows.
-    fn resize(&mut self, height: u16) {
-        for _ in self.height..height {
-            self.rows.push(String::default());
-        }
-
-        self.height = height;
+    fn set_text(&mut self, text: &str) -> Result<(), CommandError> {
+        self.lines = text.lines().map(|line| line.to_string()).collect();
+        self.text = text.to_string();
+        self.refresh(&Selection::default())
     }
 
-    fn print(&mut self, rows: Rows<'_>, selection: Range) -> Result<(), CommandError> {
-        if selection.start.line < self.top_line {
-            self.top_line = selection.start.line;
+    fn edit(&mut self, edit: TextEdit) {
+        let start = usize::try_from(edit.range.start.line).unwrap();
+        let end = usize::try_from(edit.range.end.line).unwrap();
+        let _ = self.lines.splice(start..end, edit.new_text.split('\n').filter(|line| !line.is_empty()).map(|line| line.to_string()));
+        self.text = self.lines.join("\n");
+    }
+
+    /// Returns the length at which a line will be wrapped.
+    fn wrap_length(&self) -> UiUnit {
+        if self.is_wrapped {
+            self.size.columns
+        } else {
+            UiUnit::max_value()
         }
+    }
+
+    fn refresh(&mut self, selection: &Selection) -> Result<(), CommandError> {
+        let text = self.text.clone();
+        let rows = Rows::new(&text, self.wrap_length());
+        let last_line = selection.last_line();
+
+        if self.top_line > selection.range.start.line {
+            self.top_line = selection.range.start.line;
+        }
+
+        //if let Some(min_top_line) = rows.clone().rev().skip_while(|row| row.line > last_line).skip(self.size.rows.into()).next().map(|row| row.line.saturating_add(1)) {
+        //    if self.top_line < min_top_line {
+        //        self.top_line = min_top_line;
+        //    }
+        //}
 
         let mut visible_rows: Vec<Row<'_>> = rows
             .clone()
             .filter(|row| row.line >= self.top_line)
             .collect();
-        let mut end_line = selection.end.line;
-
-        if selection.end.character == 0 {
-            end_line = end_line.saturating_sub(1);
-        }
 
         while let Some(first_line_past_bottom) = visible_rows
-            .get(usize::from(self.height))
+            .get(usize::from(self.size.rows))
             .map(|row| row.line)
         {
-            if end_line < first_line_past_bottom {
+            if last_line < first_line_past_bottom {
                 break;
             } else {
                 let line = visible_rows.remove(0).line;
@@ -363,23 +315,18 @@ impl Body {
         for (index, row) in rows
             .filter(|row| row.line >= top_line)
             .enumerate()
-            .take(usize::from(self.height))
+            .take(usize::from(self.size.rows))
         {
-            self.replace_line(index, row.text, row.line == end_line)?;
+            self.replace_line(UiUnit::try_from(index).expect("retrieving `UiUnit` from usize"), row.text, row.line == last_line)?;
         }
 
         queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(|e| e.into())
     }
 
     /// Replaces line in grid at `index` with `new_line`.
-    fn replace_line(&mut self, index: usize, new_line: &str, is_cursor_line: bool) -> Result<(), CommandError> {
-        trace!("replace_line {}", new_line);
-        if let Some(line) = self.rows.get_mut(index) {
-            line.replace_range(.., new_line);
-        }
-
+    fn replace_line(&mut self, index: UiUnit, new_line: &str, is_cursor_line: bool) -> Result<(), CommandError> {
         self.print_row(
-            u16::try_from(index).unwrap_or(u16::max_value()),
+            index,
             new_line,
             if is_cursor_line {
                 Some(Color::DarkGrey)
@@ -411,13 +358,13 @@ impl Body {
     /// Adds an input box beginning with `prompt`
     fn add_intake(&mut self, mut prompt: String) -> Result<(), CommandError> {
         prompt.push_str(": ");
-        self.print_row(self.height.saturating_sub(1), &prompt, None)?;
+        self.print_row(self.size.rows.saturating_sub(1), &prompt, None)?;
         self.is_intake_active = true;
         Ok(())
     }
 
     /// Prints `s` at `row` of the grid.
-    fn print_row(&mut self, row: u16, s: &str, background_color: Option<Color>) -> Result<(), CommandError> {
+    fn print_row(&mut self, row: UiUnit, s: &str, background_color: Option<Color>) -> Result<(), CommandError> {
         // Add 1 to account for header.
         queue!(self.out, MoveTo(0, row.saturating_add(1)))?;
 
@@ -437,14 +384,10 @@ impl Body {
     /// Removes all temporary boxes and re-displays the full grid.
     fn reset(&mut self) -> Result<(), CommandError> {
         if self.alert_rows != 0 {
-            for row in 0..self.alert_rows {
+            for (index, row) in Rows::new(&self.text.clone(), self.wrap_length()).take(self.alert_rows.into()).enumerate() {
                 self.print_row(
-                    row,
-                    &self
-                        .rows
-                        .get(usize::from(row))
-                        .cloned()
-                        .unwrap_or_default(),
+                    UiUnit::try_from(index).unwrap(),
+                    row.text,
                     None,
                 )?;
             }
@@ -453,15 +396,11 @@ impl Body {
         }
 
         if self.is_intake_active {
-            let row = self.height.saturating_sub(1);
+            let row = self.size.rows.saturating_sub(1);
 
             self.print_row(
                 row,
-                &self
-                    .rows
-                    .get(usize::from(row))
-                    .cloned()
-                    .unwrap_or_default(),
+                Rows::new(&self.text.clone(), self.wrap_length()).nth(row.into()).map(|row| row.text).unwrap_or_default(),
                 None,
             )?;
             self.is_intake_active = false;
@@ -475,13 +414,162 @@ impl Default for Body {
     fn default() -> Self {
         Self {
             out: io::stdout(),
-            rows: Vec::default(),
+            lines: Vec::new(),
+            text: String::new(),
             alert_rows: 0,
             is_intake_active: false,
-            height: 0,
+            // Start with a null Body, size will be read on startup and passed in as a Display.
+            size: Size {
+                rows: 0,
+                columns: 0,
+            },
             top_line: 0,
+            is_wrapped: false,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Selection {
+    range: Range,
+}
+
+impl Selection {
+    pub(crate) const fn empty() -> Self {
+        Selection {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
+            },
+        }
+    }
+
+    pub(crate) fn range(&self) -> Range {
+        self.range
+    }
+
+    pub(crate) fn range_mut(&mut self) -> &mut Range {
+        &mut self.range
+    }
+
+    pub(crate) fn move_down(&mut self, amount: u64, line_count: u64) {
+        let end_line = cmp::min(self.range.end.line.saturating_add(amount), line_count);
+        self.range.start.line = self.range.start.line.saturating_add(end_line.saturating_sub(self.range.end.line));
+        self.range.end.line = end_line;
+    }
+    
+    pub(crate) fn move_up(&mut self, amount: u64) {
+        let start_line = self.range.start.line.saturating_sub(amount);
+        self.range.end.line = self.range.end.line.saturating_sub(self.range.start.line.saturating_sub(start_line));
+        self.range.start.line = start_line;
+    }
+
+    fn last_line(&self) -> u64 {
+        let mut line = self.range.end.line;
+
+        if self.range.end.character == 0 {
+            line = line.saturating_sub(1);
+        }
+
+        line
+    }
+}
+
+struct NewRows {
+    lines: VecDeque<String>,
+    max_len: UiUnit,
+}
+
+impl NewRows {
+    pub(crate) fn new(lines: VecDeque<String>, max_len: UiUnit) -> Self {
+        Self {
+            lines,
+            max_len,
+        }
+    }
+}
+
+impl Iterator for NewRows {
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(mut line) = self.lines.pop_front() {
+            let max_len = self.max_len.into();
+
+            if line.len() > max_len {
+                let new_line = line.split_off(max_len);
+                self.lines.push_front(new_line);
+            }
+
+            Some(line)
+        } else {
+            None
+        }
+    }
+}
+
+/// An iterator that yields [`Row`]s from a string of text.
+#[derive(Clone, Debug, PartialEq)]
+struct Rows<'a> {
+    /// The string of text.
+    text: &'a str,
+    /// The maximum allowed length of a row.
+    max_len: UiUnit,
+    /// The [`LineInfo`] for `text`.
+    line_info: LineInfo,
+}
+
+impl<'a> Rows<'a> {
+    /// Creates a new iterator that yields the [`Row`]s of `text` with `max_len`.
+    pub(crate) fn new(text: &'a str, max_len: UiUnit) -> Self {
+        Rows {
+            text,
+            max_len,
+            line_info: LineInfo::new(text, 0),
+        }
+    }
+}
+
+impl<'a> Iterator for Rows<'a> {
+    type Item = Row<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.text.is_empty() {
+            None
+        } else {
+            let row_info = self.line_info.take_row_info(self.max_len);
+            let (row_text, remainder) = self.text.split_at(usize::from(row_info.length.text));
+            let (_, new_text) = remainder.split_at(row_info.length.newline);
+            self.text = new_text;
+
+            if row_info.is_end_of_line() {
+                self.line_info.index = self.line_info.index.saturating_add(1);
+                self.line_info = LineInfo::new(self.text, self.line_info.index);
+            }
+
+            Some(Row {
+                text: row_text,
+                line: row_info.index,
+            })
+        }
+    }
+}
+
+/// A row of text in the user interface.
+///
+/// Facilitates wrapping long lines onto multiple rows.
+#[derive(Clone, Debug)]
+pub(crate) struct Row<'a> {
+    /// The line index of the row.
+    line: u64,
+    /// The text of the row.
+    text: &'a str,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -496,13 +584,13 @@ impl LineInfo {
             index: index,
             length: if let Some(text_len) = text.find('\n') {
                 let mut length = LineLength {
-                    text: text_len,
+                    text: UiUnit::try_from(text_len).unwrap(),
                     newline: 1,
                 };
 
                 if let Some(line_end) = text_len.checked_sub(1) {
                     if text.get(line_end..=line_end) == Some("\r") {
-                        length.text = line_end;
+                        length.text = UiUnit::try_from(line_end).unwrap();
                         length.newline = 2;
                     }
                 }
@@ -510,7 +598,7 @@ impl LineInfo {
                 length
             } else {
                 LineLength {
-                    text: text.len(),
+                    text: UiUnit::try_from(text.len()).unwrap(),
                     newline: 0,
                 }
             },
@@ -521,7 +609,7 @@ impl LineInfo {
         self.length.newline != 0
     }
 
-    fn take_row_info(&mut self, max_len: usize) -> Self {
+    fn take_row_info(&mut self, max_len: UiUnit) -> Self {
         Self {
             index: self.index,
             length: if self.length.text > max_len {
@@ -539,7 +627,7 @@ impl LineInfo {
 
 #[derive(Clone, Debug, PartialEq)]
 struct LineLength {
-    text: usize,
+    text: UiUnit,
     newline: usize,
 }
 
