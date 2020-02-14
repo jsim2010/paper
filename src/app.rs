@@ -114,7 +114,9 @@ impl Processor {
             }
             Operation::Reset => {
                 self.input.clear();
-                outputs.push(Output::Reset);
+                outputs.push(Output::Reset{
+                    selection: self.pane.doc.as_ref().map(|doc| &doc.selection).unwrap_or(&EMPTY_SELECTION),
+                });
             }
             Operation::Alert(message) => {
                 outputs.push(Output::Notify{message});

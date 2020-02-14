@@ -23,7 +23,7 @@ use {
         path::{Path, PathBuf},
         sync::mpsc::{self, Receiver, TryRecvError},
     },
-    ui::{Size, Terminal, CommandError, TerminalSize, Selection},
+    ui::{Size, Terminal, CommandError, Selection},
     url::Url,
     thiserror::Error,
 };
@@ -136,7 +136,7 @@ impl Interface {
         Terminal::new().map(|user_interface| {
             let mut inputs = VecDeque::new();
 
-            inputs.push_back(Input::User(TerminalSize::get().into()));
+            inputs.push_back(Input::User(Terminal::size().into()));
 
             let mut interface = Self {
                 user_interface,
@@ -217,8 +217,8 @@ impl Interface {
             Output::StartIntake { title } => {
                 self.user_interface.start_intake(title)?;
             }
-            Output::Reset => {
-                self.user_interface.reset()?;
+            Output::Reset { selection } => {
+                self.user_interface.reset(selection)?;
             }
             Output::Resize { size } => {
                 self.user_interface.resize(size);
@@ -469,7 +469,9 @@ pub(crate) enum Output<'a> {
     StartIntake {
         title: String,
     },
-    Reset,
+    Reset {
+        selection: &'a Selection,
+    },
     Resize {
         size: Size,
     },
