@@ -23,6 +23,7 @@ use {
         io::{self, ErrorKind},
         rc::Rc,
     },
+    toml::{value::Table, Value},
     thiserror::Error,
     translate::{Command, Direction, DocOp, Interpreter, Magnitude, Operation, Vector},
     url::ParseError,
@@ -100,7 +101,7 @@ impl Processor {
     pub(crate) fn operate(&mut self, operation: Operation) -> Result<Vec<Output<'_>>, Fault> {
         let mut outputs = Vec::new();
         // Retrieve here to avoid error. This will not work once changes start modifying the working dir.
-        let working_dir = self.working_dir.as_ref().clone();
+        let working_dir: PathUrl = self.working_dir.as_ref().clone();
         match operation {
             Operation::UpdateSetting(setting) => {
                 outputs.append(&mut self.update_setting(setting)?);
@@ -150,11 +151,28 @@ impl Processor {
             }
         };
 
+        let mut context = Context::new_with_dir(ArgMatches::new(), &working_dir);
+
+        // config will always be Some after Context::new_with_dir().
+        if let Some(mut config) = context.config.config.clone() {
+            if let Some(table) = config.as_table_mut() {
+                let _ = table.insert("add_newline".to_string(), Value::Boolean(false));
+
+                if let Some(line_break) = table.entry("line_break").or_insert(Value::Table(Table::new())).as_table_mut() {
+                    let _ = line_break.insert("disabled".to_string(), Value::Boolean(true));
+                }
+            }
+
+            context.config.config = Some(config);
+        }
+
+        trace!("config {:?}", context.config.config);
+
         outputs.push(Output::SetHeader{
             // For now, must deal with fact that StarshipConfig included in Context is very difficult to edit (must edit the TOML Value). Thus for now, the starship.toml config file must be configured correctly.
-            header: print::get_prompt(Context::new_with_dir(ArgMatches::default(), &working_dir))
-                .replace("[J", ""),
+            header: print::get_prompt(context),
         });
+        trace!("output {:?}", outputs);
 
         Ok(outputs)
     }

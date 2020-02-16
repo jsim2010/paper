@@ -134,18 +134,15 @@ impl Interface {
             .join(".config/paper.toml");
         let watcher = ConfigWatcher::new(&config_file)?;
         Terminal::new().map(|user_interface| {
-            let mut inputs = VecDeque::new();
-
-            inputs.push_back(Input::User(Terminal::size().into()));
-
             let mut interface = Self {
                 user_interface,
-                inputs,
+                inputs: VecDeque::new(),
                 watcher,
                 config: Config::default(),
             };
             
             interface.add_config_updates(config_file);
+            interface.inputs.push_back(Input::User(Terminal::size().into()));
 
             if let Some(file) = arguments.file {
                 interface.inputs.push_back(Input::File(file));
@@ -407,7 +404,10 @@ impl ConfigWatcher {
         let (tx, notify) = mpsc::channel();
         let mut watcher = notify::watcher(tx, Duration::from_secs(0))?;
 
-        watcher.watch(config_file, notify::RecursiveMode::NonRecursive)?;
+        if config_file.is_file() {
+            watcher.watch(config_file, notify::RecursiveMode::NonRecursive)?;
+        }
+
         Ok(Self { watcher, notify })
     }
 }
