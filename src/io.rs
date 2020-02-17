@@ -4,7 +4,7 @@ pub mod ui;
 pub(crate) use ui::FlushError;
 
 use {
-    notify::{DebouncedEvent, RecommendedWatcher, Watcher},
+    notify::{RecursiveMode, DebouncedEvent, RecommendedWatcher, Watcher},
     serde::Deserialize,
     clap::ArgMatches,
     core::{
@@ -190,7 +190,7 @@ impl Interface {
         let mut keep_running = true;
 
         match output {
-            Output::OpenDoc {url: _, language_id: _, version: _, text} => {
+            Output::OpenDoc {text, ..} => {
                 self.user_interface.open_doc(text)?;
             }
             Output::Wrap {is_wrapped, selection } => {
@@ -405,7 +405,7 @@ impl ConfigWatcher {
         let mut watcher = notify::watcher(tx, Duration::from_secs(0))?;
 
         if config_file.is_file() {
-            watcher.watch(config_file, notify::RecursiveMode::NonRecursive)?;
+            watcher.watch(config_file, RecursiveMode::NonRecursive)?;
         }
 
         Ok(Self { watcher, notify })

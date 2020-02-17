@@ -15,7 +15,7 @@ pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 use {
     core::{
         cmp,
-        convert::TryFrom,
+        convert::{TryFrom, TryInto},
         fmt::{self, Debug},
         time::Duration,
         ops::{RangeBounds, Bound},
@@ -28,7 +28,7 @@ use {
         terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
         ErrorKind,
     },
-    log::warn,
+    log::{error, warn},
     lsp_types::{MessageType, Range, TextEdit, ShowMessageParams, ShowMessageRequestParams, Position},
     std::{
         collections::VecDeque,
@@ -255,7 +255,7 @@ struct Body {
     /// The size of the body.
     size: Size,
     /// The index of the first line of the document to be displayed.
-    top_line: u64,
+    top_line: usize,
     /// If the text is wrapped.
     is_wrapped: bool,
 }
@@ -283,8 +283,9 @@ impl Body {
 
     /// Prints all of `self` with `selection` marked.
     fn refresh(&mut self, selection: &Selection) -> Result<(), CommandError> {
-        if selection.range.start.line < self.top_line {
-            self.top_line = selection.range.start.line;
+        let start_line = selection.range.start.line.try_into().unwrap_or(usize::max_value());
+        if start_line < self.top_line {
+            self.top_line = start_line
         }
 
         let first_line = self.top_line;
@@ -311,21 +312,16 @@ impl Body {
             }
         }
 
-        self.printer.print_rows(visible_rows.iter(), Context::Document{selected_line: last_line})
+        self.printer.print_rows(visible_rows.drain(..), Context::Document{selected_line: last_line})
     }
 
     /// Adds an alert box over the grid.
-    fn add_alert(&mut self, message: &str, context: MessageType) -> Result<(), CommandError> {
+    fn add_alert(&mut self, message: &str, typ: MessageType) -> Result<(), CommandError> {
         for line in message.lines() {
-            self.print_row(
+            self.printer.print_row(
                 self.alert_rows,
-                line,
-                Some(match context {
-                    MessageType::Error => Color::Red,
-                    MessageType::Warning => Color::Yellow,
-                    MessageType::Info => Color::Blue,
-                    MessageType::Log => Color::DarkCyan,
-                }),
+                Row { text: line, line: 0},
+                &Context::Message {typ},
             )?;
             self.alert_rows = self.alert_rows.saturating_add(1);
         }
@@ -336,7 +332,7 @@ impl Body {
     /// Adds an input box beginning with `prompt`
     fn add_intake(&mut self, mut prompt: String) -> Result<(), CommandError> {
         prompt.push_str(": ");
-        self.printer.print_row(self.size.rows.saturating_sub(1), &Row {
+        self.printer.print_row(self.size.rows.saturating_sub(1), Row {
             text: &prompt,
             line: 0,
         }, &Context::Box)?;
@@ -344,35 +340,10 @@ impl Body {
         Ok(())
     }
 
-    /// Prints `s` at `row` of the grid.
-    fn print_row(&mut self, row: UiUnit, s: &str, background_color: Option<Color>) -> Result<(), CommandError> {
-        // Add 1 to account for header.
-        queue!(self.printer.out, MoveTo(0, row.saturating_add(1)))?;
-
-        if let Some(color) = background_color {
-            queue!(self.printer.out, SetBackgroundColor(color))?;
-        }
-
-        queue!(self.printer.out, Print(s), Clear(ClearType::UntilNewLine))?;
-
-        if background_color.is_some() {
-            queue!(self.printer.out, ResetColor)?;
-        }
-
-        Ok(())
-    }
-
     /// Removes all temporary boxes and re-displays the full grid.
     fn reset(&mut self, selection: &Selection) -> Result<(), CommandError> {
         if self.alert_rows != 0 {
-            for (index, row) in Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()).enumerate() {
-                self.printer.print_row(
-                    UiUnit::try_from(index).unwrap(),
-                    &row,
-                    &Context::Document { selected_line: selection.last_line()},
-                )?;
-            }
-
+            self.printer.print_rows(Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()), Context::Document { selected_line: selection.last_line()})?;
             self.alert_rows = 0;
         }
 
@@ -381,7 +352,7 @@ impl Body {
 
             self.printer.print_row(
                 row,
-                &Rows::new(&self.lines, self.wrap_length()).nth(row.into()).unwrap_or_default(),
+                Rows::new(&self.lines, self.wrap_length()).nth(row.into()).unwrap_or_default(),
                 &Context::Document{selected_line: selection.last_line()},
             )?;
             self.is_intake_active = false;
@@ -393,9 +364,12 @@ impl Body {
 
 enum Context {
     Document {
-        selected_line: u64,
+        selected_line: usize,
     },
     Box,
+    Message {
+        typ: MessageType,
+    }
 }
 
 // This serves to separate the [`Stdout`] from the rest of the [`Body`] so that it can be `mut`.
@@ -404,31 +378,41 @@ struct Printer {
 }
 
 impl Printer {
-    fn print_row<'a>(&mut self, index: UiUnit, row: &Row<'a>, context: &Context) -> Result<(), CommandError> {
-        let mut did_change_color = false;
+    fn print_row<'a>(&mut self, index: UiUnit, row: Row<'a>, context: &Context) -> Result<(), CommandError> {
         // Add 1 to account for header.
         queue!(self.out, MoveTo(0, index.saturating_add(1)))?;
 
-        match context {
+        let color = match context {
             Context::Document { selected_line } => {
                 if row.line == *selected_line {
-                    queue!(self.out, SetBackgroundColor(Color::DarkGrey))?;
-                    did_change_color = true;
+                    Some(Color::DarkGrey)
+                } else {
+                    None
                 }
             }
-            Context::Box => {}
+            Context::Box => None,
+            Context::Message { typ } => Some(match typ {
+                MessageType::Error => Color::Red,
+                MessageType::Warning => Color::Yellow,
+                MessageType::Info => Color::Blue,
+                MessageType::Log => Color::DarkCyan,
+            })
+        };
+
+        if let Some(c) = color {
+            queue!(self.out, SetBackgroundColor(c))?;
         }
 
         queue!(self.out, Print(row.text), Clear(ClearType::UntilNewLine))?;
 
-        if did_change_color {
+        if color.is_some() {
             queue!(self.out, ResetColor)?;
         }
 
         Ok(())
     }
 
-    fn print_rows<'a>(&mut self, rows: impl Iterator<Item=&'a Row<'a>>, context: Context) -> Result<(), CommandError> {
+    fn print_rows<'a>(&mut self, rows: impl Iterator<Item=Row<'a>>, context: Context) -> Result<(), CommandError> {
         for (index, row) in rows
             .enumerate()
         {
@@ -500,8 +484,8 @@ impl Selection {
         self.range.start.line = start_line;
     }
 
-    fn last_line(&self) -> u64 {
-        let mut line = self.range.end.line;
+    fn last_line(&self) -> usize {
+        let mut line = usize::try_from(self.range.end.line).unwrap_or(usize::max_value());
 
         if self.range.end.character == 0 {
             line = line.saturating_sub(1);
@@ -526,7 +510,7 @@ struct Rows<'a> {
     lines: &'a Vec<String>,
     max_len: usize,
     row: usize,
-    line: u64,
+    line: usize,
     index: usize,
 }
 
@@ -546,23 +530,40 @@ impl<'a> Iterator for Rows<'a> {
     type Item = Row<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(line_text) = self.lines.get(usize::try_from(self.line).unwrap()) {
-            let row_len = line_text.len() - self.index;
+        if let Some(line_text) = self.lines.get(self.line) {
+            let row_len = line_text.len().saturating_sub(self.index);
             let row = Row {
                 line: self.line,
                 text: if row_len > self.max_len {
                     let start = self.index;
-                    self.index += self.max_len;
-                    line_text.get(start..self.index).expect("getting text for row")
+                    self.index = self.index.saturating_add(self.max_len);
+
+                    while !line_text.is_char_boundary(self.index) {
+                        self.index = self.index.saturating_sub(1);
+                    }
+
+                    if self.index <= start {
+                        error!("Failed to get row {} at index {} of line `{}`.", self.row, self.index, line_text);
+                        ""
+                    } else {
+                        #[allow(unsafe_code)] // All preconditions of get_unchecked are satisfied.
+                        unsafe {
+                            line_text.get_unchecked(start..self.index)
+                        }
+                    }
                 } else {
                     let start = self.index;
-                    self.line += 1;
+                    self.line = self.line.saturating_add(1);
                     self.index = 0;
-                    line_text.get(start..).unwrap()
+                    
+                    #[allow(unsafe_code)] // All preconditions of get_unchecked are satisfied.
+                    unsafe {
+                        line_text.get_unchecked(start..)
+                    }
                 },
             };
 
-            self.row += 1;
+            self.row = self.row.saturating_add(1);
             Some(row)
         } else {
             None
@@ -570,8 +571,11 @@ impl<'a> Iterator for Rows<'a> {
     }
 }
 
+/// A row of the user interface.
 #[derive(Debug, Default)]
 struct Row<'a> {
-    line: u64,
+    /// The index of the line of the row.
+    line: usize,
+    /// The text of the row.
     text: &'a str,
 }
