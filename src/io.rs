@@ -12,7 +12,7 @@ use {
         fmt,
         time::Duration,
     },
-    lsp_types::{ShowMessageRequestParams, ShowMessageParams, TextEdit},
+    lsp_types::{ShowMessageRequestParams, ShowMessageParams},
     log::LevelFilter,
     std::{
         fs,
@@ -196,8 +196,8 @@ impl Interface {
             Output::Wrap {is_wrapped, selection } => {
                 self.user_interface.wrap(is_wrapped, selection)?;
             }
-            Output::EditDoc {edit, selection} => {
-                self.user_interface.edit(edit, selection)?;
+            Output::EditDoc {new_text, selection} => {
+                self.user_interface.edit(&new_text, selection)?;
             }
             Output::MoveSelection { selection } => {
                 self.user_interface.move_selection(selection)?;
@@ -206,10 +206,10 @@ impl Interface {
                 self.user_interface.set_header(header)?;
             }
             Output::Notify { message } => {
-                self.user_interface.notify(message)?;
+                self.user_interface.notify(&message)?;
             }
             Output::Question { request } => {
-                self.user_interface.question(request)?;
+                self.user_interface.question(&request)?;
             }
             Output::StartIntake { title } => {
                 self.user_interface.start_intake(title)?;
@@ -451,7 +451,7 @@ pub(crate) enum Output<'a> {
         selection: &'a Selection,
     },
     EditDoc {
-        edit: TextEdit,
+        new_text: String,
         selection: &'a Selection,
     },
     MoveSelection {

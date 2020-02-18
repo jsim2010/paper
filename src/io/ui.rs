@@ -15,9 +15,10 @@ pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
 use {
     core::{
         cmp,
-        convert::{TryFrom, TryInto},
+        convert::TryFrom,
         fmt::{self, Debug},
         time::Duration,
+        num,
         ops::{RangeBounds, Bound},
     },
     crossterm::{
@@ -29,7 +30,7 @@ use {
         ErrorKind,
     },
     log::{error, warn},
-    lsp_types::{MessageType, Range, TextEdit, ShowMessageParams, ShowMessageRequestParams, Position},
+    lsp_types::{MessageType, Range, ShowMessageParams, ShowMessageRequestParams, Position},
     std::{
         collections::VecDeque,
         io::{self, Stdout, Write},
@@ -51,6 +52,11 @@ pub struct CommandError(#[from] ErrorKind);
 #[derive(Debug, Error)]
 #[error("while flushing terminal output: {0}")]
 pub struct FlushError(#[from] io::Error);
+
+/// An error while converting between Selection and Range units.
+#[derive(Clone, Copy, Debug, Error)]
+#[error("while converting between u64 and usize: {0}")]
+pub struct SelectionConversionError(#[from] num::TryFromIntError);
 
 /// A user interface provided by a terminal.
 pub(crate) struct Terminal {
@@ -96,49 +102,60 @@ impl Terminal {
         })
     }
 
+    /// Displays `text` on `self`.
     pub(crate) fn open_doc(&mut self, text: &str) -> Result<(), CommandError> {
         self.body.open(text)
     }
     
+    /// Sets the wrapping property of `self` to `is_wrapped`.
     pub(crate) fn wrap(&mut self, is_wrapped: bool, selection: &Selection) -> Result<(), CommandError> {
         self.body.is_wrapped = is_wrapped;
         self.body.refresh(selection)
     }
 
-    pub(crate) fn edit(&mut self, edit: TextEdit, selection: &Selection) -> Result<(), CommandError> {
-        self.body.edit(edit);
+    /// Sets the text covered by `selection` to `new_text`.
+    pub(crate) fn edit(&mut self, new_text: &str, selection: &Selection) -> Result<(), CommandError> {
+        self.body.edit(new_text, *selection);
         self.body.refresh(selection)
     }
     
+    /// Sets the [`Selection`] of `self` to `selection`.
     pub(crate) fn move_selection(&mut self, selection: &Selection) -> Result<(), CommandError> {
         self.body.refresh(selection)
     }
 
+    /// Sets the header of `self` to `header`.
     pub(crate) fn set_header(&mut self, header: String) -> Result<(), CommandError> {
         queue!(self.out, SavePosition, MoveTo(0, 0), Print(header), RestorePosition).map_err(|e| e.into())
     }
 
-    pub(crate) fn notify(&mut self, message: ShowMessageParams) -> Result<(), CommandError> {
+    /// Adds `message` to `self`.
+    pub(crate) fn notify(&mut self, message: &ShowMessageParams) -> Result<(), CommandError> {
         self.body.add_alert(&message.message, message.typ)
     }
     
-    pub(crate) fn question(&mut self, request: ShowMessageRequestParams) -> Result<(), CommandError> {
+    /// Adds `request` to `self`.
+    pub(crate) fn question(&mut self, request: &ShowMessageRequestParams) -> Result<(), CommandError> {
         // TODO: Add implementation to use actions.
         self.body.add_alert(&request.message, request.typ)
     }
 
+    /// Adds an intake box to `self` with `title` as the prompt.
     pub(crate) fn start_intake(&mut self, title: String) -> Result<(), CommandError> {
         self.body.add_intake(title)
     }
 
+    /// Resets `self` with `selection`.
     pub(crate) fn reset(&mut self, selection: &Selection) -> Result<(), CommandError> {
         self.body.reset(selection)
     }
 
+    /// Resizes the [`Body`] of `self` to `size`.
     pub(crate) fn resize(&mut self, size: Size) {
         self.body.size = size;
     }
 
+    /// Writes `ch`.
     pub(crate) fn write(&mut self, ch: char) -> Result<(), CommandError> {
         queue!(self.out, Print(ch)).map_err(|e| e.into())
     }
@@ -213,7 +230,7 @@ pub(crate) struct Size {
 
 impl From<TerminalSize> for Size {
     fn from(value: TerminalSize) -> Self {
-        Size {
+        Self {
             // Account for header in first row.
             rows: value.0.rows.saturating_sub(1),
             // Windows command prompt does not print a character in the last reported column.
@@ -226,7 +243,8 @@ impl From<TerminalSize> for Size {
 struct TerminalSize(Size);
 
 impl TerminalSize {
-    fn new(rows: UiUnit, columns: UiUnit) -> Self {
+    /// Creates a new [`TerminalSize`].
+    const fn new(rows: UiUnit, columns: UiUnit) -> Self {
         Self(Size{rows, columns})
     }
 }
@@ -263,7 +281,7 @@ struct Body {
 impl Body {
     /// Sets `text` and prints it.
     fn open(&mut self, text: &str) -> Result<(), CommandError> {
-        self.lines = text.lines().map(|line| line.to_string()).collect();
+        self.lines = text.lines().map(ToString::to_string).collect();
         self.refresh(&Selection::default())
     }
 
@@ -277,19 +295,19 @@ impl Body {
     }
 
     /// Modifies `self` according to `edit`.
-    fn edit(&mut self, edit: TextEdit) {
-        let _ = self.lines.splice(Selection::new(edit.range), edit.new_text.lines().map(|line| line.to_string()));
+    fn edit(&mut self, new_text: &str, selection: Selection) {
+        let _ = self.lines.splice(selection, new_text.lines().map(ToString::to_string));
     }
 
     /// Prints all of `self` with `selection` marked.
     fn refresh(&mut self, selection: &Selection) -> Result<(), CommandError> {
-        let start_line = selection.range.start.line.try_into().unwrap_or(usize::max_value());
+        let start_line = selection.start_line;
         if start_line < self.top_line {
             self.top_line = start_line
         }
 
         let first_line = self.top_line;
-        let last_line = selection.last_line();
+        let last_line = selection.end_line;
         let mut rows = Rows::new(&self.lines, self.wrap_length()).skip_while(|row| row.line < first_line);
         let mut visible_rows = VecDeque::new();
 
@@ -299,7 +317,7 @@ impl Body {
             }
         }
 
-        while let Some(row) = rows.next() {
+        for row in rows {
             if visible_rows.front().map(|r| r.line) != Some(self.top_line) {
                 let _ = visible_rows.pop_front();
                 visible_rows.push_back(row);
@@ -335,7 +353,7 @@ impl Body {
         self.printer.print_row(self.size.rows.saturating_sub(1), Row {
             text: &prompt,
             line: 0,
-        }, &Context::Box)?;
+        }, &Context::Intake)?;
         self.is_intake_active = true;
         Ok(())
     }
@@ -343,7 +361,7 @@ impl Body {
     /// Removes all temporary boxes and re-displays the full grid.
     fn reset(&mut self, selection: &Selection) -> Result<(), CommandError> {
         if self.alert_rows != 0 {
-            self.printer.print_rows(Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()), Context::Document { selected_line: selection.last_line()})?;
+            self.printer.print_rows(Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()), Context::Document { selected_line: selection.end_line})?;
             self.alert_rows = 0;
         }
 
@@ -353,7 +371,7 @@ impl Body {
             self.printer.print_row(
                 row,
                 Rows::new(&self.lines, self.wrap_length()).nth(row.into()).unwrap_or_default(),
-                &Context::Document{selected_line: selection.last_line()},
+                &Context::Document{selected_line: selection.end_line},
             )?;
             self.is_intake_active = false;
         }
@@ -362,22 +380,32 @@ impl Body {
     }
 }
 
+/// Describes the context in which text is being printed.
+#[derive(Clone, Copy)]
 enum Context {
+    /// A document.
     Document {
+        /// The index of the line that is selected.
         selected_line: usize,
     },
-    Box,
+    /// An intake text.
+    Intake,
+    /// A message to the user.
     Message {
+        /// The type of the message.
         typ: MessageType,
     }
 }
 
+/// Prints text to the terminal.
 // This serves to separate the [`Stdout`] from the rest of the [`Body`] so that it can be `mut`.
 struct Printer {
+    /// The output of the printer.
     out: Stdout,
 }
 
 impl Printer {
+    /// Prints `row` at `index` of body with `context`.
     fn print_row<'a>(&mut self, index: UiUnit, row: Row<'a>, context: &Context) -> Result<(), CommandError> {
         // Add 1 to account for header.
         queue!(self.out, MoveTo(0, index.saturating_add(1)))?;
@@ -390,7 +418,7 @@ impl Printer {
                     None
                 }
             }
-            Context::Box => None,
+            Context::Intake => None,
             Context::Message { typ } => Some(match typ {
                 MessageType::Error => Color::Red,
                 MessageType::Warning => Color::Yellow,
@@ -412,11 +440,10 @@ impl Printer {
         Ok(())
     }
 
+    /// Prints `rows` with `context`.
     fn print_rows<'a>(&mut self, rows: impl Iterator<Item=Row<'a>>, context: Context) -> Result<(), CommandError> {
-        for (index, row) in rows
-            .enumerate()
-        {
-            self.print_row(UiUnit::try_from(index).expect("retrieving `UiUnit` from usize"), row, &context)?;
+        for (index, row) in (0..).zip(rows) {
+            self.print_row(index, row, &context)?;
         }
 
         queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(|e| e.into())
@@ -431,67 +458,66 @@ impl Default for Printer {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// The text selected by the user.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Selection {
-    range: Range,
+    /// The index of the first line of the selection.
     start_line: usize,
+    /// The index of the first line after the selection.
     end_line: usize,
 }
 
 impl Selection {
-    fn new(range: Range) -> Self {
-        Self {
-            range,
-            start_line: usize::try_from(range.start.line).unwrap(),
-            end_line: usize::try_from(range.end.line).unwrap(),
-        }
-    }
-
+    /// Creates an empty selection.
     pub(crate) const fn empty() -> Self {
-        Selection {
-            range: Range {
-                start: Position {
-                    line: 0,
-                    character: 0,
-                },
-                end: Position {
-                    line: 0,
-                    character: 0,
-                },
-            },
+        Self {
             start_line: 0,
             end_line: 0,
         }
     }
 
-    pub(crate) fn range(&self) -> Range {
-        self.range
+    /// Returns the index of the start line.
+    pub(crate) const fn start_line(&self) -> usize {
+        self.start_line
     }
 
-    pub(crate) fn range_mut(&mut self) -> &mut Range {
-        &mut self.range
+    /// Returns the index of the end line.
+    pub(crate) const fn end_line(&self) -> usize {
+        self.end_line
     }
 
-    pub(crate) fn move_down(&mut self, amount: u64, line_count: u64) {
-        let end_line = cmp::min(self.range.end.line.saturating_add(amount), line_count);
-        self.range.start.line = self.range.start.line.saturating_add(end_line.saturating_sub(self.range.end.line));
-        self.range.end.line = end_line;
+    /// Initializes `self` to select the first line.
+    pub(crate) fn init(&mut self) {
+        self.start_line = 0;
+        self.end_line = 1;
+    }
+
+    /// Returns the [`Range`] represented by `self`.
+    pub(crate) fn range(&self) -> Result<Range, SelectionConversionError> {
+        Ok(Range {
+            start: Position {
+                line: u64::try_from(self.start_line)?,
+                character: 0,
+            },
+            end: Position {
+                line: u64::try_from(self.end_line)?,
+                character: 0,
+            },
+        })
+    }
+
+    /// Moves `self` down by `amount` lines up to `line_count`.
+    pub(crate) fn move_down(&mut self, amount: usize, line_count: usize) {
+        let end_line = cmp::min(self.end_line.saturating_add(amount), line_count);
+        self.start_line = self.start_line.saturating_add(end_line.saturating_sub(self.end_line));
+        self.end_line = end_line;
     }
     
-    pub(crate) fn move_up(&mut self, amount: u64) {
-        let start_line = self.range.start.line.saturating_sub(amount);
-        self.range.end.line = self.range.end.line.saturating_sub(self.range.start.line.saturating_sub(start_line));
-        self.range.start.line = start_line;
-    }
-
-    fn last_line(&self) -> usize {
-        let mut line = usize::try_from(self.range.end.line).unwrap_or(usize::max_value());
-
-        if self.range.end.character == 0 {
-            line = line.saturating_sub(1);
-        }
-
-        line
+    /// Moves `self` up by `amount` lines.
+    pub(crate) fn move_up(&mut self, amount: usize) {
+        let start_line = self.start_line.saturating_sub(amount);
+        self.end_line = self.end_line.saturating_sub(self.start_line.saturating_sub(start_line));
+        self.start_line = start_line;
     }
 }
 
@@ -505,17 +531,24 @@ impl RangeBounds<usize> for Selection {
     }
 }
 
+/// An iterator that yields [`Row`]s.
 #[derive(Clone)]
 struct Rows<'a> {
-    lines: &'a Vec<String>,
+    /// The lines that will yield [`Row`]s.
+    lines: &'a [String],
+    /// The maximum length of every yielded [`Row`].
     max_len: usize,
+    /// The index of the next [`Row`].
     row: usize,
+    /// The index of `lines` that will be in the next [`Row`].
     line: usize,
+    /// The index within `lines[line]` at which the next [`Row`] will start.
     index: usize,
 }
 
 impl<'a> Rows<'a> {
-    pub(crate) fn new(lines: &'a Vec<String>, max_len: UiUnit) -> Self {
+    /// Creates a new iterator of [`Row`]s.
+    pub(crate) fn new(lines: &'a [String], max_len: UiUnit) -> Self {
         Self {
             lines,
             max_len: max_len.into(),
@@ -572,7 +605,7 @@ impl<'a> Iterator for Rows<'a> {
 }
 
 /// A row of the user interface.
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Row<'a> {
     /// The index of the line of the row.
     line: usize,

@@ -6,9 +6,8 @@ mod translate;
 
 use {
     // TODO: Move everything out of ui.
-    crate::io::{PathUrl, Input, Output, UrlError, Setting, ui::{Selection, Size}},
+    crate::io::{PathUrl, Input, Output, UrlError, Setting, ui::{SelectionConversionError, Selection, Size}},
     clap::ArgMatches,
-    core::convert::TryFrom,
     log::{error, trace},
     logging::LogConfig,
     lsp::LspServer,
@@ -50,6 +49,9 @@ pub enum Fault {
     /// An error occurred while parsing a URL.
     #[error("while parsing URL: {0}")]
     ParseUrl(#[from] ParseError),
+    /// An error while converting to or from a [`Selection`].
+    #[error("{0}")]
+    Conversion(#[from] SelectionConversionError),
 }
 
 /// The processor of the application.
@@ -141,7 +143,7 @@ impl Processor {
                 }
             }
             Operation::Document(doc_op) => {
-                outputs.push(self.pane.operate(doc_op));
+                outputs.push(self.pane.operate(doc_op)?);
             }
             Operation::Quit => {
                 outputs.push(Output::Quit);
@@ -231,11 +233,11 @@ impl Pane {
     }
 
     /// Performs `operation` on `self`.
-    fn operate(&mut self, operation: DocOp) -> Output<'_> {
-        if let Some(doc) = &mut self.doc {
+    fn operate(&mut self, operation: DocOp) -> Result<Output<'_>, Fault> {
+        Ok(if let Some(doc) = &mut self.doc {
             match operation {
                 DocOp::Move(vector) => doc.move_selection(&vector),
-                DocOp::Delete => doc.delete_selection(),
+                DocOp::Delete => doc.delete_selection()?,
                 DocOp::Save => doc.save(),
             }
         } else {
@@ -248,7 +250,7 @@ impl Pane {
                     ),
                 },
             }
-        }
+        })
     }
 
     /// Opens a document at `path`.
@@ -296,7 +298,7 @@ impl Pane {
         self.wrap_length.borrow_mut().set(size.columns.into());
         self.scroll_amount
             .borrow_mut()
-            .set(u64::from(size.rows.wrapping_div(3)));
+            .set(usize::from(size.rows.wrapping_div(3)));
         Output::Resize{size}
     }
 }
@@ -329,7 +331,7 @@ impl Document {
         let mut selection = Selection::default();
 
         if !text.is_empty() {
-            selection.range_mut().end.line = 1;
+            selection.init();
         }
 
         if let Some(server) = &lsp_server {
@@ -376,10 +378,10 @@ impl Document {
     }
 
     /// Deletes the text of the [`Selection`].
-    fn delete_selection(&mut self) -> Output<'_> {
+    fn delete_selection(&mut self) -> Result<Output<'_>, Fault>  {
         self.text.delete_selection(&self.selection);
         let mut output = Output::EditDoc {
-            edit: TextEdit::new(self.selection.range(), String::new()),
+            new_text: String::new(),
             selection: &self.selection,
         };
 
@@ -388,18 +390,18 @@ impl Document {
                 &self.path,
                 self.text.version,
                 &self.text.content,
-                TextEdit::new(self.selection.range(), String::new()),
+                TextEdit::new(self.selection.range()?, String::new()),
             ) {
                 output = Output::Notify{message: e.into()};
             }
         }
 
-        output
+        Ok(output)
     }
 
     /// Returns the number of lines in `self`.
-    fn line_count(&self) -> u64 {
-        u64::try_from(self.text.content.lines().count()).unwrap_or(u64::max_value())
+    fn line_count(&self) -> usize {
+        self.text.content.lines().count()
     }
 
     /// Moves the [`Selection`] as described by [`Vector`].
@@ -491,7 +493,7 @@ impl Text {
     /// Deletes the text defined by `selection`.
     fn delete_selection(&mut self, selection: &Selection) {
         let mut newline_indices = self.content.match_indices('\n');
-        let start_line = usize::try_from(selection.range().start.line).unwrap();
+        let start_line = selection.start_line();
         if let Some(start_index) = if start_line == 0 {
             Some(0)
         } else {
@@ -500,7 +502,7 @@ impl Text {
                 .map(|index| index.0.saturating_add(1))
         } {
             if let Some((end_index, ..)) = newline_indices.nth(
-                usize::try_from(selection.range().end.line).unwrap().saturating_sub(start_line.saturating_add(1))
+                selection.end_line().saturating_sub(start_line.saturating_add(1))
             ) {
                 let _ = self.content.drain(start_index..=end_index);
                 self.version = self.version.wrapping_add(1);
@@ -513,16 +515,16 @@ impl Text {
 ///
 /// Used for storing and modifying within a [`RefCell`].
 #[derive(Debug, Default)]
-struct Amount(u64);
+struct Amount(usize);
 
 impl Amount {
     /// Returns the value of `self`.
-    const fn value(&self) -> u64 {
+    const fn value(&self) -> usize {
         self.0
     }
 
     /// Sets `self` to `amount`.
-    fn set(&mut self, amount: u64) {
+    fn set(&mut self, amount: usize) {
         self.0 = amount;
     }
 }
