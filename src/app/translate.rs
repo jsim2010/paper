@@ -435,7 +435,7 @@ impl ModeInterpreter for CollectInterpreter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::ui::{Glitch, Modifiers, Setting};
+    use crate::io::{ui::Modifiers, Glitch, Setting};
 
     /// Tests decoding user input while the [`Interpreter`] is in [`Mode::View`].
     mod view {
@@ -466,7 +466,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Setting(Setting::Wrap(true))),
+                int.translate(Input::Config(Setting::Wrap(true))),
                 Some(Operation::UpdateSetting(Setting::Wrap(true)))
             );
             assert_eq!(int.mode, Mode::View);
@@ -478,10 +478,10 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('w'),
                     modifiers: Modifiers::CONTROL,
-                }),
+                })),
                 Some(Operation::Confirm(ConfirmAction::Quit))
             );
             assert_eq!(int.mode, Mode::Confirm);
@@ -493,10 +493,10 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('o'),
                     modifiers: Modifiers::CONTROL,
-                }),
+                })),
                 Some(Operation::StartCommand(Command::Open))
             );
             assert_eq!(int.mode, Mode::Collect);
@@ -508,10 +508,10 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('s'),
                     modifiers: Modifiers::CONTROL,
-                }),
+                })),
                 Some(Operation::Document(DocOp::Save))
             );
             assert_eq!(int.mode, Mode::View);
@@ -523,10 +523,10 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('j'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
                     Magnitude::Single
@@ -541,10 +541,10 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('k'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
                     Magnitude::Single
@@ -559,10 +559,10 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('J'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
                     Magnitude::Half
@@ -577,10 +577,10 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('K'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
                     Magnitude::Half
@@ -595,10 +595,10 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('d'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Document(DocOp::Delete))
             );
             assert_eq!(int.mode, Mode::View);
@@ -621,10 +621,10 @@ mod test {
             let mut int = confirm_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('y'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Quit)
             );
         }
@@ -635,10 +635,10 @@ mod test {
             let mut int = confirm_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('n'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Reset)
             );
             assert_eq!(int.mode, Mode::View);
@@ -646,10 +646,10 @@ mod test {
             int = confirm_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('1'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Reset)
             );
             assert_eq!(int.mode, Mode::View);
@@ -673,10 +673,10 @@ mod test {
             let mut int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Esc,
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Reset)
             );
             assert_eq!(int.mode, Mode::View);
@@ -688,10 +688,10 @@ mod test {
             let mut int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('a'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Collect('a'))
             );
             assert_eq!(int.mode, Mode::Collect);
@@ -699,10 +699,10 @@ mod test {
             int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('.'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Collect('.'))
             );
             assert_eq!(int.mode, Mode::Collect);
@@ -710,10 +710,10 @@ mod test {
             int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Char('1'),
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Collect('1'))
             );
             assert_eq!(int.mode, Mode::Collect);
@@ -725,10 +725,10 @@ mod test {
             let mut int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::Key {
+                int.translate(Input::User(ui::Input::Key {
                     key: Key::Enter,
                     modifiers: Modifiers::empty(),
-                }),
+                })),
                 Some(Operation::Execute)
             );
             assert_eq!(int.mode, Mode::View);
