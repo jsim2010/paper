@@ -63,11 +63,15 @@
 )]
 
 pub mod app;
-pub mod ui;
+pub mod io;
 
-pub use app::Arguments;
+pub use io::Arguments;
 
-use {app::Processor, thiserror::Error, ui::Terminal};
+use {
+    app::Processor,
+    io::{CreateInterfaceError, FlushError, Interface, IntoArgumentsError, PullError, PushError},
+    thiserror::Error,
+};
 
 /// An instance of the `paper` program.
 ///
@@ -83,8 +87,8 @@ use {app::Processor, thiserror::Error, ui::Terminal};
 /// ```
 #[derive(Debug)]
 pub struct Paper {
-    /// Manages the user interface.
-    ui: Terminal,
+    /// Manages the interface with everything outside of the application.
+    io: Interface,
     /// Processes application operations.
     processor: Processor,
 }
@@ -100,8 +104,8 @@ impl Paper {
     #[inline]
     pub fn new(arguments: Arguments) -> Result<Self, Failure> {
         Ok(Self {
-            processor: Processor::new(&arguments),
-            ui: Terminal::new(arguments)?,
+            processor: Processor::new(&arguments.working_dir)?,
+            io: Interface::new(arguments)?,
         })
     }
 
@@ -128,10 +132,12 @@ impl Paper {
     fn step(&mut self) -> Result<bool, Failure> {
         let mut keep_running = true;
 
-        if let Some(input) = self.ui.input()? {
-            if let Some(output) = self.processor.process(input)? {
-                keep_running = self.ui.apply(output)?;
+        if let Some(input) = self.io.pull()? {
+            for output in self.processor.process(input)? {
+                keep_running &= self.io.push(output)?;
             }
+
+            self.io.flush()?;
         }
 
         Ok(keep_running)
@@ -141,11 +147,21 @@ impl Paper {
 /// An error from which `paper` was unable to recover.
 #[derive(Debug, Error)]
 pub enum Failure {
-    /// An error from [`ui`].
-    ///
-    /// [`ui`]: ui/index.html
-    #[error("{0}")]
-    Ui(#[from] ui::Fault),
+    /// An error while parsing the arguments.
+    #[error("failed to read arguments: {0}")]
+    Arguments(#[from] IntoArgumentsError),
+    /// An error while creating the interface.
+    #[error("failed to create interface: {0}")]
+    Interface(#[from] CreateInterfaceError),
+    /// An error while pulling the input.
+    #[error("failed to retrieve input: {0}")]
+    Input(#[from] PullError),
+    /// An error while pushing output.
+    #[error("failed to apply output: {0}")]
+    Output(#[from] PushError),
+    /// An error while flushing output.
+    #[error("failed to flush output: {0}")]
+    Flush(#[from] FlushError),
     /// An error from [`app`].
     ///
     /// [`app`]: app/index.html
