@@ -17,9 +17,9 @@ use {
         cmp,
         convert::TryFrom,
         fmt::{self, Debug},
-        time::Duration,
         num,
-        ops::{RangeBounds, Bound},
+        ops::{Bound, RangeBounds},
+        time::Duration,
     },
     crossterm::{
         cursor::{Hide, MoveTo, RestorePosition, SavePosition},
@@ -30,7 +30,7 @@ use {
         ErrorKind,
     },
     log::{error, warn},
-    lsp_types::{MessageType, Range, ShowMessageParams, ShowMessageRequestParams, Position},
+    lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
     std::{
         collections::VecDeque,
         io::{self, Stdout, Write},
@@ -76,7 +76,8 @@ impl Terminal {
                 warn!("unable to retrieve size of terminal: {}", e);
                 TerminalSize::default()
             }
-        }.into()
+        }
+        .into()
     }
 
     /// Creates a new [`Terminal`].
@@ -106,19 +107,27 @@ impl Terminal {
     pub(crate) fn open_doc(&mut self, text: &str) -> Result<(), CommandError> {
         self.body.open(text)
     }
-    
+
     /// Sets the wrapping property of `self` to `is_wrapped`.
-    pub(crate) fn wrap(&mut self, is_wrapped: bool, selection: &Selection) -> Result<(), CommandError> {
+    pub(crate) fn wrap(
+        &mut self,
+        is_wrapped: bool,
+        selection: &Selection,
+    ) -> Result<(), CommandError> {
         self.body.is_wrapped = is_wrapped;
         self.body.refresh(selection)
     }
 
     /// Sets the text covered by `selection` to `new_text`.
-    pub(crate) fn edit(&mut self, new_text: &str, selection: &Selection) -> Result<(), CommandError> {
+    pub(crate) fn edit(
+        &mut self,
+        new_text: &str,
+        selection: &Selection,
+    ) -> Result<(), CommandError> {
         self.body.edit(new_text, *selection);
         self.body.refresh(selection)
     }
-    
+
     /// Sets the [`Selection`] of `self` to `selection`.
     pub(crate) fn move_selection(&mut self, selection: &Selection) -> Result<(), CommandError> {
         self.body.refresh(selection)
@@ -126,16 +135,26 @@ impl Terminal {
 
     /// Sets the header of `self` to `header`.
     pub(crate) fn set_header(&mut self, header: String) -> Result<(), CommandError> {
-        queue!(self.out, SavePosition, MoveTo(0, 0), Print(header), RestorePosition).map_err(|e| e.into())
+        queue!(
+            self.out,
+            SavePosition,
+            MoveTo(0, 0),
+            Print(header),
+            RestorePosition
+        )
+        .map_err(|e| e.into())
     }
 
     /// Adds `message` to `self`.
     pub(crate) fn notify(&mut self, message: &ShowMessageParams) -> Result<(), CommandError> {
         self.body.add_alert(&message.message, message.typ)
     }
-    
+
     /// Adds `request` to `self`.
-    pub(crate) fn question(&mut self, request: &ShowMessageRequestParams) -> Result<(), CommandError> {
+    pub(crate) fn question(
+        &mut self,
+        request: &ShowMessageRequestParams,
+    ) -> Result<(), CommandError> {
         // TODO: Add implementation to use actions.
         self.body.add_alert(&request.message, request.typ)
     }
@@ -245,7 +264,7 @@ struct TerminalSize(Size);
 impl TerminalSize {
     /// Creates a new [`TerminalSize`].
     const fn new(rows: UiUnit, columns: UiUnit) -> Self {
-        Self(Size{rows, columns})
+        Self(Size { rows, columns })
     }
 }
 
@@ -296,7 +315,9 @@ impl Body {
 
     /// Modifies `self` according to `edit`.
     fn edit(&mut self, new_text: &str, selection: Selection) {
-        let _ = self.lines.splice(selection, new_text.lines().map(ToString::to_string));
+        let _ = self
+            .lines
+            .splice(selection, new_text.lines().map(ToString::to_string));
     }
 
     /// Prints all of `self` with `selection` marked.
@@ -308,7 +329,8 @@ impl Body {
 
         let first_line = self.top_line;
         let last_line = selection.end_line;
-        let mut rows = Rows::new(&self.lines, self.wrap_length()).skip_while(|row| row.line < first_line);
+        let mut rows =
+            Rows::new(&self.lines, self.wrap_length()).skip_while(|row| row.line < first_line);
         let mut visible_rows = VecDeque::new();
 
         for _ in 0..self.size.rows.into() {
@@ -330,7 +352,12 @@ impl Body {
             }
         }
 
-        self.printer.print_rows(visible_rows.drain(..), Context::Document{selected_line: last_line})
+        self.printer.print_rows(
+            visible_rows.drain(..),
+            Context::Document {
+                selected_line: last_line,
+            },
+        )
     }
 
     /// Adds an alert box over the grid.
@@ -338,8 +365,11 @@ impl Body {
         for line in message.lines() {
             self.printer.print_row(
                 self.alert_rows,
-                Row { text: line, line: 0},
-                &Context::Message {typ},
+                Row {
+                    text: line,
+                    line: 0,
+                },
+                &Context::Message { typ },
             )?;
             self.alert_rows = self.alert_rows.saturating_add(1);
         }
@@ -350,10 +380,14 @@ impl Body {
     /// Adds an input box beginning with `prompt`
     fn add_intake(&mut self, mut prompt: String) -> Result<(), CommandError> {
         prompt.push_str(": ");
-        self.printer.print_row(self.size.rows.saturating_sub(1), Row {
-            text: &prompt,
-            line: 0,
-        }, &Context::Intake)?;
+        self.printer.print_row(
+            self.size.rows.saturating_sub(1),
+            Row {
+                text: &prompt,
+                line: 0,
+            },
+            &Context::Intake,
+        )?;
         self.is_intake_active = true;
         Ok(())
     }
@@ -361,7 +395,12 @@ impl Body {
     /// Removes all temporary boxes and re-displays the full grid.
     fn reset(&mut self, selection: &Selection) -> Result<(), CommandError> {
         if self.alert_rows != 0 {
-            self.printer.print_rows(Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()), Context::Document { selected_line: selection.end_line})?;
+            self.printer.print_rows(
+                Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()),
+                Context::Document {
+                    selected_line: selection.end_line,
+                },
+            )?;
             self.alert_rows = 0;
         }
 
@@ -370,8 +409,12 @@ impl Body {
 
             self.printer.print_row(
                 row,
-                Rows::new(&self.lines, self.wrap_length()).nth(row.into()).unwrap_or_default(),
-                &Context::Document{selected_line: selection.end_line},
+                Rows::new(&self.lines, self.wrap_length())
+                    .nth(row.into())
+                    .unwrap_or_default(),
+                &Context::Document {
+                    selected_line: selection.end_line,
+                },
             )?;
             self.is_intake_active = false;
         }
@@ -394,7 +437,7 @@ enum Context {
     Message {
         /// The type of the message.
         typ: MessageType,
-    }
+    },
 }
 
 /// Prints text to the terminal.
@@ -406,7 +449,12 @@ struct Printer {
 
 impl Printer {
     /// Prints `row` at `index` of body with `context`.
-    fn print_row<'a>(&mut self, index: UiUnit, row: Row<'a>, context: &Context) -> Result<(), CommandError> {
+    fn print_row<'a>(
+        &mut self,
+        index: UiUnit,
+        row: Row<'a>,
+        context: &Context,
+    ) -> Result<(), CommandError> {
         // Add 1 to account for header.
         queue!(self.out, MoveTo(0, index.saturating_add(1)))?;
 
@@ -424,7 +472,7 @@ impl Printer {
                 MessageType::Warning => Color::Yellow,
                 MessageType::Info => Color::Blue,
                 MessageType::Log => Color::DarkCyan,
-            })
+            }),
         };
 
         if let Some(c) = color {
@@ -441,7 +489,11 @@ impl Printer {
     }
 
     /// Prints `rows` with `context`.
-    fn print_rows<'a>(&mut self, rows: impl Iterator<Item=Row<'a>>, context: Context) -> Result<(), CommandError> {
+    fn print_rows<'a>(
+        &mut self,
+        rows: impl Iterator<Item = Row<'a>>,
+        context: Context,
+    ) -> Result<(), CommandError> {
         for (index, row) in (0..).zip(rows) {
             self.print_row(index, row, &context)?;
         }
@@ -452,9 +504,7 @@ impl Printer {
 
 impl Default for Printer {
     fn default() -> Self {
-        Self {
-            out: io::stdout(),
-        }
+        Self { out: io::stdout() }
     }
 }
 
@@ -509,14 +559,18 @@ impl Selection {
     /// Moves `self` down by `amount` lines up to `line_count`.
     pub(crate) fn move_down(&mut self, amount: usize, line_count: usize) {
         let end_line = cmp::min(self.end_line.saturating_add(amount), line_count);
-        self.start_line = self.start_line.saturating_add(end_line.saturating_sub(self.end_line));
+        self.start_line = self
+            .start_line
+            .saturating_add(end_line.saturating_sub(self.end_line));
         self.end_line = end_line;
     }
-    
+
     /// Moves `self` up by `amount` lines.
     pub(crate) fn move_up(&mut self, amount: usize) {
         let start_line = self.start_line.saturating_sub(amount);
-        self.end_line = self.end_line.saturating_sub(self.start_line.saturating_sub(start_line));
+        self.end_line = self
+            .end_line
+            .saturating_sub(self.start_line.saturating_sub(start_line));
         self.start_line = start_line;
     }
 }
@@ -576,7 +630,10 @@ impl<'a> Iterator for Rows<'a> {
                     }
 
                     if self.index <= start {
-                        error!("Failed to get row {} at index {} of line `{}`.", self.row, self.index, line_text);
+                        error!(
+                            "Failed to get row {} at index {} of line `{}`.",
+                            self.row, self.index, line_text
+                        );
                         ""
                     } else {
                         #[allow(unsafe_code)] // All preconditions of get_unchecked are satisfied.
@@ -588,7 +645,7 @@ impl<'a> Iterator for Rows<'a> {
                     let start = self.index;
                     self.line = self.line.saturating_add(1);
                     self.index = 0;
-                    
+
                     #[allow(unsafe_code)] // All preconditions of get_unchecked are satisfied.
                     unsafe {
                         line_text.get_unchecked(start..)

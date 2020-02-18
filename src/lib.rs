@@ -67,7 +67,11 @@ pub mod io;
 
 pub use io::Arguments;
 
-use {app::Processor, thiserror::Error, io::{PullError, FlushError, PushError, CreateInterfaceError, IntoArgumentsError, Interface}};
+use {
+    app::Processor,
+    io::{CreateInterfaceError, FlushError, Interface, IntoArgumentsError, PullError, PushError},
+    thiserror::Error,
+};
 
 /// An instance of the `paper` program.
 ///

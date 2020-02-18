@@ -1,6 +1,9 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
-    crate::io::{Input, Setting, ui::{self, Key}},
+    crate::io::{
+        ui::{self, Key},
+        Input, Setting,
+    },
     core::fmt::{self, Debug},
     enum_map::{enum_map, Enum, EnumMap},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
@@ -335,7 +338,7 @@ impl ModeInterpreter for ViewInterpreter {
                     output.add_op(Operation::Size(size));
                 }
                 ui::Input::Mouse => {}
-            }
+            },
             Input::File(file) => {
                 output.add_op(Operation::OpenFile(file));
             }
@@ -377,12 +380,10 @@ impl ModeInterpreter for ConfirmInterpreter {
                 } => {
                     output.add_op(Operation::Quit);
                 }
-                ui::Input::Key { .. }
-                | ui::Input::Mouse
-                | ui::Input::Resize { .. } => {
+                ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {
                     output.reset();
                 }
-            }
+            },
             Input::File(..) | Input::Glitch(..) | Input::Config(..) => {}
         }
 
@@ -421,10 +422,8 @@ impl ModeInterpreter for CollectInterpreter {
                 } => {
                     output.add_op(Operation::Collect(c));
                 }
-                ui::Input::Key { .. }
-                | ui::Input::Mouse
-                | ui::Input::Resize { .. } => {}
-            }
+                ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {}
+            },
             Input::File(..) | Input::Glitch(..) | Input::Config(..) => {}
         }
 

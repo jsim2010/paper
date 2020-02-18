@@ -6,14 +6,15 @@ mod translate;
 
 use {
     // TODO: Move everything out of ui.
-    crate::io::{PathUrl, Input, Output, UrlError, Setting, ui::{SelectionConversionError, Selection, Size}},
+    crate::io::{
+        ui::{Selection, SelectionConversionError, Size},
+        Input, Output, PathUrl, Setting, UrlError,
+    },
     clap::ArgMatches,
     log::{error, trace},
     logging::LogConfig,
     lsp::LspServer,
-    lsp_types::{
-        MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit,
-    },
+    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
     starship::{context::Context, print},
     std::{
         cell::RefCell,
@@ -22,12 +23,13 @@ use {
         io::{self, ErrorKind},
         rc::Rc,
     },
-    toml::{value::Table, Value},
     thiserror::Error,
+    toml::{value::Table, Value},
     translate::{Command, Direction, DocOp, Interpreter, Magnitude, Operation, Vector},
     url::ParseError,
 };
 
+/// An empty [`Selection`].
 static EMPTY_SELECTION: Selection = Selection::empty();
 
 /// An error from which the application was unable to recover.
@@ -78,16 +80,16 @@ impl Processor {
     pub(crate) fn new(root_dir: &PathUrl) -> Result<Self, Fault> {
         let working_dir = Rc::new(root_dir.clone());
 
-        LogConfig::new().map(|log_config| {
-            Self {
+        LogConfig::new()
+            .map(|log_config| Self {
                 pane: Pane::new(&working_dir),
                 input: String::new(),
                 log_config: Some(log_config),
                 command: None,
                 working_dir,
                 interpreter: Interpreter::default(),
-            }
-        }).map_err(Fault::from)
+            })
+            .map_err(Fault::from)
     }
 
     /// Processes `input` and generates [`Output`].
@@ -113,26 +115,32 @@ impl Processor {
                 outputs.push(self.pane.update_size(size));
             }
             Operation::Confirm(action) => {
-                outputs.push(Output::Question{request: ShowMessageRequestParams::from(action)});
+                outputs.push(Output::Question {
+                    request: ShowMessageRequestParams::from(action),
+                });
             }
             Operation::Reset => {
                 self.input.clear();
-                outputs.push(Output::Reset{
-                    selection: self.pane.doc.as_ref().map(|doc| &doc.selection).unwrap_or(&EMPTY_SELECTION),
+                outputs.push(Output::Reset {
+                    selection: self
+                        .pane
+                        .doc
+                        .as_ref()
+                        .map_or(&EMPTY_SELECTION, |doc| &doc.selection),
                 });
             }
             Operation::Alert(message) => {
-                outputs.push(Output::Notify{message});
+                outputs.push(Output::Notify { message });
             }
             Operation::StartCommand(command) => {
                 let prompt = command.to_string();
 
                 self.command = Some(command);
-                outputs.push(Output::StartIntake{title: prompt});
+                outputs.push(Output::StartIntake { title: prompt });
             }
             Operation::Collect(ch) => {
                 self.input.push(ch);
-                outputs.push(Output::Write{ch});
+                outputs.push(Output::Write { ch });
             }
             Operation::Execute => {
                 if self.command.is_some() {
@@ -160,7 +168,11 @@ impl Processor {
             if let Some(table) = config.as_table_mut() {
                 let _ = table.insert("add_newline".to_string(), Value::Boolean(false));
 
-                if let Some(line_break) = table.entry("line_break").or_insert(Value::Table(Table::new())).as_table_mut() {
+                if let Some(line_break) = table
+                    .entry("line_break")
+                    .or_insert(Value::Table(Table::new()))
+                    .as_table_mut()
+                {
                     let _ = line_break.insert("disabled".to_string(), Value::Boolean(true));
                 }
             }
@@ -170,7 +182,7 @@ impl Processor {
 
         trace!("config {:?}", context.config.config);
 
-        outputs.push(Output::SetHeader{
+        outputs.push(Output::SetHeader {
             // For now, must deal with fact that StarshipConfig included in Context is very difficult to edit (must edit the TOML Value). Thus for now, the starship.toml config file must be configured correctly.
             header: print::get_prompt(context),
         });
@@ -188,7 +200,11 @@ impl Processor {
                 trace!("setting wrap to `{}`", is_wrapped);
                 outputs.push(Output::Wrap {
                     is_wrapped,
-                    selection: self.pane.doc.as_ref().map(|doc| &doc.selection).unwrap_or(&EMPTY_SELECTION),
+                    selection: self
+                        .pane
+                        .doc
+                        .as_ref()
+                        .map_or(&EMPTY_SELECTION, |doc| &doc.selection),
                 });
             }
             Setting::StarshipLog(log_level) => {
@@ -241,7 +257,7 @@ impl Pane {
                 DocOp::Save => doc.save(),
             }
         } else {
-            Output::Notify{
+            Output::Notify {
                 message: ShowMessageParams {
                     typ: MessageType::Info,
                     message: format!(
@@ -260,7 +276,8 @@ impl Pane {
                 let _ = self.doc.replace(doc);
                 #[allow(clippy::option_expect_used)] // Replace guarantees that self.doc is Some.
                 self.doc
-                    .as_ref().map(|doc| Output::OpenDoc {
+                    .as_ref()
+                    .map(|doc| Output::OpenDoc {
                         url: &doc.path,
                         language_id: &doc.language_id,
                         version: doc.text.version,
@@ -268,8 +285,8 @@ impl Pane {
                     })
                     .expect("retrieving `Document` in `Pane`")
             }
-            Err(error) => Output::Notify{
-                message: ShowMessageParams::from(error)
+            Err(error) => Output::Notify {
+                message: ShowMessageParams::from(error),
             },
         }
     }
@@ -299,7 +316,7 @@ impl Pane {
         self.scroll_amount
             .borrow_mut()
             .set(usize::from(size.rows.wrapping_div(3)));
-        Output::Resize{size}
+        Output::Resize { size }
     }
 }
 
@@ -308,6 +325,7 @@ impl Pane {
 struct Document {
     /// The path of the document.
     path: PathUrl,
+    /// The language id of the document.
     language_id: String,
     /// The text of the document.
     text: Text,
@@ -357,14 +375,11 @@ impl Document {
                 .borrow_mut()
                 .will_save(&self.path)
                 .err()
-                .map(|e| Output::Notify{
-                    message: e.into()
-                })
+                .map(|e| Output::Notify { message: e.into() })
         });
 
-        change.unwrap_or_else(|| {
-            Output::Notify{
-                message: match fs::write(&self.path, &self.text.content) {
+        change.unwrap_or_else(|| Output::Notify {
+            message: match fs::write(&self.path, &self.text.content) {
                 Ok(..) => ShowMessageParams {
                     typ: MessageType::Info,
                     message: format!("Saved document `{}`", self.path),
@@ -373,12 +388,12 @@ impl Document {
                     typ: MessageType::Error,
                     message: format!("Failed to save document `{}`: {}", self.path, e),
                 },
-            }}
+            },
         })
     }
 
     /// Deletes the text of the [`Selection`].
-    fn delete_selection(&mut self) -> Result<Output<'_>, Fault>  {
+    fn delete_selection(&mut self) -> Result<Output<'_>, Fault> {
         self.text.delete_selection(&self.selection);
         let mut output = Output::EditDoc {
             new_text: String::new(),
@@ -392,7 +407,7 @@ impl Document {
                 &self.text.content,
                 TextEdit::new(self.selection.range()?, String::new()),
             ) {
-                output = Output::Notify{message: e.into()};
+                output = Output::Notify { message: e.into() };
             }
         }
 
@@ -502,7 +517,9 @@ impl Text {
                 .map(|index| index.0.saturating_add(1))
         } {
             if let Some((end_index, ..)) = newline_indices.nth(
-                selection.end_line().saturating_sub(start_line.saturating_add(1))
+                selection
+                    .end_line()
+                    .saturating_sub(start_line.saturating_add(1)),
             ) {
                 let _ = self.content.drain(start_index..=end_index);
                 self.version = self.version.wrapping_add(1);

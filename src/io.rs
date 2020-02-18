@@ -4,33 +4,32 @@ pub mod ui;
 pub(crate) use ui::FlushError;
 
 use {
-    notify::{RecursiveMode, DebouncedEvent, RecommendedWatcher, Watcher},
-    serde::Deserialize,
     clap::ArgMatches,
     core::{
         convert::{TryFrom, TryInto},
         fmt,
         time::Duration,
     },
-    lsp_types::{ShowMessageRequestParams, ShowMessageParams},
     log::LevelFilter,
+    lsp_types::{ShowMessageParams, ShowMessageRequestParams},
+    notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
+    serde::Deserialize,
     std::{
-        fs,
         collections::VecDeque,
         env,
-        io,
         ffi::OsStr,
+        fs, io,
         path::{Path, PathBuf},
         sync::mpsc::{self, Receiver, TryRecvError},
     },
-    ui::{Size, Terminal, CommandError, Selection},
-    url::Url,
     thiserror::Error,
+    ui::{CommandError, Selection, Size, Terminal},
+    url::Url,
 };
 
 /// An error while parsing arguments.
 #[derive(Debug, Error)]
-pub enum IntoArgumentsError{
+pub enum IntoArgumentsError {
     /// An error determing the root directory.
     #[error("current working directory is invalid: {0}")]
     RootDir(#[from] io::Error),
@@ -133,30 +132,39 @@ impl Interface {
             .ok_or(CreateInterfaceError::HomeDir)?
             .join(".config/paper.toml");
         let watcher = ConfigWatcher::new(&config_file)?;
-        Terminal::new().map(|user_interface| {
-            let mut interface = Self {
-                user_interface,
-                inputs: VecDeque::new(),
-                watcher,
-                config: Config::default(),
-            };
-            
-            interface.add_config_updates(config_file);
-            interface.inputs.push_back(Input::User(Terminal::size().into()));
+        Terminal::new()
+            .map(|user_interface| {
+                let mut interface = Self {
+                    user_interface,
+                    inputs: VecDeque::new(),
+                    watcher,
+                    config: Config::default(),
+                };
 
-            if let Some(file) = arguments.file {
-                interface.inputs.push_back(Input::File(file));
-            }
+                interface.add_config_updates(config_file);
+                interface
+                    .inputs
+                    .push_back(Input::User(Terminal::size().into()));
 
-            interface
-        }).map_err(|e| e.into())
+                if let Some(file) = arguments.file {
+                    interface.inputs.push_back(Input::File(file));
+                }
+
+                interface
+            })
+            .map_err(|e| e.into())
     }
 
     /// Checks for updates to [`Config`] and adds any changes the changed settings list.
     fn add_config_updates(&mut self, config_file: PathBuf) {
         match self.config.update(config_file) {
             Ok(settings) => {
-                self.inputs.append(&mut settings.iter().map(|setting| Input::Config(*setting)).collect());
+                self.inputs.append(
+                    &mut settings
+                        .iter()
+                        .map(|setting| Input::Config(*setting))
+                        .collect(),
+                );
             }
             Err(glitch) => {
                 self.inputs.push_back(Input::Glitch(glitch));
@@ -174,7 +182,8 @@ impl Interface {
             }
             Err(TryRecvError::Empty) => (),
             Err(TryRecvError::Disconnected) => {
-                self.inputs.push_back(Input::Glitch(Glitch::WatcherConnection));
+                self.inputs
+                    .push_back(Input::Glitch(Glitch::WatcherConnection));
             }
         }
 
@@ -190,19 +199,25 @@ impl Interface {
         let mut keep_running = true;
 
         match output {
-            Output::OpenDoc {text, ..} => {
+            Output::OpenDoc { text, .. } => {
                 self.user_interface.open_doc(text)?;
             }
-            Output::Wrap {is_wrapped, selection } => {
+            Output::Wrap {
+                is_wrapped,
+                selection,
+            } => {
                 self.user_interface.wrap(is_wrapped, selection)?;
             }
-            Output::EditDoc {new_text, selection} => {
+            Output::EditDoc {
+                new_text,
+                selection,
+            } => {
                 self.user_interface.edit(&new_text, selection)?;
             }
             Output::MoveSelection { selection } => {
                 self.user_interface.move_selection(selection)?;
             }
-            Output::SetHeader {header} => {
+            Output::SetHeader { header } => {
                 self.user_interface.set_header(header)?;
             }
             Output::Notify { message } => {
@@ -231,6 +246,7 @@ impl Interface {
         Ok(keep_running)
     }
 
+    /// Flushes the application I/O.
     pub(crate) fn flush(&mut self) -> Result<(), FlushError> {
         self.user_interface.flush()
     }
@@ -440,43 +456,71 @@ impl From<ui::Input> for Input {
 /// An output.
 #[derive(Debug)]
 pub(crate) enum Output<'a> {
+    /// Opens a document.
     OpenDoc {
+        /// The URL of the document.
         url: &'a PathUrl,
+        /// The language id of the document.
         language_id: &'a str,
+        /// The version of the document.
         version: i64,
+        /// The full text of the document
         text: &'a str,
     },
+    /// Sets the wrapping of the text.
     Wrap {
+        /// If the text shall be wrapped.
         is_wrapped: bool,
+        /// The selection.
         selection: &'a Selection,
     },
+    /// Edits the document.
     EditDoc {
+        /// The new text.
         new_text: String,
+        /// The selection.
         selection: &'a Selection,
     },
+    /// Moves the selection.
     MoveSelection {
+        /// The selection.
         selection: &'a Selection,
     },
+    /// Sets the header of the application.
     SetHeader {
+        /// The header.
         header: String,
     },
+    /// Notifies the user of a message.
     Notify {
+        /// The message.
         message: ShowMessageParams,
     },
+    /// Asks the user a question.
     Question {
+        /// The request to be answered.
         request: ShowMessageRequestParams,
     },
+    /// Adds an intake box.
     StartIntake {
+        /// The prompt of the intake box.
         title: String,
     },
+    /// Resets the output of the application.
     Reset {
+        /// The selection.
         selection: &'a Selection,
     },
+    /// Resizes the application display.
     Resize {
+        /// The new [`Size`].
         size: Size,
     },
+    /// Write a [`char`] to the application.
     Write {
+        /// The [`char`] to be written.
         ch: char,
     },
+    /// Quit the application.
     Quit,
 }
