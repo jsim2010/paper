@@ -1,6 +1,5 @@
 //! Implements the application logic of `paper`.
 pub mod logging;
-pub mod lsp;
 
 mod translate;
 
@@ -13,12 +12,10 @@ use {
     clap::ArgMatches,
     log::{error, trace},
     logging::LogConfig,
-    lsp::LspServer,
-    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
+    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     starship::{context::Context, print},
     std::{
         cell::RefCell,
-        collections::HashMap,
         fs,
         io::{self, ErrorKind},
         rc::Rc,
@@ -40,11 +37,6 @@ pub enum Fault {
     /// [`logging`]: logging/index.html
     #[error("{0}")]
     Log(#[from] logging::Fault),
-    /// An error from [`lsp`].
-    ///
-    /// [`lsp`]: lsp/index.html
-    #[error("{0}")]
-    Lsp(#[from] lsp::Fault),
     /// An error while determining the current working directory.
     #[error("while determining working directory: {0}")]
     WorkingDir(#[source] io::Error),
@@ -144,20 +136,23 @@ impl Processor {
             }
             Operation::Execute => {
                 if self.command.is_some() {
-                    let output = self.pane.open_doc(&self.input);
+                    outputs.append(&mut self.pane.open_doc(&self.input));
 
                     self.input.clear();
-                    outputs.push(output);
                 }
             }
             Operation::Document(doc_op) => {
                 outputs.push(self.pane.operate(doc_op)?);
             }
             Operation::Quit => {
+                if let Some(output) = self.pane.close_doc() {
+                    outputs.push(output);
+                }
+
                 outputs.push(Output::Quit);
             }
             Operation::OpenFile(file) => {
-                outputs.push(self.pane.open_doc(&file));
+                outputs.append(&mut self.pane.open_doc(&file));
             }
         };
 
@@ -179,8 +174,6 @@ impl Processor {
 
             context.config.config = Some(config);
         }
-
-        trace!("config {:?}", context.config.config);
 
         outputs.push(Output::SetHeader {
             // For now, must deal with fact that StarshipConfig included in Context is very difficult to edit (must edit the TOML Value). Thus for now, the starship.toml config file must be configured correctly.
@@ -232,8 +225,6 @@ struct Pane {
     wrap_length: Rc<RefCell<Swival<usize>>>,
     /// The current working directory.
     working_dir: Rc<PathUrl>,
-    /// The [`LspServer`]s managed by the application.
-    lsp_servers: HashMap<String, Rc<RefCell<LspServer>>>,
 }
 
 impl Pane {
@@ -243,7 +234,6 @@ impl Pane {
             doc: None,
             scroll_amount: Rc::new(RefCell::new(Amount(0))),
             wrap_length: Rc::new(RefCell::new(Swival::default())),
-            lsp_servers: HashMap::default(),
             working_dir: Rc::clone(working_dir),
         }
     }
@@ -270,44 +260,38 @@ impl Pane {
     }
 
     /// Opens a document at `path`.
-    fn open_doc(&mut self, path: &str) -> Output<'_> {
+    fn open_doc(&mut self, path: &str) -> Vec<Output<'_>> {
         match self.create_doc(path) {
             Ok(doc) => {
-                let _ = self.doc.replace(doc);
+                let mut outputs = Vec::new();
+                if let Some(old_doc) = self.doc.replace(doc) {
+                    outputs.push(old_doc.close());
+                }
+
                 #[allow(clippy::option_expect_used)] // Replace guarantees that self.doc is Some.
-                self.doc
+                outputs.push(self.doc
                     .as_ref()
                     .map(|doc| Output::OpenDoc {
+                        root_dir: self.working_dir.as_ref().clone(),
                         url: &doc.path,
                         language_id: &doc.language_id,
                         version: doc.text.version,
                         text: &doc.text.content,
                     })
-                    .expect("retrieving `Document` in `Pane`")
+                    .expect("retrieving `Document` in `Pane`"));
+                outputs
             }
-            Err(error) => Output::Notify {
+            Err(error) => vec![Output::Notify {
                 message: ShowMessageParams::from(error),
-            },
+            }],
         }
     }
 
     /// Creates a [`Document`] from `path`.
     fn create_doc(&mut self, path: &str) -> Result<Document, DocumentError> {
         let doc_path = self.working_dir.join(path)?;
-        let language_id = doc_path.language_id();
-        let lsp_server = self.lsp_servers.get(language_id).cloned();
 
-        if lsp_server.is_none() {
-            if let Some(lsp_server) = LspServer::new(language_id, &self.working_dir.as_ref())?
-                .map(|server| Rc::new(RefCell::new(server)))
-            {
-                let _ = self
-                    .lsp_servers
-                    .insert(language_id.to_string(), Rc::clone(&lsp_server));
-            }
-        }
-
-        Document::new(doc_path, &self.wrap_length, lsp_server, &self.scroll_amount)
+        Document::new(doc_path, &self.wrap_length, &self.scroll_amount)
     }
 
     /// Updates the size of `self` to match `size`;
@@ -317,6 +301,10 @@ impl Pane {
             .borrow_mut()
             .set(usize::from(size.rows.wrapping_div(3)));
         Output::Resize { size }
+    }
+
+    fn close_doc(&mut self) -> Option<Output<'_>> {
+        self.doc.take().map(|doc| doc.close())
     }
 }
 
@@ -331,8 +319,6 @@ struct Document {
     text: Text,
     /// The current user selection.
     selection: Selection,
-    /// The [`LspServer`] associated with the document.
-    lsp_server: Option<Rc<RefCell<LspServer>>>,
     /// The number of lines that a scroll will move.
     scroll_amount: Rc<RefCell<Amount>>,
 }
@@ -342,7 +328,6 @@ impl Document {
     fn new(
         path: PathUrl,
         wrap_length: &Rc<RefCell<Swival<usize>>>,
-        lsp_server: Option<Rc<RefCell<LspServer>>>,
         scroll_amount: &Rc<RefCell<Amount>>,
     ) -> Result<Self, DocumentError> {
         let text = Text::new(&path, wrap_length)?;
@@ -352,66 +337,35 @@ impl Document {
             selection.init();
         }
 
-        if let Some(server) = &lsp_server {
-            server
-                .borrow_mut()
-                .did_open(&path, path.language_id(), text.version, &text.content)?;
-        }
-
         Ok(Self {
             language_id: path.language_id().to_string(),
             path,
             text,
             selection,
-            lsp_server,
             scroll_amount: Rc::clone(scroll_amount),
         })
     }
 
     /// Saves the document.
     fn save(&self) -> Output<'_> {
-        let change = self.lsp_server.as_ref().and_then(|server| {
-            server
-                .borrow_mut()
-                .will_save(&self.path)
-                .err()
-                .map(|e| Output::Notify { message: e.into() })
-        });
-
-        change.unwrap_or_else(|| Output::Notify {
-            message: match fs::write(&self.path, &self.text.content) {
-                Ok(..) => ShowMessageParams {
-                    typ: MessageType::Info,
-                    message: format!("Saved document `{}`", self.path),
-                },
-                Err(e) => ShowMessageParams {
-                    typ: MessageType::Error,
-                    message: format!("Failed to save document `{}`: {}", self.path, e),
-                },
-            },
-        })
+        Output::SaveDoc {
+            language_id: &self.language_id,
+            url: &self.path,
+            text: &self.text.content,
+        }
     }
 
     /// Deletes the text of the [`Selection`].
     fn delete_selection(&mut self) -> Result<Output<'_>, Fault> {
         self.text.delete_selection(&self.selection);
-        let mut output = Output::EditDoc {
+        Ok(Output::EditDoc {
             new_text: String::new(),
             selection: &self.selection,
-        };
-
-        if let Some(server) = &self.lsp_server {
-            if let Err(e) = server.borrow_mut().did_change(
-                &self.path,
-                self.text.version,
-                &self.text.content,
-                TextEdit::new(self.selection.range()?, String::new()),
-            ) {
-                output = Output::Notify { message: e.into() };
-            }
-        }
-
-        Ok(output)
+            url: &self.path,
+            version: self.text.version,
+            text: &self.text.content,
+            language_id: &self.language_id,
+        })
     }
 
     /// Returns the number of lines in `self`.
@@ -438,18 +392,11 @@ impl Document {
             selection: &self.selection,
         }
     }
-}
 
-impl Drop for Document {
-    fn drop(&mut self) {
-        trace!("dropping {:?}", self.path);
-        if let Some(lsp_server) = &self.lsp_server {
-            if let Err(e) = lsp_server.borrow_mut().did_close(&self.path) {
-                error!(
-                    "failed to inform language server process about closing {}",
-                    e
-                );
-            }
+    fn close(self) -> Output<'static> {
+        Output::CloseDoc {
+            language_id: self.language_id,
+            url: self.path,
         }
     }
 }
@@ -576,9 +523,6 @@ enum DocumentError {
     /// Io error.
     #[error("io: {0}")]
     Io(#[from] io::Error),
-    /// Error in the language server.
-    #[error("lsp: {0}")]
-    Lsp(#[from] lsp::Fault),
     /// Url error.
     #[error("{0}")]
     Url(#[from] UrlError),
