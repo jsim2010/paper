@@ -1,4 +1,5 @@
 //! Implements the interface for all input and output to the application.
+pub mod lsp;
 pub mod ui;
 
 pub(crate) use ui::FlushError;
@@ -10,12 +11,13 @@ use {
         fmt,
         time::Duration,
     },
-    log::LevelFilter,
-    lsp_types::{ShowMessageParams, ShowMessageRequestParams},
+    log::{error, LevelFilter},
+    lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
+    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
     std::{
-        collections::VecDeque,
+        collections::{hash_map::Entry, HashMap, VecDeque},
         env,
         ffi::OsStr,
         fs, io,
@@ -23,7 +25,7 @@ use {
         sync::mpsc::{self, Receiver, TryRecvError},
     },
     thiserror::Error,
-    ui::{CommandError, Selection, Size, Terminal},
+    ui::{CommandError, Selection, SelectionConversionError, Size, Terminal},
     url::Url,
 };
 
@@ -44,6 +46,18 @@ pub enum PushError {
     /// An error in the ui.
     #[error("{0}")]
     Ui(#[from] CommandError),
+    /// An error in the lsp.
+    #[error("{0}")]
+    Lsp(#[from] Fault),
+    /// An error while converting from a [`Selection`].
+    #[error("{0}")]
+    SelectionConversion(#[from] SelectionConversionError),
+    /// Failed to create language client.
+    #[error("{0}")]
+    CreateLangClient(#[from] CreateLangClientError),
+    /// Failed to send notification.
+    #[error("{0}")]
+    SendNotification(#[from] SendNotificationError),
 }
 
 /// An error while pulling input.
@@ -123,6 +137,8 @@ pub(crate) struct Interface {
     watcher: ConfigWatcher,
     /// The current configuration of the application.
     config: Config,
+    /// The [`LspServer`]s managed by the application.
+    lsp_servers: HashMap<String, Option<LspServer>>,
 }
 
 impl Interface {
@@ -139,6 +155,7 @@ impl Interface {
                     inputs: VecDeque::new(),
                     watcher,
                     config: Config::default(),
+                    lsp_servers: HashMap::default(),
                 };
 
                 interface.add_config_updates(config_file);
@@ -199,7 +216,23 @@ impl Interface {
         let mut keep_running = true;
 
         match output {
-            Output::OpenDoc { text, .. } => {
+            Output::OpenDoc {
+                text,
+                root_dir,
+                url,
+                version,
+            } => {
+                let language_id = url.language_id();
+
+                let _ = match self.lsp_servers.entry(language_id.to_string()) {
+                    Entry::Vacant(vacant) => vacant.insert(LspServer::new(language_id, &root_dir)?),
+                    Entry::Occupied(mut occupied) => occupied.get_mut(),
+                };
+
+                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(language_id) {
+                    lsp_server.did_open(&url, language_id, version, text)?;
+                }
+
                 self.user_interface.open_doc(text)?;
             }
             Output::Wrap {
@@ -211,8 +244,50 @@ impl Interface {
             Output::EditDoc {
                 new_text,
                 selection,
+                url,
+                version,
+                text,
             } => {
                 self.user_interface.edit(&new_text, selection)?;
+
+                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
+                    if let Err(error) = lsp_server.did_change(
+                        url,
+                        version,
+                        text,
+                        TextEdit::new(selection.range()?, new_text),
+                    ) {
+                        self.user_interface.notify(&error.into())?;
+                    }
+                }
+            }
+            Output::SaveDoc { url, text } => {
+                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
+                    if let Err(error) = lsp_server.will_save(url) {
+                        self.user_interface.notify(&error.into())?;
+                    }
+                }
+
+                self.user_interface.notify(&match fs::write(url, text) {
+                    Ok(..) => ShowMessageParams {
+                        typ: MessageType::Info,
+                        message: format!("Saved document `{}`", url),
+                    },
+                    Err(error) => ShowMessageParams {
+                        typ: MessageType::Error,
+                        message: format!("Failed to save document `{}`: {}", url, error),
+                    },
+                })?;
+            }
+            Output::CloseDoc { url } => {
+                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
+                    if let Err(error) = lsp_server.did_close(url) {
+                        error!(
+                            "failed to inform language server process about closing: {}",
+                            error,
+                        );
+                    }
+                }
             }
             Output::MoveSelection { selection } => {
                 self.user_interface.move_selection(selection)?;
@@ -458,13 +533,20 @@ impl From<ui::Input> for Input {
 pub(crate) enum Output<'a> {
     /// Opens a document.
     OpenDoc {
+        /// The root directory of the project.
+        root_dir: PathUrl,
         /// The URL of the document.
         url: &'a PathUrl,
-        /// The language id of the document.
-        language_id: &'a str,
         /// The version of the document.
         version: i64,
         /// The full text of the document
+        text: &'a str,
+    },
+    /// Saves the document.
+    SaveDoc {
+        /// The URL.
+        url: &'a PathUrl,
+        /// The text of the document.
         text: &'a str,
     },
     /// Sets the wrapping of the text.
@@ -480,6 +562,17 @@ pub(crate) enum Output<'a> {
         new_text: String,
         /// The selection.
         selection: &'a Selection,
+        /// The URL.
+        url: &'a PathUrl,
+        /// The version.
+        version: i64,
+        /// The full text of the document.
+        text: &'a str,
+    },
+    /// Closes the document.
+    CloseDoc {
+        /// The URL of the document to be closed.
+        url: PathUrl,
     },
     /// Moves the selection.
     MoveSelection {

@@ -1,6 +1,8 @@
 //! Implements management and use of language servers.
 mod utils;
 
+pub(crate) use utils::SendNotificationError;
+
 use {
     log::warn,
     lsp_types::{
@@ -21,7 +23,7 @@ use {
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     },
     thiserror::Error,
-    utils::{LspErrorProcessor, LspReceiver, LspTransmitter},
+    utils::{LspErrorProcessor, LspReceiver, LspTransmitter, RequestResponseError},
 };
 
 /// An error from which the language server was unable to recover.
@@ -33,11 +35,11 @@ pub enum Fault {
     #[error("{0}")]
     Util(#[from] utils::Fault),
     /// An error while accessing an IO of the language server process.
-    #[error("unable to access {0} of language server")]
-    Io(String),
+    #[error("{0}")]
+    Io(#[from] AccessIoError),
     /// An error while spawning a language server process.
-    #[error("unable to spawn language server process `{0}`: {1}")]
-    Spawn(String, #[source] io::Error),
+    #[error("{0}")]
+    Spawn(#[from] SpawnLangServerError),
     /// An error while waiting for a language server process.
     #[error("unable to wait for language server process exit: {0}")]
     Wait(#[source] io::Error),
@@ -47,6 +49,12 @@ pub enum Fault {
     /// Language server for given language identifier is unknown.
     #[error("language server for `{0}` is unknown")]
     LanguageId(String),
+    /// Failed to send notification to language server.
+    #[error("failed to send notification message: {0}")]
+    SendNotification(#[from] SendNotificationError),
+    /// Failed to request response.
+    #[error("{0}")]
+    Request(#[from] RequestResponseError),
 }
 
 impl From<Fault> for ShowMessageParams {
@@ -60,11 +68,56 @@ impl From<Fault> for ShowMessageParams {
     }
 }
 
+/// Failed to create language server client.
+#[derive(Debug, Error)]
+pub enum CreateLangClientError {
+    /// Failed to spawn server.
+    #[error("{0}")]
+    SpawnServer(#[from] SpawnLangServerError),
+    /// Failed to access IO.
+    #[error("{0}")]
+    Io(#[from] AccessIoError),
+    /// Failed to initialize language server.
+    #[error("failed to initialize language server: {0}")]
+    Init(#[from] RequestResponseError),
+    /// Failed to notify language server.
+    #[error("failed to notify language server of initialization: {0}")]
+    NotifyInit(#[from] SendNotificationError),
+}
+
+/// An error while spawning the language server process.
+#[derive(Debug, Error)]
+#[error("failed to spawn language server `{command}`: {error}")]
+pub struct SpawnLangServerError {
+    /// The command.
+    command: String,
+    /// The error.
+    #[source]
+    error: io::Error,
+}
+
+/// An error while accessing the stdio of the language server process.
+#[derive(Debug, Error)]
+#[error("failed to access {stdio_type} of language server")]
+pub struct AccessIoError {
+    /// The type of the stdio.
+    stdio_type: String,
+}
+
+impl From<&str> for AccessIoError {
+    #[inline]
+    fn from(value: &str) -> Self {
+        Self {
+            stdio_type: value.to_string(),
+        }
+    }
+}
+
 /// Represents a language server process.
 #[derive(Debug)]
 pub(crate) struct LspServer {
     /// The language server process.
-    server: ServerProcess,
+    server: LangServer,
     /// Transmits messages to the language server process.
     transmitter: LspTransmitter,
     /// Processes output from the stderr of the language server.
@@ -77,11 +130,11 @@ pub(crate) struct LspServer {
 
 impl LspServer {
     /// Creates a new `LspServer` for `language_id`.
-    pub(crate) fn new<U>(language_id: &str, root: U) -> Result<Option<Self>, Fault>
+    pub(crate) fn new<U>(language_id: &str, root: U) -> Result<Option<Self>, CreateLangClientError>
     where
         U: AsRef<Url>,
     {
-        Ok(if let Some(mut server) = ServerProcess::new(language_id)? {
+        Ok(if let Some(mut server) = LangServer::new(language_id)? {
             let mut transmitter = LspTransmitter::new(server.stdin()?);
             let receiver = LspReceiver::new(server.stdout()?, &transmitter);
             let capabilities = ClientCapabilities {
@@ -155,7 +208,7 @@ impl LspServer {
         language_id: &str,
         version: i64,
         text: &str,
-    ) -> Result<(), Fault>
+    ) -> Result<(), SendNotificationError>
     where
         U: AsRef<Url>,
     {
@@ -265,11 +318,11 @@ impl Drop for LspServer {
 
 /// Signifies a language server process.
 #[derive(Debug)]
-struct ServerProcess(Child);
+struct LangServer(Child);
 
-impl ServerProcess {
-    /// Creates a new [`ServerProcess`].
-    fn new(language_id: &str) -> Result<Option<Self>, Fault> {
+impl LangServer {
+    /// Creates a new [`LangServer`].
+    fn new(language_id: &str) -> Result<Option<Self>, SpawnLangServerError> {
         let command = match language_id {
             "rust" => Some("rls"),
             _ => None,
@@ -282,7 +335,10 @@ impl ServerProcess {
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()
-                    .map_err(|e| Fault::Spawn(cmd.to_string(), e))?,
+                    .map_err(|error| SpawnLangServerError {
+                        command: cmd.to_string(),
+                        error,
+                    })?,
             ))
         } else {
             None
@@ -290,27 +346,18 @@ impl ServerProcess {
     }
 
     /// Returns the stderr of the process.
-    fn stderr(&mut self) -> Result<ChildStderr, Fault> {
-        self.0
-            .stderr
-            .take()
-            .ok_or_else(|| Fault::Io("stderr".to_string()))
+    fn stderr(&mut self) -> Result<ChildStderr, AccessIoError> {
+        self.0.stderr.take().ok_or_else(|| "stderr".into())
     }
 
     /// Returns the stdin of the process.
-    fn stdin(&mut self) -> Result<ChildStdin, Fault> {
-        self.0
-            .stdin
-            .take()
-            .ok_or_else(|| Fault::Io("stdin".to_string()))
+    fn stdin(&mut self) -> Result<ChildStdin, AccessIoError> {
+        self.0.stdin.take().ok_or_else(|| "stdin".into())
     }
 
     /// Returns the stdout of the process.
-    fn stdout(&mut self) -> Result<ChildStdout, Fault> {
-        self.0
-            .stdout
-            .take()
-            .ok_or_else(|| Fault::Io("stdout".to_string()))
+    fn stdout(&mut self) -> Result<ChildStdout, AccessIoError> {
+        self.0.stdout.take().ok_or_else(|| "stdout".into())
     }
 
     /// Kills the process.

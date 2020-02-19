@@ -14,7 +14,7 @@ use {
         io::{self, BufRead, BufReader, Read, Write},
         process::{ChildStderr, ChildStdin, ChildStdout},
         sync::{
-            mpsc::{self, Receiver, Sender},
+            mpsc::{self, Receiver, RecvError, Sender},
             Arc, Mutex, MutexGuard,
         },
         thread,
@@ -39,10 +39,69 @@ pub enum Fault {
     Input(#[source] io::Error),
     /// An error while acquiring the mutex protecting the stdin of a language server process.
     #[error("unable to acquire mutex of language server stdin")]
-    Mutex,
+    AcquireLock(#[from] AcquireLockError),
     /// An error while serializing a language server message.
     #[error("unable to serialize language server message: {0}")]
     Serialize(#[from] SerdeJsonError),
+    /// Failed to send message.
+    #[error("{0}")]
+    SendMessage(#[from] SendMessageError),
+}
+
+/// Failed to send notification.
+#[derive(Debug, Error)]
+pub enum SendNotificationError {
+    /// An error while acquiring the mutex protecting the stdin of a language server process.
+    #[error("{0}")]
+    AcquireLock(#[from] AcquireLockError),
+    /// An error while serializing message parameters.
+    #[error("failed to serialize notification parameters: {0}")]
+    SerializeParameters(#[from] SerdeJsonError),
+    /// An error while sending a message to the language server.
+    #[error("{0}")]
+    SendMessage(#[from] SendMessageError),
+}
+
+/// An error while acquiring the mutex protecting the stdin of the language server process.
+#[derive(Clone, Copy, Debug, Error)]
+#[error("lock on stdin of language server process is poisoned")]
+pub struct AcquireLockError();
+
+/// Failed to send message.
+#[derive(Debug, Error)]
+pub enum SendMessageError {
+    /// Failed to serialize message.
+    #[error("{0}")]
+    Serialize(#[from] SerializeMessageError),
+    /// Failed to send message.
+    #[error("failed to send message to language server: {0}")]
+    Io(#[from] io::Error),
+}
+
+/// Failed to serialize message.
+#[derive(Debug, Error)]
+#[error("failed to serialize message: {error}")]
+pub struct SerializeMessageError {
+    /// The error.
+    #[from]
+    error: SerdeJsonError,
+}
+
+/// Failed to request a response.
+#[derive(Debug, Error)]
+pub enum RequestResponseError {
+    /// An error while acquiring the mutex protecting the stdin of a language server process.
+    #[error("{0}")]
+    AcquireLock(#[from] AcquireLockError),
+    /// An error while serializing message parameters.
+    #[error("failed to serialize request parameters: {0}")]
+    SerializeParameters(#[from] SerdeJsonError),
+    /// An error while sending a message to the language server.
+    #[error("{0}")]
+    Send(#[from] SendMessageError),
+    /// Failed to receive a message.
+    #[error("{0}")]
+    Receive(#[from] RecvError),
 }
 
 /// Signifies an LSP message.
@@ -67,15 +126,17 @@ enum Message {
 
 impl Message {
     /// Returns `self` in its raw format.
-    fn to_protocol(&self) -> Result<String, Fault> {
-        let content = serde_json::to_string(&self)?;
-
-        Ok(format!(
-            "{}: {}\r\n\r\n{}",
-            HEADER_CONTENT_LENGTH,
-            content.len(),
-            content
-        ))
+    fn to_protocol(&self) -> Result<String, SerializeMessageError> {
+        serde_json::to_string(&self)
+            .map(|content| {
+                format!(
+                    "{}: {}\r\n\r\n{}",
+                    HEADER_CONTENT_LENGTH,
+                    content.len(),
+                    content
+                )
+            })
+            .map_err(|e| e.into())
     }
 }
 
@@ -177,14 +238,19 @@ impl LspTransmitter {
     }
 
     /// Sends a notification with `params`.
-    pub(crate) fn notify<T: Notification>(&mut self, params: T::Params) -> Result<(), Fault>
+    pub(crate) fn notify<T: Notification>(
+        &mut self,
+        params: T::Params,
+    ) -> Result<(), SendNotificationError>
     where
         T::Params: Serialize,
     {
-        self.lock()?.send(&Message::Notification {
-            method: T::METHOD,
-            params: serde_json::to_value(params)?,
-        })
+        self.lock()?
+            .send(&Message::Notification {
+                method: T::METHOD,
+                params: serde_json::to_value(params)?,
+            })
+            .map_err(|e| e.into())
     }
 
     /// Sends a response with `id` and `result`.
@@ -196,10 +262,12 @@ impl LspTransmitter {
     where
         T::Result: Serialize,
     {
-        self.lock()?.send(&Message::Response {
-            id,
-            outcome: Outcome::Success(serde_json::to_value(result)?),
-        })
+        self.lock()?
+            .send(&Message::Response {
+                id,
+                outcome: Outcome::Success(serde_json::to_value(result)?),
+            })
+            .map_err(|e| e.into())
     }
 
     /// Sends `request` to the lsp server and waits for the response.
@@ -207,7 +275,7 @@ impl LspTransmitter {
         &mut self,
         params: T::Params,
         receiver: &LspReceiver,
-    ) -> Result<T::Result, Fault>
+    ) -> Result<T::Result, RequestResponseError>
     where
         T::Params: Serialize,
         T::Result: DeserializeOwned,
@@ -248,8 +316,8 @@ impl LspTransmitter {
     }
 
     /// Locks the [`AtomicTransmitter`] to prevent race conditions.
-    fn lock(&self) -> Result<MutexGuard<'_, AtomicTransmitter>, Fault> {
-        self.0.lock().map_err(|_| Fault::Mutex)
+    fn lock(&self) -> Result<MutexGuard<'_, AtomicTransmitter>, AcquireLockError> {
+        self.0.lock().map_err(|_| AcquireLockError())
     }
 }
 
@@ -264,9 +332,9 @@ struct AtomicTransmitter {
 
 impl AtomicTransmitter {
     /// Sends `message` to the language server process.
-    fn send(&mut self, message: &Message) -> Result<(), Fault> {
+    fn send(&mut self, message: &Message) -> Result<(), SendMessageError> {
         trace!("sending: {:?}", message);
-        write!(self.stdin, "{}", message.to_protocol()?).map_err(Fault::Input)
+        write!(self.stdin, "{}", message.to_protocol()?).map_err(|e| e.into())
     }
 }
 
@@ -435,10 +503,8 @@ impl LspReceiver {
     }
 
     /// Receives a [`Message`] from that was read by [`LspProcessor`].
-    fn recv(&self) -> Result<Message, Fault> {
-        self.0
-            .recv()
-            .map_err(|_| Fault::Receive("response message".to_string()))
+    fn recv(&self) -> Result<Message, RecvError> {
+        self.0.recv()
     }
 }
 

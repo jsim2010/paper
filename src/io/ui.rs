@@ -355,7 +355,7 @@ impl Body {
         self.printer.print_rows(
             visible_rows.drain(..),
             Context::Document {
-                selected_line: last_line,
+                selected_line: start_line,
             },
         )
     }
