@@ -12,7 +12,7 @@ use {
         time::Duration,
     },
     log::{error, LevelFilter},
-    lsp::{Fault, LspServer},
+    lsp::{Fault, LspServer, CreateLangClientError, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
@@ -52,6 +52,12 @@ pub enum PushError {
     /// An error while converting from a [`Selection`].
     #[error("{0}")]
     SelectionConversion(#[from] SelectionConversionError),
+    /// Failed to create language client.
+    #[error("{0}")]
+    CreateLangClient(#[from] CreateLangClientError),
+    /// Failed to send notification.
+    #[error("{0}")]
+    SendNotification(#[from] SendNotificationError),
 }
 
 /// An error while pulling input.
@@ -210,7 +216,9 @@ impl Interface {
         let mut keep_running = true;
 
         match output {
-            Output::OpenDoc { language_id, text, root_dir, url, version } => {
+            Output::OpenDoc { text, root_dir, url, version } => {
+                let language_id = url.language_id();
+
                 let _ = match self.lsp_servers.entry(language_id.to_string()) {
                     Entry::Vacant(vacant) => vacant.insert(LspServer::new(language_id, &root_dir)?),
                     Entry::Occupied(mut occupied) => occupied.get_mut(),
@@ -234,18 +242,17 @@ impl Interface {
                 url,
                 version,
                 text,
-                language_id,
             } => {
                 self.user_interface.edit(&new_text, selection)?;
 
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(language_id) {
+                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
                     if let Err(error) = lsp_server.did_change(url, version, text, TextEdit::new(selection.range()?, new_text)) {
                         self.user_interface.notify(&error.into())?;
                     }
                 }
             }
-            Output::SaveDoc { language_id, url , text } => {
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(language_id) {
+            Output::SaveDoc { url , text } => {
+                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
                     if let Err(error) = lsp_server.will_save(url) {
                         self.user_interface.notify(&error.into())?;
                     }
@@ -262,8 +269,8 @@ impl Interface {
                     },
                 })?;
             }
-            Output::CloseDoc { language_id, url } => {
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(&language_id) {
+            Output::CloseDoc { url } => {
+                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
                     if let Err(error) = lsp_server.did_close(url) {
                         error!(
                             "failed to inform language server process about closing: {}",
@@ -520,15 +527,12 @@ pub(crate) enum Output<'a> {
         root_dir: PathUrl,
         /// The URL of the document.
         url: &'a PathUrl,
-        /// The language id of the document.
-        language_id: &'a str,
         /// The version of the document.
         version: i64,
         /// The full text of the document
         text: &'a str,
     },
     SaveDoc {
-        language_id: &'a str,
         url: &'a PathUrl,
         text: &'a str,
     },
@@ -548,10 +552,8 @@ pub(crate) enum Output<'a> {
         url: &'a PathUrl,
         version: i64,
         text: &'a str,
-        language_id: &'a str,
     },
     CloseDoc {
-        language_id: String,
         url: PathUrl,
     },
     /// Moves the selection.

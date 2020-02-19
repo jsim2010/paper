@@ -274,7 +274,6 @@ impl Pane {
                     .map(|doc| Output::OpenDoc {
                         root_dir: self.working_dir.as_ref().clone(),
                         url: &doc.path,
-                        language_id: &doc.language_id,
                         version: doc.text.version,
                         text: &doc.text.content,
                     })
@@ -313,8 +312,6 @@ impl Pane {
 struct Document {
     /// The path of the document.
     path: PathUrl,
-    /// The language id of the document.
-    language_id: String,
     /// The text of the document.
     text: Text,
     /// The current user selection.
@@ -338,7 +335,6 @@ impl Document {
         }
 
         Ok(Self {
-            language_id: path.language_id().to_string(),
             path,
             text,
             selection,
@@ -349,7 +345,6 @@ impl Document {
     /// Saves the document.
     fn save(&self) -> Output<'_> {
         Output::SaveDoc {
-            language_id: &self.language_id,
             url: &self.path,
             text: &self.text.content,
         }
@@ -364,7 +359,6 @@ impl Document {
             url: &self.path,
             version: self.text.version,
             text: &self.text.content,
-            language_id: &self.language_id,
         })
     }
 
@@ -395,7 +389,6 @@ impl Document {
 
     fn close(self) -> Output<'static> {
         Output::CloseDoc {
-            language_id: self.language_id,
             url: self.path,
         }
     }
