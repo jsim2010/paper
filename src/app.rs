@@ -142,7 +142,7 @@ impl Processor {
                 }
             }
             Operation::Document(doc_op) => {
-                outputs.push(self.pane.operate(doc_op)?);
+                outputs.push(self.pane.operate(doc_op));
             }
             Operation::Quit => {
                 if let Some(output) = self.pane.close_doc() {
@@ -239,11 +239,11 @@ impl Pane {
     }
 
     /// Performs `operation` on `self`.
-    fn operate(&mut self, operation: DocOp) -> Result<Output<'_>, Fault> {
-        Ok(if let Some(doc) = &mut self.doc {
+    fn operate(&mut self, operation: DocOp) -> Output<'_> {
+        if let Some(doc) = &mut self.doc {
             match operation {
                 DocOp::Move(vector) => doc.move_selection(&vector),
-                DocOp::Delete => doc.delete_selection()?,
+                DocOp::Delete => doc.delete_selection(),
                 DocOp::Save => doc.save(),
             }
         } else {
@@ -256,7 +256,7 @@ impl Pane {
                     ),
                 },
             }
-        })
+        }
     }
 
     /// Opens a document at `path`.
@@ -269,15 +269,17 @@ impl Pane {
                 }
 
                 #[allow(clippy::option_expect_used)] // Replace guarantees that self.doc is Some.
-                outputs.push(self.doc
-                    .as_ref()
-                    .map(|doc| Output::OpenDoc {
-                        root_dir: self.working_dir.as_ref().clone(),
-                        url: &doc.path,
-                        version: doc.text.version,
-                        text: &doc.text.content,
-                    })
-                    .expect("retrieving `Document` in `Pane`"));
+                outputs.push(
+                    self.doc
+                        .as_ref()
+                        .map(|doc| Output::OpenDoc {
+                            root_dir: self.working_dir.as_ref().clone(),
+                            url: &doc.path,
+                            version: doc.text.version,
+                            text: &doc.text.content,
+                        })
+                        .expect("retrieving `Document` in `Pane`"),
+                );
                 outputs
             }
             Err(error) => vec![Output::Notify {
@@ -302,8 +304,9 @@ impl Pane {
         Output::Resize { size }
     }
 
+    /// Returns the [`Output`] to close the [`Document`] of `self`.
     fn close_doc(&mut self) -> Option<Output<'_>> {
-        self.doc.take().map(|doc| doc.close())
+        self.doc.take().map(Document::close)
     }
 }
 
@@ -351,15 +354,15 @@ impl Document {
     }
 
     /// Deletes the text of the [`Selection`].
-    fn delete_selection(&mut self) -> Result<Output<'_>, Fault> {
+    fn delete_selection(&mut self) -> Output<'_> {
         self.text.delete_selection(&self.selection);
-        Ok(Output::EditDoc {
+        Output::EditDoc {
             new_text: String::new(),
             selection: &self.selection,
             url: &self.path,
             version: self.text.version,
             text: &self.text.content,
-        })
+        }
     }
 
     /// Returns the number of lines in `self`.
@@ -387,10 +390,9 @@ impl Document {
         }
     }
 
+    /// Returns the output to close `self`.
     fn close(self) -> Output<'static> {
-        Output::CloseDoc {
-            url: self.path,
-        }
+        Output::CloseDoc { url: self.path }
     }
 }
 

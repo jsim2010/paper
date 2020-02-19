@@ -14,7 +14,7 @@ use {
         io::{self, BufRead, BufReader, Read, Write},
         process::{ChildStderr, ChildStdin, ChildStdout},
         sync::{
-            mpsc::{self, RecvError, Receiver, Sender},
+            mpsc::{self, Receiver, RecvError, Sender},
             Arc, Mutex, MutexGuard,
         },
         thread,
@@ -43,10 +43,12 @@ pub enum Fault {
     /// An error while serializing a language server message.
     #[error("unable to serialize language server message: {0}")]
     Serialize(#[from] SerdeJsonError),
+    /// Failed to send message.
     #[error("{0}")]
     SendMessage(#[from] SendMessageError),
 }
 
+/// Failed to send notification.
 #[derive(Debug, Error)]
 pub enum SendNotificationError {
     /// An error while acquiring the mutex protecting the stdin of a language server process.
@@ -57,7 +59,7 @@ pub enum SendNotificationError {
     SerializeParameters(#[from] SerdeJsonError),
     /// An error while sending a message to the language server.
     #[error("{0}")]
-    SendMessage(#[from]SendMessageError)
+    SendMessage(#[from] SendMessageError),
 }
 
 /// An error while acquiring the mutex protecting the stdin of the language server process.
@@ -65,21 +67,27 @@ pub enum SendNotificationError {
 #[error("lock on stdin of language server process is poisoned")]
 pub struct AcquireLockError();
 
+/// Failed to send message.
 #[derive(Debug, Error)]
 pub enum SendMessageError {
+    /// Failed to serialize message.
     #[error("{0}")]
     Serialize(#[from] SerializeMessageError),
+    /// Failed to send message.
     #[error("failed to send message to language server: {0}")]
     Io(#[from] io::Error),
 }
 
+/// Failed to serialize message.
 #[derive(Debug, Error)]
 #[error("failed to serialize message: {error}")]
 pub struct SerializeMessageError {
+    /// The error.
     #[from]
     error: SerdeJsonError,
 }
 
+/// Failed to request a response.
 #[derive(Debug, Error)]
 pub enum RequestResponseError {
     /// An error while acquiring the mutex protecting the stdin of a language server process.
@@ -91,6 +99,7 @@ pub enum RequestResponseError {
     /// An error while sending a message to the language server.
     #[error("{0}")]
     Send(#[from] SendMessageError),
+    /// Failed to receive a message.
     #[error("{0}")]
     Receive(#[from] RecvError),
 }
@@ -118,14 +127,16 @@ enum Message {
 impl Message {
     /// Returns `self` in its raw format.
     fn to_protocol(&self) -> Result<String, SerializeMessageError> {
-        serde_json::to_string(&self).map(|content|
-            format!(
-                "{}: {}\r\n\r\n{}",
-                HEADER_CONTENT_LENGTH,
-                content.len(),
-                content
-            )
-        ).map_err(|e| e.into())
+        serde_json::to_string(&self)
+            .map(|content| {
+                format!(
+                    "{}: {}\r\n\r\n{}",
+                    HEADER_CONTENT_LENGTH,
+                    content.len(),
+                    content
+                )
+            })
+            .map_err(|e| e.into())
     }
 }
 
@@ -227,14 +238,19 @@ impl LspTransmitter {
     }
 
     /// Sends a notification with `params`.
-    pub(crate) fn notify<T: Notification>(&mut self, params: T::Params) -> Result<(), SendNotificationError>
+    pub(crate) fn notify<T: Notification>(
+        &mut self,
+        params: T::Params,
+    ) -> Result<(), SendNotificationError>
     where
         T::Params: Serialize,
     {
-        self.lock()?.send(&Message::Notification {
-            method: T::METHOD,
-            params: serde_json::to_value(params)?,
-        }).map_err(|e| e.into())
+        self.lock()?
+            .send(&Message::Notification {
+                method: T::METHOD,
+                params: serde_json::to_value(params)?,
+            })
+            .map_err(|e| e.into())
     }
 
     /// Sends a response with `id` and `result`.
@@ -246,10 +262,12 @@ impl LspTransmitter {
     where
         T::Result: Serialize,
     {
-        self.lock()?.send(&Message::Response {
-            id,
-            outcome: Outcome::Success(serde_json::to_value(result)?),
-        }).map_err(|e| e.into())
+        self.lock()?
+            .send(&Message::Response {
+                id,
+                outcome: Outcome::Success(serde_json::to_value(result)?),
+            })
+            .map_err(|e| e.into())
     }
 
     /// Sends `request` to the lsp server and waits for the response.
@@ -486,8 +504,7 @@ impl LspReceiver {
 
     /// Receives a [`Message`] from that was read by [`LspProcessor`].
     fn recv(&self) -> Result<Message, RecvError> {
-        self.0
-            .recv()
+        self.0.recv()
     }
 }
 

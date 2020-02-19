@@ -12,7 +12,7 @@ use {
         time::Duration,
     },
     log::{error, LevelFilter},
-    lsp::{Fault, LspServer, CreateLangClientError, SendNotificationError},
+    lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
@@ -25,7 +25,7 @@ use {
         sync::mpsc::{self, Receiver, TryRecvError},
     },
     thiserror::Error,
-    ui::{SelectionConversionError, CommandError, Selection, Size, Terminal},
+    ui::{CommandError, Selection, SelectionConversionError, Size, Terminal},
     url::Url,
 };
 
@@ -216,7 +216,12 @@ impl Interface {
         let mut keep_running = true;
 
         match output {
-            Output::OpenDoc { text, root_dir, url, version } => {
+            Output::OpenDoc {
+                text,
+                root_dir,
+                url,
+                version,
+            } => {
                 let language_id = url.language_id();
 
                 let _ = match self.lsp_servers.entry(language_id.to_string()) {
@@ -246,12 +251,17 @@ impl Interface {
                 self.user_interface.edit(&new_text, selection)?;
 
                 if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
-                    if let Err(error) = lsp_server.did_change(url, version, text, TextEdit::new(selection.range()?, new_text)) {
+                    if let Err(error) = lsp_server.did_change(
+                        url,
+                        version,
+                        text,
+                        TextEdit::new(selection.range()?, new_text),
+                    ) {
                         self.user_interface.notify(&error.into())?;
                     }
                 }
             }
-            Output::SaveDoc { url , text } => {
+            Output::SaveDoc { url, text } => {
                 if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
                     if let Err(error) = lsp_server.will_save(url) {
                         self.user_interface.notify(&error.into())?;
@@ -532,8 +542,11 @@ pub(crate) enum Output<'a> {
         /// The full text of the document
         text: &'a str,
     },
+    /// Saves the document.
     SaveDoc {
+        /// The URL.
         url: &'a PathUrl,
+        /// The text of the document.
         text: &'a str,
     },
     /// Sets the wrapping of the text.
@@ -549,11 +562,16 @@ pub(crate) enum Output<'a> {
         new_text: String,
         /// The selection.
         selection: &'a Selection,
+        /// The URL.
         url: &'a PathUrl,
+        /// The version.
         version: i64,
+        /// The full text of the document.
         text: &'a str,
     },
+    /// Closes the document.
     CloseDoc {
+        /// The URL of the document to be closed.
         url: PathUrl,
     },
     /// Moves the selection.

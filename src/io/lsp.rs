@@ -23,7 +23,7 @@ use {
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     },
     thiserror::Error,
-    utils::{RequestResponseError, LspErrorProcessor, LspReceiver, LspTransmitter},
+    utils::{LspErrorProcessor, LspReceiver, LspTransmitter, RequestResponseError},
 };
 
 /// An error from which the language server was unable to recover.
@@ -89,7 +89,9 @@ pub enum CreateLangClientError {
 #[derive(Debug, Error)]
 #[error("failed to spawn language server `{command}`: {error}")]
 pub struct SpawnLangServerError {
+    /// The command.
     command: String,
+    /// The error.
     #[source]
     error: io::Error,
 }
@@ -98,10 +100,12 @@ pub struct SpawnLangServerError {
 #[derive(Debug, Error)]
 #[error("failed to access {stdio_type} of language server")]
 pub struct AccessIoError {
+    /// The type of the stdio.
     stdio_type: String,
 }
 
 impl From<&str> for AccessIoError {
+    #[inline]
     fn from(value: &str) -> Self {
         Self {
             stdio_type: value.to_string(),
@@ -331,7 +335,7 @@ impl LangServer {
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()
-                    .map_err(|error| SpawnLangServerError{
+                    .map_err(|error| SpawnLangServerError {
                         command: cmd.to_string(),
                         error,
                     })?,
@@ -343,26 +347,17 @@ impl LangServer {
 
     /// Returns the stderr of the process.
     fn stderr(&mut self) -> Result<ChildStderr, AccessIoError> {
-        self.0
-            .stderr
-            .take()
-            .ok_or("stderr".into())
+        self.0.stderr.take().ok_or_else(|| "stderr".into())
     }
 
     /// Returns the stdin of the process.
     fn stdin(&mut self) -> Result<ChildStdin, AccessIoError> {
-        self.0
-            .stdin
-            .take()
-            .ok_or("stdin".into())
+        self.0.stdin.take().ok_or_else(|| "stdin".into())
     }
 
     /// Returns the stdout of the process.
     fn stdout(&mut self) -> Result<ChildStdout, AccessIoError> {
-        self.0
-            .stdout
-            .take()
-            .ok_or("stdout".into())
+        self.0.stdout.take().ok_or_else(|| "stdout".into())
     }
 
     /// Kills the process.
