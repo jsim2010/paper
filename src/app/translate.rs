@@ -2,7 +2,7 @@
 use {
     crate::io::{
         ui::{self, Key},
-        Input, Setting,
+        PathUrl, Input, Setting,
     },
     core::fmt::{self, Debug},
     enum_map::{enum_map, Enum, EnumMap},
@@ -35,7 +35,7 @@ pub(crate) enum Operation {
     Document(DocOp),
     /// Opens a file.
     OpenDoc{
-        path: String,
+        url: PathUrl,
         text: String,
     },
 }
@@ -342,8 +342,8 @@ impl ModeInterpreter for ViewInterpreter {
                 }
                 ui::Input::Mouse => {}
             },
-            Input::File {path, text} => {
-                output.add_op(Operation::OpenDoc{path, text});
+            Input::File {url, text} => {
+                output.add_op(Operation::OpenDoc{url, text});
             }
             Input::Glitch(glitch) => {
                 output.add_op(Operation::Alert(ShowMessageParams {

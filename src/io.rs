@@ -60,7 +60,7 @@ pub enum PushError {
     SendNotification(#[from] SendNotificationError),
     /// An error while reading a file.
     #[error("{0}")]
-    ReadFile(#[from] ReadFileError),
+    CreateFile(#[from] CreateFileError),
 }
 
 /// An error while pulling input.
@@ -113,6 +113,17 @@ pub enum CreateInterfaceError {
     Watcher(#[from] notify::Error),
     /// An error while reading a file.
     #[error("{0}")]
+    CreateFile(#[from] CreateFileError),
+}
+
+/// An error while creating a file.
+#[derive(Debug, Error)]
+pub enum CreateFileError {
+    /// An error while generating the URL of the file.
+    #[error("{0}")]
+    CreateUrl(#[from] UrlError),
+    /// An error while reading the text of the file.
+    #[error("{0}")]
     ReadFile(#[from] ReadFileError),
 }
 
@@ -153,6 +164,7 @@ pub(crate) struct Interface {
     config: Config,
     /// The [`LspServer`]s managed by the application.
     lsp_servers: HashMap<String, Option<LspServer>>,
+    root_dir: PathUrl,
 }
 
 impl Interface {
@@ -170,6 +182,7 @@ impl Interface {
             watcher,
             config: Config::default(),
             lsp_servers: HashMap::default(),
+            root_dir: arguments.working_dir.clone(),
         };
 
         interface.add_config_updates(config_file);
@@ -184,13 +197,15 @@ impl Interface {
         Ok(interface)
     }
 
-    fn add_file(&mut self, path: String) -> Result<(), ReadFileError> {
+    fn add_file(&mut self, path: String) -> Result<(), CreateFileError> {
+        let url = self.root_dir.join(&path)?;
+
         self.inputs.push_back(Input::File {
-            text: fs::read_to_string(path.clone()).map_err(|error| ReadFileError {
-                file: path.clone(),
+            text: fs::read_to_string(&url).map_err(|error| ReadFileError {
+                file: url.to_string(),
                 error: error.kind(),
             })?,
-            path: path,
+            url,
         });
         Ok(())
     }
@@ -361,7 +376,7 @@ pub struct UrlError(String);
 /// A URL that is a valid path.
 ///
 /// Useful for preventing repeat translations between URL and path formats.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PathUrl {
     /// The path.
     path: PathBuf,
@@ -540,7 +555,7 @@ impl fmt::Debug for ConfigWatcher {
 pub(crate) enum Input {
     /// A file to be opened.
     File {
-        path: String,
+        url: PathUrl,
         text: String,
     },
     /// An input from the user.

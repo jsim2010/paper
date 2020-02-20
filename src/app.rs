@@ -149,8 +149,8 @@ impl Processor {
 
                 outputs.push(Output::Quit);
             }
-            Operation::OpenDoc { path, text }=> {
-                outputs.append(&mut self.pane.open_doc(&path, text));
+            Operation::OpenDoc { url, text }=> {
+                outputs.append(&mut self.pane.open_doc(url, text));
             }
         };
 
@@ -218,9 +218,6 @@ struct Pane {
     doc: Option<Document>,
     /// The number of lines by which a scroll moves.
     scroll_amount: Rc<RefCell<Amount>>,
-    /// The length at which displayed lines may be wrapped.
-    // TODO: Remove wrap_length and move functionality into io::ui.
-    wrap_length: Rc<RefCell<Swival<usize>>>,
     /// The current working directory.
     working_dir: Rc<PathUrl>,
 }
@@ -231,7 +228,6 @@ impl Pane {
         Self {
             doc: None,
             scroll_amount: Rc::new(RefCell::new(Amount(0))),
-            wrap_length: Rc::new(RefCell::new(Swival::default())),
             working_dir: Rc::clone(working_dir),
         }
     }
@@ -258,45 +254,35 @@ impl Pane {
     }
 
     /// Opens a document at `path`.
-    // TODO: Fix this since we already have the text.
-    fn open_doc(&mut self, path: &str, text: String) -> Vec<Output<'_>> {
-        match self.create_doc(path, text) {
-            Ok(doc) => {
-                let mut outputs = Vec::new();
-                if let Some(old_doc) = self.doc.replace(doc) {
-                    outputs.push(old_doc.close());
-                }
-
-                #[allow(clippy::option_expect_used)] // Replace guarantees that self.doc is Some.
-                outputs.push(
-                    self.doc
-                        .as_ref()
-                        .map(|doc| Output::OpenDoc {
-                            root_dir: self.working_dir.as_ref().clone(),
-                            url: &doc.path,
-                            version: doc.text.version,
-                            text: &doc.text.content,
-                        })
-                        .expect("retrieving `Document` in `Pane`"),
-                );
-                outputs
-            }
-            Err(error) => vec![Output::Notify {
-                message: ShowMessageParams::from(error),
-            }],
+    fn open_doc(&mut self, url: PathUrl, text: String) -> Vec<Output<'_>> {
+        let mut outputs = Vec::new();
+        let doc = self.create_doc(url, text);
+        if let Some(old_doc) = self.doc.replace(doc) {
+            outputs.push(old_doc.close());
         }
+
+        #[allow(clippy::option_expect_used)] // Replace guarantees that self.doc is Some.
+        outputs.push(
+            self.doc
+                .as_ref()
+                .map(|doc| Output::OpenDoc {
+                    root_dir: self.working_dir.as_ref().clone(),
+                    url: &doc.path,
+                    version: doc.text.version,
+                    text: &doc.text.content,
+                })
+                .expect("retrieving `Document` in `Pane`"),
+        );
+        outputs
     }
 
     /// Creates a [`Document`] from `path`.
-    fn create_doc(&mut self, path: &str, text: String) -> Result<Document, DocumentError> {
-        let doc_path = self.working_dir.join(path)?;
-
-        Ok(Document::new(doc_path, text, &self.wrap_length, &self.scroll_amount))
+    fn create_doc(&mut self, url: PathUrl, text: String) -> Document {
+        Document::new(url, text, &self.scroll_amount)
     }
 
     /// Updates the size of `self` to match `size`;
     fn update_size(&mut self, size: Size) -> Output<'_> {
-        self.wrap_length.borrow_mut().set(size.columns.into());
         self.scroll_amount
             .borrow_mut()
             .set(usize::from(size.rows.wrapping_div(3)));
@@ -327,10 +313,9 @@ impl Document {
     fn new(
         path: PathUrl,
         content: String,
-        wrap_length: &Rc<RefCell<Swival<usize>>>,
         scroll_amount: &Rc<RefCell<Amount>>,
     ) -> Self {
-        let text = Text::new(content, wrap_length);
+        let text = Text::new(content);
         let mut selection = Selection::default();
 
         if !text.is_empty() {
@@ -401,8 +386,6 @@ impl Document {
 struct Text {
     /// The text.
     content: String,
-    /// The length at which the text will wrap.
-    wrap_length: Rc<RefCell<Swival<usize>>>,
     /// The version of the text.
     version: i64,
 }
@@ -411,11 +394,9 @@ impl Text {
     /// Creates a new [`Text`].
     fn new(
         content: String,
-        wrap_length: &Rc<RefCell<Swival<usize>>>,
     ) -> Self {
         Self {
             content,
-            wrap_length: Rc::clone(wrap_length),
             version: 0,
         }
     }
@@ -463,24 +444,6 @@ impl Amount {
     /// Sets `self` to `amount`.
     fn set(&mut self, amount: usize) {
         self.0 = amount;
-    }
-}
-
-/// A `SWItch VALue`, which holds a value and if it is enabled.
-///
-/// Think of it as an [`Option`] where both variants hold a value.
-#[derive(Debug, Default)]
-struct Swival<T> {
-    /// The value.
-    value: T,
-    /// If the value is enabled.
-    is_enabled: bool,
-}
-
-impl<T> Swival<T> {
-    /// Sets the value of `self` to `value`.
-    fn set(&mut self, value: T) {
-        self.value = value;
     }
 }
 
