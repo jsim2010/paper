@@ -4,14 +4,11 @@
 //! 1) All functionality shall be able to be performed via the keys reachable from the home row. Where it makes sense, functionality may additionally be performed via the mouse and other keys.
 //! 2) All input shall be modal, i.e. keys shall implement different functionality depending on the current mode of the application.
 //! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the [Language Server Protocol].
-//! 4) Paper shall follow [rustfmt] and as many [clippy] lints as reasonably possible.
 //!
 //! ## Upcoming
 //! - Text manipulation shall involve a 3-step process of identifying the location should occur, marking that location, and then performing the desired edit.
 //!
 //! [Language Server Protocol]: https://microsoft.github.io/language-server-protocol/
-//! [rustfmt]: https://github.com/rust-lang/rustfmt
-//! [clippy]: https://rust-lang.github.io/rust-clippy/current/index.html
 #![warn(
     absolute_paths_not_starting_with_crate,
     anonymous_parameters,
@@ -81,15 +78,16 @@ use {
 /// use paper::{Arguments, Failure, Paper};
 /// # fn main() -> Result<(), Failure> {
 ///
-/// let result: Result<(), Failure> = Paper::new(Arguments::default())?.run();
-/// # Ok(())
+/// Paper::new(Arguments::default())?.run()?;
+///
+/// Ok(())
 /// # }
 /// ```
 #[derive(Debug)]
 pub struct Paper {
-    /// Manages the interface with everything outside of the application.
+    /// The interface between the application and everything else.
     io: Interface,
-    /// Processes application operations.
+    /// The processor of the application.
     processor: Processor,
 }
 
@@ -98,13 +96,13 @@ impl Paper {
     ///
     /// # Errors
     ///
-    /// If any error is encountered during creation, a [`Failure`] will be returned.
+    /// If any error is encountered during creation, a [`CreateInterfaceError`] will be returned.
     ///
-    /// [`Failure`]: struct.Failure.html
+    /// [`CreateInterfaceError`]: io/struct.CreateInterfaceError.html
     #[inline]
-    pub fn new(arguments: Arguments) -> Result<Self, Failure> {
+    pub fn new(arguments: Arguments) -> Result<Self, CreateInterfaceError> {
         Ok(Self {
-            processor: Processor::new(&arguments.working_dir)?,
+            processor: Processor::new(),
             io: Interface::new(arguments)?,
         })
     }
@@ -117,7 +115,7 @@ impl Paper {
     ///
     /// [`Failure`]: struct.Failure.html
     #[inline]
-    pub fn run(&mut self) -> Result<(), Failure> {
+    pub fn run(&mut self) -> Result<(), RunPaperError> {
         loop {
             if !self.step()? {
                 break;
@@ -129,11 +127,11 @@ impl Paper {
 
     /// Executes a single run of the runtime loop and returns if the program should keep running.
     #[inline]
-    fn step(&mut self) -> Result<bool, Failure> {
+    fn step(&mut self) -> Result<bool, RunPaperError> {
         let mut keep_running = true;
 
-        if let Some(input) = self.io.pull()? {
-            for output in self.processor.process(input)? {
+        if let Some(input) = self.io.read()? {
+            for output in self.processor.process(input) {
                 keep_running &= self.io.push(output)?;
             }
 
@@ -150,9 +148,17 @@ pub enum Failure {
     /// An error while parsing the arguments.
     #[error("failed to read arguments: {0}")]
     Arguments(#[from] IntoArgumentsError),
-    /// An error while creating the interface.
+    /// An error while creating `paper`.
     #[error("failed to create interface: {0}")]
-    Interface(#[from] CreateInterfaceError),
+    Create(#[from] CreateInterfaceError),
+    /// An error while running `paper`.
+    #[error("{0}")]
+    Run(#[from] RunPaperError),
+}
+
+/// An error while `paper` is running.
+#[derive(Debug, Error)]
+pub enum RunPaperError {
     /// An error while pulling the input.
     #[error("failed to retrieve input: {0}")]
     Input(#[from] PullError),
@@ -162,9 +168,4 @@ pub enum Failure {
     /// An error while flushing output.
     #[error("failed to flush output: {0}")]
     Flush(#[from] FlushError),
-    /// An error from [`app`].
-    ///
-    /// [`app`]: app/index.html
-    #[error("{0}")]
-    App(#[from] app::Fault),
 }

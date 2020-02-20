@@ -1,4 +1,5 @@
 //! Implements the interface for all input and output to the application.
+pub mod logging;
 pub mod lsp;
 pub mod ui;
 
@@ -12,19 +13,23 @@ use {
         time::Duration,
     },
     log::{error, LevelFilter},
+    logging::LogConfig,
     lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
+    starship::{context::Context, print},
     std::{
         collections::{hash_map::Entry, HashMap, VecDeque},
         env,
         ffi::OsStr,
-        fs, io::{self, ErrorKind},
+        fs,
+        io::{self, ErrorKind},
         path::{Path, PathBuf},
         sync::mpsc::{self, Receiver, TryRecvError},
     },
     thiserror::Error,
+    toml::{value::Table, Value},
     ui::{CommandError, Selection, SelectionConversionError, Size, Terminal},
     url::Url,
 };
@@ -61,6 +66,9 @@ pub enum PushError {
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),
+    /// An error while configuring the logger.
+    #[error("{0}")]
+    Log(#[from] logging::Fault),
 }
 
 /// An error while pulling input.
@@ -114,6 +122,9 @@ pub enum CreateInterfaceError {
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),
+    /// An error while creating the logging configuration.
+    #[error("{0}")]
+    CreateLogConfig(#[from] logging::Fault),
 }
 
 /// An error while creating a file.
@@ -165,6 +176,7 @@ pub(crate) struct Interface {
     /// The [`LspServer`]s managed by the application.
     lsp_servers: HashMap<String, Option<LspServer>>,
     root_dir: PathUrl,
+    log_config: LogConfig,
 }
 
 impl Interface {
@@ -175,7 +187,7 @@ impl Interface {
             .join(".config/paper.toml");
         let watcher = ConfigWatcher::new(&config_file)?;
         let user_interface = Terminal::new()?;
-        
+
         let mut interface = Self {
             user_interface,
             inputs: VecDeque::new(),
@@ -183,6 +195,7 @@ impl Interface {
             config: Config::default(),
             lsp_servers: HashMap::default(),
             root_dir: arguments.working_dir.clone(),
+            log_config: LogConfig::new()?,
         };
 
         interface.add_config_updates(config_file);
@@ -228,7 +241,7 @@ impl Interface {
     }
 
     /// Pulls an [`Input`].
-    pub(crate) fn pull(&mut self) -> Result<Option<Input>, PullError> {
+    pub(crate) fn read(&mut self) -> Result<Option<Input>, PullError> {
         match self.watcher.notify.try_recv() {
             Ok(event) => {
                 if let DebouncedEvent::Write(config_file) = event {
@@ -256,17 +269,14 @@ impl Interface {
         match output {
             Output::OpenFile { path } => {
                 self.add_file(path)?;
-            },
-            Output::OpenDoc {
-                text,
-                root_dir,
-                url,
-                version,
-            } => {
+            }
+            Output::OpenDoc { text, url, version } => {
                 let language_id = url.language_id();
 
                 let _ = match self.lsp_servers.entry(language_id.to_string()) {
-                    Entry::Vacant(vacant) => vacant.insert(LspServer::new(language_id, &root_dir)?),
+                    Entry::Vacant(vacant) => {
+                        vacant.insert(LspServer::new(language_id, &self.root_dir)?)
+                    }
                     Entry::Occupied(mut occupied) => occupied.get_mut(),
                 };
 
@@ -333,8 +343,26 @@ impl Interface {
             Output::MoveSelection { selection } => {
                 self.user_interface.move_selection(selection)?;
             }
-            Output::SetHeader { header } => {
-                self.user_interface.set_header(header)?;
+            Output::UpdateHeader => {
+                let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
+
+                // config will always be Some after Context::new_with_dir().
+                if let Some(mut config) = context.config.config.clone() {
+                    if let Some(table) = config.as_table_mut() {
+                        let _ = table.insert("add_newline".to_string(), Value::Boolean(false));
+
+                        if let Some(line_break) = table
+                            .entry("line_break")
+                            .or_insert(Value::Table(Table::new()))
+                            .as_table_mut()
+                        {
+                            let _ = line_break.insert("disabled".to_string(), Value::Boolean(true));
+                        }
+                    }
+
+                    context.config.config = Some(config);
+                }
+                self.user_interface.set_header(print::get_prompt(context))?;
             }
             Output::Notify { message } => {
                 self.user_interface.notify(&message)?;
@@ -353,6 +381,9 @@ impl Interface {
             }
             Output::Write { ch } => {
                 self.user_interface.write(ch)?;
+            }
+            Output::Log { starship_level } => {
+                self.log_config.writer()?.starship_level = starship_level;
             }
             Output::Quit => {
                 keep_running = false;
@@ -554,10 +585,7 @@ impl fmt::Debug for ConfigWatcher {
 #[derive(Debug)]
 pub(crate) enum Input {
     /// A file to be opened.
-    File {
-        url: PathUrl,
-        text: String,
-    },
+    File { url: PathUrl, text: String },
     /// An input from the user.
     User(ui::Input),
     /// A configuration.
@@ -580,8 +608,6 @@ pub(crate) enum Output<'a> {
     },
     /// Opens a document.
     OpenDoc {
-        /// The root directory of the project.
-        root_dir: PathUrl,
         /// The URL of the document.
         url: &'a PathUrl,
         /// The version of the document.
@@ -627,10 +653,7 @@ pub(crate) enum Output<'a> {
         selection: &'a Selection,
     },
     /// Sets the header of the application.
-    SetHeader {
-        /// The header.
-        header: String,
-    },
+    UpdateHeader,
     /// Notifies the user of a message.
     Notify {
         /// The message.
@@ -663,4 +686,7 @@ pub(crate) enum Output<'a> {
     },
     /// Quit the application.
     Quit,
+    Log {
+        starship_level: LevelFilter,
+    },
 }
