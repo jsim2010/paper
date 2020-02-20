@@ -3,7 +3,7 @@ pub mod logging;
 pub mod lsp;
 pub mod ui;
 
-pub(crate) use ui::FlushError;
+pub(crate) use ui::FlushOutputError;
 
 use {
     clap::ArgMatches,
@@ -45,9 +45,9 @@ pub enum IntoArgumentsError {
     Url(#[from] UrlError),
 }
 
-/// An error while pushing output.
+/// An error while writing output.
 #[derive(Debug, Error)]
-pub enum PushError {
+pub enum WriteOutputError {
     /// An error in the ui.
     #[error("{0}")]
     Ui(#[from] CommandError),
@@ -73,7 +73,7 @@ pub enum PushError {
 
 /// An error while pulling input.
 #[derive(Debug, Error)]
-pub enum PullError {
+pub enum ReadInputError {
     /// An error from the ui.
     #[error("{0}")]
     Ui(#[from] CommandError),
@@ -88,34 +88,29 @@ pub struct Arguments {
     ///
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     pub file: Option<String>,
-    /// The working directory of `paper`.
-    pub working_dir: PathUrl,
 }
 
-impl TryFrom<ArgMatches<'_>> for Arguments {
-    type Error = IntoArgumentsError;
-
+impl From<ArgMatches<'_>> for Arguments {
     #[inline]
-    fn try_from(value: ArgMatches<'_>) -> Result<Self, Self::Error> {
-        Ok(Self {
+    fn from(value: ArgMatches<'_>) -> Self {
+        Self {
             file: value.value_of("file").map(str::to_string),
-            working_dir: PathUrl::try_from(env::current_dir().map_err(IntoArgumentsError::from)?)?,
-        })
+        }
     }
 }
 
-/// An error while creating the interface.
+/// An error while creating an [`Interface`].
 #[derive(Debug, Error)]
 pub enum CreateInterfaceError {
+    /// An error while determining the home directory of the current user.
+    #[error("unable to determine home directory of current user")]
+    HomeDir,
     /// An error while working with a Url.
     #[error("{0}")]
     Url(#[from] UrlError),
     /// An error while creating the user interface.
     #[error("{0}")]
     CreateUi(#[from] CommandError),
-    /// An error while retrieving the home directory of the user.
-    #[error("unable to determine home directory of user")]
-    HomeDir,
     /// An error while creating the config file watcher.
     #[error("while creating config file watcher: {0}")]
     Watcher(#[from] notify::Error),
@@ -125,6 +120,9 @@ pub enum CreateInterfaceError {
     /// An error while creating the logging configuration.
     #[error("{0}")]
     CreateLogConfig(#[from] logging::Fault),
+    /// An error while parsing the arguments.
+    #[error("failed to read arguments: {0}")]
+    Arguments(#[from] IntoArgumentsError),
 }
 
 /// An error while creating a file.
@@ -194,7 +192,7 @@ impl Interface {
             watcher,
             config: Config::default(),
             lsp_servers: HashMap::default(),
-            root_dir: arguments.working_dir.clone(),
+            root_dir: PathUrl::try_from(env::current_dir().map_err(IntoArgumentsError::from)?)?,
             log_config: LogConfig::new()?,
         };
 
@@ -204,14 +202,14 @@ impl Interface {
             .push_back(Input::User(Terminal::size().into()));
 
         if let Some(file) = arguments.file {
-            interface.add_file(file)?;
+            interface.add_file(&file)?;
         }
 
         Ok(interface)
     }
 
-    fn add_file(&mut self, path: String) -> Result<(), CreateFileError> {
-        let url = self.root_dir.join(&path)?;
+    fn add_file(&mut self, path: &str) -> Result<(), CreateFileError> {
+        let url = self.root_dir.join(path)?;
 
         self.inputs.push_back(Input::File {
             text: fs::read_to_string(&url).map_err(|error| ReadFileError {
@@ -241,7 +239,7 @@ impl Interface {
     }
 
     /// Pulls an [`Input`].
-    pub(crate) fn read(&mut self) -> Result<Option<Input>, PullError> {
+    pub(crate) fn read(&mut self) -> Result<Option<Input>, ReadInputError> {
         match self.watcher.notify.try_recv() {
             Ok(event) => {
                 if let DebouncedEvent::Write(config_file) = event {
@@ -263,11 +261,11 @@ impl Interface {
     }
 
     /// Pushes `output`.
-    pub(crate) fn push(&mut self, output: Output<'_>) -> Result<bool, PushError> {
+    pub(crate) fn push(&mut self, output: &Output<'_>) -> Result<bool, WriteOutputError> {
         let mut keep_running = true;
 
         match output {
-            Output::OpenFile { path } => {
+            Output::GetFile { path } => {
                 self.add_file(path)?;
             }
             Output::OpenDoc { text, url, version } => {
@@ -281,7 +279,7 @@ impl Interface {
                 };
 
                 if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(language_id) {
-                    lsp_server.did_open(&url, language_id, version, text)?;
+                    lsp_server.did_open(&url, language_id, *version, text)?;
                 }
 
                 self.user_interface.open_doc(text)?;
@@ -290,7 +288,7 @@ impl Interface {
                 is_wrapped,
                 selection,
             } => {
-                self.user_interface.wrap(is_wrapped, selection)?;
+                self.user_interface.wrap(*is_wrapped, selection)?;
             }
             Output::EditDoc {
                 new_text,
@@ -304,9 +302,9 @@ impl Interface {
                 if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
                     if let Err(error) = lsp_server.did_change(
                         url,
-                        version,
+                        *version,
                         text,
-                        TextEdit::new(selection.range()?, new_text),
+                        TextEdit::new(selection.range()?, new_text.to_string()),
                     ) {
                         self.user_interface.notify(&error.into())?;
                     }
@@ -371,19 +369,19 @@ impl Interface {
                 self.user_interface.question(&request)?;
             }
             Output::StartIntake { title } => {
-                self.user_interface.start_intake(title)?;
+                self.user_interface.start_intake(title.to_string())?;
             }
             Output::Reset { selection } => {
                 self.user_interface.reset(selection)?;
             }
             Output::Resize { size } => {
-                self.user_interface.resize(size);
+                self.user_interface.resize(size.clone());
             }
             Output::Write { ch } => {
-                self.user_interface.write(ch)?;
+                self.user_interface.write(*ch)?;
             }
             Output::Log { starship_level } => {
-                self.log_config.writer()?.starship_level = starship_level;
+                self.log_config.writer()?.starship_level = *starship_level;
             }
             Output::Quit => {
                 keep_running = false;
@@ -394,7 +392,7 @@ impl Interface {
     }
 
     /// Flushes the application I/O.
-    pub(crate) fn flush(&mut self) -> Result<(), FlushError> {
+    pub(crate) fn flush(&mut self) -> Result<(), FlushOutputError> {
         self.user_interface.flush()
     }
 }
@@ -603,7 +601,7 @@ impl From<ui::Input> for Input {
 /// An output.
 #[derive(Debug)]
 pub(crate) enum Output<'a> {
-    OpenFile {
+    GetFile {
         path: String,
     },
     /// Opens a document.

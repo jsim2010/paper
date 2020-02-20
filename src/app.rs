@@ -86,7 +86,7 @@ impl Processor {
             }
             Operation::Execute => {
                 if self.command.is_some() {
-                    outputs.push(Output::OpenFile {
+                    outputs.push(Output::GetFile {
                         path: self.input.clone(),
                     });
                     self.input.clear();

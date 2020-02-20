@@ -66,7 +66,7 @@ pub use io::Arguments;
 
 use {
     app::Processor,
-    io::{CreateInterfaceError, FlushError, Interface, IntoArgumentsError, PullError, PushError},
+    io::{CreateInterfaceError, FlushOutputError, Interface, ReadInputError, WriteOutputError},
     thiserror::Error,
 };
 
@@ -96,7 +96,7 @@ impl Paper {
     ///
     /// # Errors
     ///
-    /// If any error is encountered during creation, a [`CreateInterfaceError`] will be returned.
+    /// If any error is encountered during creation, a [`CreateInterfaceError`] shall be returned.
     ///
     /// [`CreateInterfaceError`]: io/struct.CreateInterfaceError.html
     #[inline]
@@ -107,13 +107,13 @@ impl Paper {
         })
     }
 
-    /// Loops through program execution until a [`Failure`] occurs or the application quits.
+    /// Loops through program execution until a [`RunPaperError`] occurs or the application quits.
     ///
     /// # Errors
     ///
-    /// If any error from which the program is unable to recover is encountered, a [`Failure`] will be returned; in this case, the program will make all efforts to kill all processes and return the terminal to a clean state but these cannot be guaranteed.
+    /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned after `paper` makes all efforts to kill all processes and return the terminal to a clean state. In this case, a clean exit shall not be guaranteed.
     ///
-    /// [`Failure`]: struct.Failure.html
+    /// [`RunPaperError`]: struct.RunPaperError.html
     #[inline]
     pub fn run(&mut self) -> Result<(), RunPaperError> {
         loop {
@@ -132,7 +132,7 @@ impl Paper {
 
         if let Some(input) = self.io.read()? {
             for output in self.processor.process(input) {
-                keep_running &= self.io.push(output)?;
+                keep_running &= self.io.push(&output).map_err(|error| RunPaperError::Write { output: format!("{:?}", output), error})?;
             }
 
             self.io.flush()?;
@@ -142,16 +142,13 @@ impl Paper {
     }
 }
 
-/// An error from which `paper` was unable to recover.
+/// An error from which `paper` is unable to recover.
 #[derive(Debug, Error)]
 pub enum Failure {
-    /// An error while parsing the arguments.
-    #[error("failed to read arguments: {0}")]
-    Arguments(#[from] IntoArgumentsError),
-    /// An error while creating `paper`.
+    /// An error while creating a [`Paper`].
     #[error("failed to create interface: {0}")]
     Create(#[from] CreateInterfaceError),
-    /// An error while running `paper`.
+    /// An error while `paper` is running.
     #[error("{0}")]
     Run(#[from] RunPaperError),
 }
@@ -159,13 +156,25 @@ pub enum Failure {
 /// An error while `paper` is running.
 #[derive(Debug, Error)]
 pub enum RunPaperError {
-    /// An error while pulling the input.
-    #[error("failed to retrieve input: {0}")]
-    Input(#[from] PullError),
-    /// An error while pushing output.
-    #[error("failed to apply output: {0}")]
-    Output(#[from] PushError),
-    /// An error while flushing output.
+    /// An error reading an [`Input`].
+    ///
+    /// [`Input`]: io/struct.Input.html
+    #[error("failed to read input: {0}")]
+    Read(#[from] ReadInputError),
+    /// An error writing an [`Output`].
+    ///
+    /// [`Output`]: io/struct.Output.html
+    #[error("failed to write `{output}`: {error}")]
+    Write {
+        /// The error.
+        #[source]
+        error: WriteOutputError,
+        /// The [`Output`] being written.
+        ///
+        /// [`Output`]: io/struct.Output.html
+        output: String,
+    },
+    /// An error flushing the output.
     #[error("failed to flush output: {0}")]
-    Flush(#[from] FlushError),
+    Flush(#[from] FlushOutputError),
 }

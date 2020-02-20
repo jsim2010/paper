@@ -50,8 +50,8 @@ pub struct CommandError(#[from] ErrorKind);
 
 /// An error while flushing terminal output.
 #[derive(Debug, Error)]
-#[error("while flushing terminal output: {0}")]
-pub struct FlushError(#[from] io::Error);
+#[error("{0}")]
+pub struct FlushOutputError(#[from] io::Error);
 
 /// An error while converting between Selection and Range units.
 #[derive(Clone, Copy, Debug, Error)]
@@ -180,7 +180,7 @@ impl Terminal {
     }
 
     /// Flushes the terminal output.
-    pub(crate) fn flush(&mut self) -> Result<(), FlushError> {
+    pub(crate) fn flush(&mut self) -> Result<(), FlushOutputError> {
         self.out.flush().map_err(|e| e.into())
     }
 }
