@@ -34,7 +34,10 @@ pub(crate) enum Operation {
     /// An operation to edit the text or selection of the document.
     Document(DocOp),
     /// Opens a file.
-    OpenFile(String),
+    OpenDoc{
+        path: String,
+        text: String,
+    },
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
@@ -339,8 +342,8 @@ impl ModeInterpreter for ViewInterpreter {
                 }
                 ui::Input::Mouse => {}
             },
-            Input::File(file) => {
-                output.add_op(Operation::OpenFile(file));
+            Input::File {path, text} => {
+                output.add_op(Operation::OpenDoc{path, text});
             }
             Input::Glitch(glitch) => {
                 output.add_op(Operation::Alert(ShowMessageParams {
@@ -384,7 +387,7 @@ impl ModeInterpreter for ConfirmInterpreter {
                     output.reset();
                 }
             },
-            Input::File(..) | Input::Glitch(..) | Input::Config(..) => {}
+            Input::File{..} | Input::Glitch(..) | Input::Config(..) => {}
         }
 
         output
@@ -424,7 +427,7 @@ impl ModeInterpreter for CollectInterpreter {
                 }
                 ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {}
             },
-            Input::File(..) | Input::Glitch(..) | Input::Config(..) => {}
+            Input::File {..} | Input::Glitch(..) | Input::Config(..) => {}
         }
 
         output

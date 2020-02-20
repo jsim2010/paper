@@ -16,8 +16,7 @@ use {
     starship::{context::Context, print},
     std::{
         cell::RefCell,
-        fs,
-        io::{self, ErrorKind},
+        io,
         rc::Rc,
     },
     thiserror::Error,
@@ -136,8 +135,7 @@ impl Processor {
             }
             Operation::Execute => {
                 if self.command.is_some() {
-                    outputs.append(&mut self.pane.open_doc(&self.input));
-
+                    outputs.push(Output::OpenFile{path: self.input.clone()});
                     self.input.clear();
                 }
             }
@@ -151,8 +149,8 @@ impl Processor {
 
                 outputs.push(Output::Quit);
             }
-            Operation::OpenFile(file) => {
-                outputs.append(&mut self.pane.open_doc(&file));
+            Operation::OpenDoc { path, text }=> {
+                outputs.append(&mut self.pane.open_doc(&path, text));
             }
         };
 
@@ -260,8 +258,9 @@ impl Pane {
     }
 
     /// Opens a document at `path`.
-    fn open_doc(&mut self, path: &str) -> Vec<Output<'_>> {
-        match self.create_doc(path) {
+    // TODO: Fix this since we already have the text.
+    fn open_doc(&mut self, path: &str, text: String) -> Vec<Output<'_>> {
+        match self.create_doc(path, text) {
             Ok(doc) => {
                 let mut outputs = Vec::new();
                 if let Some(old_doc) = self.doc.replace(doc) {
@@ -289,10 +288,10 @@ impl Pane {
     }
 
     /// Creates a [`Document`] from `path`.
-    fn create_doc(&mut self, path: &str) -> Result<Document, DocumentError> {
+    fn create_doc(&mut self, path: &str, text: String) -> Result<Document, DocumentError> {
         let doc_path = self.working_dir.join(path)?;
 
-        Document::new(doc_path, &self.wrap_length, &self.scroll_amount)
+        Ok(Document::new(doc_path, text, &self.wrap_length, &self.scroll_amount))
     }
 
     /// Updates the size of `self` to match `size`;
@@ -327,22 +326,23 @@ impl Document {
     /// Creates a new [`Document`].
     fn new(
         path: PathUrl,
+        content: String,
         wrap_length: &Rc<RefCell<Swival<usize>>>,
         scroll_amount: &Rc<RefCell<Amount>>,
-    ) -> Result<Self, DocumentError> {
-        let text = Text::new(&path, wrap_length)?;
+    ) -> Self {
+        let text = Text::new(content, wrap_length);
         let mut selection = Selection::default();
 
         if !text.is_empty() {
             selection.init();
         }
 
-        Ok(Self {
+        Self {
             path,
             text,
             selection,
             scroll_amount: Rc::clone(scroll_amount),
-        })
+        }
     }
 
     /// Saves the document.
@@ -410,36 +410,14 @@ struct Text {
 impl Text {
     /// Creates a new [`Text`].
     fn new(
-        path: &PathUrl,
+        content: String,
         wrap_length: &Rc<RefCell<Swival<usize>>>,
-    ) -> Result<Self, DocumentError> {
-        let content = fs::read_to_string(path.clone()).map_err(|error| match error.kind() {
-            ErrorKind::NotFound => DocumentError::NonExistantFile(path.to_string()),
-            ErrorKind::PermissionDenied
-            | ErrorKind::ConnectionRefused
-            | ErrorKind::ConnectionReset
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::NotConnected
-            | ErrorKind::AddrInUse
-            | ErrorKind::AddrNotAvailable
-            | ErrorKind::BrokenPipe
-            | ErrorKind::AlreadyExists
-            | ErrorKind::WouldBlock
-            | ErrorKind::InvalidInput
-            | ErrorKind::InvalidData
-            | ErrorKind::TimedOut
-            | ErrorKind::WriteZero
-            | ErrorKind::Interrupted
-            | ErrorKind::Other
-            | ErrorKind::UnexpectedEof
-            | _ => DocumentError::from(error),
-        })?;
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             content,
             wrap_length: Rc::clone(wrap_length),
             version: 0,
-        })
+        }
     }
 
     /// Returns if `self` is empty.
@@ -512,9 +490,6 @@ enum DocumentError {
     /// Error while parsing url.
     #[error("unable to parse url: {0}")]
     Parse(#[from] ParseError),
-    /// File does not exist.
-    #[error("file `{0}` does not exist")]
-    NonExistantFile(String),
     /// Io error.
     #[error("io: {0}")]
     Io(#[from] io::Error),

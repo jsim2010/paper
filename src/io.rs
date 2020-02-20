@@ -20,7 +20,7 @@ use {
         collections::{hash_map::Entry, HashMap, VecDeque},
         env,
         ffi::OsStr,
-        fs, io,
+        fs, io::{self, ErrorKind},
         path::{Path, PathBuf},
         sync::mpsc::{self, Receiver, TryRecvError},
     },
@@ -58,6 +58,9 @@ pub enum PushError {
     /// Failed to send notification.
     #[error("{0}")]
     SendNotification(#[from] SendNotificationError),
+    /// An error while reading a file.
+    #[error("{0}")]
+    ReadFile(#[from] ReadFileError),
 }
 
 /// An error while pulling input.
@@ -108,6 +111,17 @@ pub enum CreateInterfaceError {
     /// An error while creating the config file watcher.
     #[error("while creating config file watcher: {0}")]
     Watcher(#[from] notify::Error),
+    /// An error while reading a file.
+    #[error("{0}")]
+    ReadFile(#[from] ReadFileError),
+}
+
+/// An error while reading a file.
+#[derive(Debug, Error)]
+#[error("failed to read `{file}`: {error:?}")]
+pub struct ReadFileError {
+    error: ErrorKind,
+    file: String,
 }
 
 /// An error in the user interface that is recoverable.
@@ -148,28 +162,37 @@ impl Interface {
             .ok_or(CreateInterfaceError::HomeDir)?
             .join(".config/paper.toml");
         let watcher = ConfigWatcher::new(&config_file)?;
-        Terminal::new()
-            .map(|user_interface| {
-                let mut interface = Self {
-                    user_interface,
-                    inputs: VecDeque::new(),
-                    watcher,
-                    config: Config::default(),
-                    lsp_servers: HashMap::default(),
-                };
+        let user_interface = Terminal::new()?;
+        
+        let mut interface = Self {
+            user_interface,
+            inputs: VecDeque::new(),
+            watcher,
+            config: Config::default(),
+            lsp_servers: HashMap::default(),
+        };
 
-                interface.add_config_updates(config_file);
-                interface
-                    .inputs
-                    .push_back(Input::User(Terminal::size().into()));
+        interface.add_config_updates(config_file);
+        interface
+            .inputs
+            .push_back(Input::User(Terminal::size().into()));
 
-                if let Some(file) = arguments.file {
-                    interface.inputs.push_back(Input::File(file));
-                }
+        if let Some(file) = arguments.file {
+            interface.add_file(file)?;
+        }
 
-                interface
-            })
-            .map_err(|e| e.into())
+        Ok(interface)
+    }
+
+    fn add_file(&mut self, path: String) -> Result<(), ReadFileError> {
+        self.inputs.push_back(Input::File {
+            text: fs::read_to_string(path.clone()).map_err(|error| ReadFileError {
+                file: path.clone(),
+                error: error.kind(),
+            })?,
+            path: path,
+        });
+        Ok(())
     }
 
     /// Checks for updates to [`Config`] and adds any changes the changed settings list.
@@ -216,6 +239,9 @@ impl Interface {
         let mut keep_running = true;
 
         match output {
+            Output::OpenFile { path } => {
+                self.add_file(path)?;
+            },
             Output::OpenDoc {
                 text,
                 root_dir,
@@ -513,7 +539,10 @@ impl fmt::Debug for ConfigWatcher {
 #[derive(Debug)]
 pub(crate) enum Input {
     /// A file to be opened.
-    File(String),
+    File {
+        path: String,
+        text: String,
+    },
     /// An input from the user.
     User(ui::Input),
     /// A configuration.
@@ -531,6 +560,9 @@ impl From<ui::Input> for Input {
 /// An output.
 #[derive(Debug)]
 pub(crate) enum Output<'a> {
+    OpenFile {
+        path: String,
+    },
     /// Opens a document.
     OpenDoc {
         /// The root directory of the project.
