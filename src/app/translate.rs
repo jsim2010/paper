@@ -34,7 +34,12 @@ pub(crate) enum Operation {
     /// An operation to edit the text or selection of the document.
     Document(DocOp),
     /// Opens a file.
-    OpenDoc { url: PathUrl, text: String },
+    OpenDoc {
+        /// The URL of the file.
+        url: PathUrl,
+        /// The text of the file.
+        text: String,
+    },
 }
 
 /// Signifies actions that require a confirmation prior to their execution.

@@ -132,7 +132,7 @@ impl Paper {
 
         if let Some(input) = self.io.read()? {
             for output in self.processor.process(input) {
-                keep_running &= self.io.push(&output).map_err(|error| RunPaperError::Write { output: format!("{:?}", output), error})?;
+                keep_running &= self.io.write(&output).map_err(|error| RunPaperError::Write { output: format!("{:?}", output), error})?;
             }
 
             self.io.flush()?;

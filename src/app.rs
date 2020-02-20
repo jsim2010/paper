@@ -5,7 +5,7 @@ use {
     // TODO: Move everything out of ui.
     crate::io::{
         ui::{Selection, Size},
-        Input, Output, PathUrl, Setting,
+        Input, Output, DocEdit, PathUrl, Setting,
     },
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
@@ -182,10 +182,12 @@ impl Pane {
         outputs.push(
             self.doc
                 .as_ref()
-                .map(|doc| Output::OpenDoc {
-                    url: &doc.path,
-                    version: doc.version,
-                    text: &doc.text,
+                .map(|doc| Output::EditDoc {
+                    url: doc.path.clone(),
+                    edit: DocEdit::Open {
+                        version: doc.version,
+                        text: &doc.text,
+                    },
                 })
                 .expect("retrieving `Document` in `Pane`"),
         );
@@ -246,9 +248,11 @@ impl Document {
 
     /// Saves the document.
     fn save(&self) -> Output<'_> {
-        Output::SaveDoc {
-            url: &self.path,
-            text: &self.text,
+        Output::EditDoc {
+            url: self.path.clone(),
+            edit: DocEdit::Save {
+                text: &self.text,
+            },
         }
     }
 
@@ -273,11 +277,13 @@ impl Document {
         }
         self.version = self.version.wrapping_add(1);
         Output::EditDoc {
-            new_text: String::new(),
-            selection: &self.selection,
-            url: &self.path,
-            version: self.version,
-            text: &self.text,
+            url: self.path.clone(),
+            edit: DocEdit::Change {
+                new_text: String::new(),
+                selection: &self.selection,
+                version: self.version,
+                text: &self.text,
+            },
         }
     }
 
@@ -308,7 +314,10 @@ impl Document {
 
     /// Returns the output to close `self`.
     fn close(self) -> Output<'static> {
-        Output::CloseDoc { url: self.path }
+        Output::EditDoc {
+            url: self.path,
+            edit: DocEdit::Close,
+        }
     }
 }
 

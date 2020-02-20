@@ -140,7 +140,9 @@ pub enum CreateFileError {
 #[derive(Debug, Error)]
 #[error("failed to read `{file}`: {error:?}")]
 pub struct ReadFileError {
+    /// The error.
     error: ErrorKind,
+    /// The path of the file being read.
     file: String,
 }
 
@@ -173,7 +175,9 @@ pub(crate) struct Interface {
     config: Config,
     /// The [`LspServer`]s managed by the application.
     lsp_servers: HashMap<String, Option<LspServer>>,
+    /// The root directory of the application.
     root_dir: PathUrl,
+    /// The configuration of the logger.
     log_config: LogConfig,
 }
 
@@ -208,6 +212,7 @@ impl Interface {
         Ok(interface)
     }
 
+    /// Generates an Input for opening the file at `path`.
     fn add_file(&mut self, path: &str) -> Result<(), CreateFileError> {
         let url = self.root_dir.join(path)?;
 
@@ -261,82 +266,84 @@ impl Interface {
     }
 
     /// Pushes `output`.
-    pub(crate) fn push(&mut self, output: &Output<'_>) -> Result<bool, WriteOutputError> {
+    pub(crate) fn write(&mut self, output: &Output<'_>) -> Result<bool, WriteOutputError> {
         let mut keep_running = true;
 
         match output {
             Output::GetFile { path } => {
                 self.add_file(path)?;
             }
-            Output::OpenDoc { text, url, version } => {
+            Output::EditDoc { url, edit } => {
                 let language_id = url.language_id();
 
-                let _ = match self.lsp_servers.entry(language_id.to_string()) {
-                    Entry::Vacant(vacant) => {
-                        vacant.insert(LspServer::new(language_id, &self.root_dir)?)
+                if let DocEdit::Open { .. } = edit {
+                    if let Entry::Vacant(entry) = self.lsp_servers.entry(language_id.to_string()) {
+                        let _ = entry.insert(LspServer::new(language_id, &self.root_dir)?);
                     }
-                    Entry::Occupied(mut occupied) => occupied.get_mut(),
-                };
-
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(language_id) {
-                    lsp_server.did_open(&url, language_id, *version, text)?;
                 }
 
-                self.user_interface.open_doc(text)?;
+                match edit {
+                    DocEdit::Open { text, version } => {
+                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(language_id) {
+                            lsp_server.did_open(&url, language_id, *version, text)?;
+                        }
+
+                        self.user_interface.open_doc(text)?;
+                    }
+                    DocEdit::Save { text } => {
+                        if let Some(lsp_server) = self.get_lang_client_mut(url) {
+                            if let Err(error) = lsp_server.will_save(url) {
+                                self.user_interface.notify(&error.into())?;
+                            }
+                        }
+
+                        self.user_interface.notify(&match fs::write(url, text) {
+                            Ok(..) => ShowMessageParams {
+                                typ: MessageType::Info,
+                                message: format!("Saved document `{}`", url),
+                            },
+                            Err(error) => ShowMessageParams {
+                                typ: MessageType::Error,
+                                message: format!("Failed to save document `{}`: {}", url, error),
+                            },
+                        })?;
+                    }
+                    DocEdit::Change {
+                        new_text,
+                        selection,
+                        version,
+                        text,
+                    } => {
+                        self.user_interface.edit(new_text, selection)?;
+
+                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
+                            if let Err(error) = lsp_server.did_change(
+                                url,
+                                *version,
+                                text,
+                                TextEdit::new(selection.range()?, new_text.to_string()),
+                            ) {
+                                self.user_interface.notify(&error.into())?;
+                            }
+                        }
+                    }
+                    DocEdit::Close => {
+                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
+                            if let Err(error) = lsp_server.did_close(url) {
+                                error!(
+                                    "failed to inform language server process about closing: {}",
+                                    error,
+                                );
+                            }
+                        }
+                    }
+                }
             }
             Output::Wrap {
                 is_wrapped,
                 selection,
             } => {
                 self.user_interface.wrap(*is_wrapped, selection)?;
-            }
-            Output::EditDoc {
-                new_text,
-                selection,
-                url,
-                version,
-                text,
-            } => {
-                self.user_interface.edit(&new_text, selection)?;
-
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
-                    if let Err(error) = lsp_server.did_change(
-                        url,
-                        *version,
-                        text,
-                        TextEdit::new(selection.range()?, new_text.to_string()),
-                    ) {
-                        self.user_interface.notify(&error.into())?;
-                    }
-                }
-            }
-            Output::SaveDoc { url, text } => {
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
-                    if let Err(error) = lsp_server.will_save(url) {
-                        self.user_interface.notify(&error.into())?;
-                    }
-                }
-
-                self.user_interface.notify(&match fs::write(url, text) {
-                    Ok(..) => ShowMessageParams {
-                        typ: MessageType::Info,
-                        message: format!("Saved document `{}`", url),
-                    },
-                    Err(error) => ShowMessageParams {
-                        typ: MessageType::Error,
-                        message: format!("Failed to save document `{}`: {}", url, error),
-                    },
-                })?;
-            }
-            Output::CloseDoc { url } => {
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
-                    if let Err(error) = lsp_server.did_close(url) {
-                        error!(
-                            "failed to inform language server process about closing: {}",
-                            error,
-                        );
-                    }
-                }
             }
             Output::MoveSelection { selection } => {
                 self.user_interface.move_selection(selection)?;
@@ -363,10 +370,10 @@ impl Interface {
                 self.user_interface.set_header(print::get_prompt(context))?;
             }
             Output::Notify { message } => {
-                self.user_interface.notify(&message)?;
+                self.user_interface.notify(message)?;
             }
             Output::Question { request } => {
-                self.user_interface.question(&request)?;
+                self.user_interface.question(request)?;
             }
             Output::StartIntake { title } => {
                 self.user_interface.start_intake(title.to_string())?;
@@ -389,6 +396,11 @@ impl Interface {
         }
 
         Ok(keep_running)
+    }
+
+    /// Returns the [`LspServer`] for `url`.
+    fn get_lang_client_mut(&mut self, url: &PathUrl) -> Option<&mut LspServer> {
+        self.lsp_servers.get_mut(url.language_id()).map(Option::as_mut).flatten()
     }
 
     /// Flushes the application I/O.
@@ -583,7 +595,12 @@ impl fmt::Debug for ConfigWatcher {
 #[derive(Debug)]
 pub(crate) enum Input {
     /// A file to be opened.
-    File { url: PathUrl, text: String },
+    File {
+        /// The URL of the file.
+        url: PathUrl,
+        /// The text of the file.
+        text: String,
+    },
     /// An input from the user.
     User(ui::Input),
     /// A configuration.
@@ -601,24 +618,17 @@ impl From<ui::Input> for Input {
 /// An output.
 #[derive(Debug)]
 pub(crate) enum Output<'a> {
+    /// Retrieves the URL and text of a file.
     GetFile {
+        /// The relative path of the file.
         path: String,
     },
-    /// Opens a document.
-    OpenDoc {
+    /// Edits a document.
+    EditDoc {
         /// The URL of the document.
-        url: &'a PathUrl,
-        /// The version of the document.
-        version: i64,
-        /// The full text of the document
-        text: &'a str,
-    },
-    /// Saves the document.
-    SaveDoc {
-        /// The URL.
-        url: &'a PathUrl,
-        /// The text of the document.
-        text: &'a str,
+        url: PathUrl,
+        /// The edit to be performed.
+        edit: DocEdit<'a>,
     },
     /// Sets the wrapping of the text.
     Wrap {
@@ -626,24 +636,6 @@ pub(crate) enum Output<'a> {
         is_wrapped: bool,
         /// The selection.
         selection: &'a Selection,
-    },
-    /// Edits the document.
-    EditDoc {
-        /// The new text.
-        new_text: String,
-        /// The selection.
-        selection: &'a Selection,
-        /// The URL.
-        url: &'a PathUrl,
-        /// The version.
-        version: i64,
-        /// The full text of the document.
-        text: &'a str,
-    },
-    /// Closes the document.
-    CloseDoc {
-        /// The URL of the document to be closed.
-        url: PathUrl,
     },
     /// Moves the selection.
     MoveSelection {
@@ -684,7 +676,39 @@ pub(crate) enum Output<'a> {
     },
     /// Quit the application.
     Quit,
+    /// Configure the logger.
     Log {
+        /// The level for starship logs.
         starship_level: LevelFilter,
     },
+}
+
+/// Edits a document.
+#[derive(Debug)]
+pub(crate) enum DocEdit<'a> {
+    /// Opens a document.
+    Open {
+        /// The version of the document.
+        version: i64,
+        /// The full text of the document
+        text: &'a str,
+    },
+    /// Saves the document.
+    Save {
+        /// The text of the document.
+        text: &'a str,
+    },
+    /// Edits the document.
+    Change {
+        /// The new text.
+        new_text: String,
+        /// The selection.
+        selection: &'a Selection,
+        /// The version.
+        version: i64,
+        /// The full text of the document.
+        text: &'a str,
+    },
+    /// Closes the document.
+    Close,
 }
