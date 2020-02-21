@@ -1,11 +1,11 @@
-//! Implements the application logic of `paper`.
+//! Implements the application logic of `paper`, converting an [`Input`] into a list of [`Output`]s.
 mod translate;
 
 use {
     // TODO: Move everything out of ui.
     crate::io::{
         ui::{Selection, Size},
-        Input, Output, DocEdit, PathUrl, Setting,
+        DocEdit, Input, Output, PathUrl, Setting,
     },
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
@@ -250,9 +250,7 @@ impl Document {
     fn save(&self) -> Output<'_> {
         Output::EditDoc {
             url: self.path.clone(),
-            edit: DocEdit::Save {
-                text: &self.text,
-            },
+            edit: DocEdit::Save { text: &self.text },
         }
     }
 

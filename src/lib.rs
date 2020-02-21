@@ -59,14 +59,14 @@
     single_use_lifetimes, // Flags PartialEq derive.
 )]
 
-pub mod app;
+mod app;
 pub mod io;
 
 pub use io::Arguments;
 
 use {
     app::Processor,
-    io::{CreateInterfaceError, FlushOutputError, Interface, ReadInputError, WriteOutputError},
+    io::{CreateInterfaceError, FlushCommandsError, Interface, ReadInputError, WriteOutputError},
     thiserror::Error,
 };
 
@@ -100,7 +100,7 @@ impl Paper {
     ///
     /// [`CreateInterfaceError`]: io/struct.CreateInterfaceError.html
     #[inline]
-    pub fn new(arguments: Arguments) -> Result<Self, CreateInterfaceError> {
+    pub fn new(arguments: Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         Ok(Self {
             processor: Processor::new(),
             io: Interface::new(arguments)?,
@@ -132,7 +132,13 @@ impl Paper {
 
         if let Some(input) = self.io.read()? {
             for output in self.processor.process(input) {
-                keep_running &= self.io.write(&output).map_err(|error| RunPaperError::Write { output: format!("{:?}", output), error})?;
+                keep_running &= self
+                    .io
+                    .write(&output)
+                    .map_err(|error| RunPaperError::Write {
+                        output: format!("{:?}", output),
+                        error,
+                    })?;
             }
 
             self.io.flush()?;
@@ -176,5 +182,5 @@ pub enum RunPaperError {
     },
     /// An error flushing the output.
     #[error("failed to flush output: {0}")]
-    Flush(#[from] FlushOutputError),
+    Flush(#[from] FlushCommandsError),
 }

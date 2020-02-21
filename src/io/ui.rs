@@ -51,12 +51,34 @@ pub struct CommandError(#[from] ErrorKind);
 /// An error while flushing terminal output.
 #[derive(Debug, Error)]
 #[error("{0}")]
-pub struct FlushOutputError(#[from] io::Error);
+pub struct FlushCommandsError(#[from] io::Error);
 
 /// An error while converting between Selection and Range units.
 #[derive(Clone, Copy, Debug, Error)]
 #[error("while converting between u64 and usize: {0}")]
 pub struct SelectionConversionError(#[from] num::TryFromIntError);
+
+type QueueCommandResult = Result<(), QueueCommandError>;
+
+/// An error initializing the terminal.
+#[derive(Debug, Error)]
+pub enum InitTerminalError {
+    /// An error queueing commands.
+    #[error("{0}")]
+    Queue(#[from] QueueCommandError),
+    /// An error flushing commands.
+    #[error("{0}")]
+    Flush(#[from] FlushCommandsError),
+}
+
+/// An error queueing a command.
+#[derive(Debug, Error)]
+#[error("failed to queue `{command}`: {error}")]
+pub struct QueueCommandError {
+    #[source]
+    error: ErrorKind,
+    command: String,
+}
 
 /// A user interface provided by a terminal.
 pub(crate) struct Terminal {
@@ -68,6 +90,14 @@ pub(crate) struct Terminal {
 
 #[allow(clippy::unused_self)] // For pull(), will be used when user interface becomes a trait.
 impl Terminal {
+    /// Creates a new [`Terminal`].
+    pub(crate) fn new() -> Self {
+        Self {
+            out: io::stdout(),
+            body: Body::default(),
+        }
+    }
+
     /// Returns the size of the terminal.
     pub(crate) fn size() -> Size {
         match terminal::size() {
@@ -80,16 +110,10 @@ impl Terminal {
         .into()
     }
 
-    /// Creates a new [`Terminal`].
-    pub(crate) fn new() -> Result<Self, CommandError> {
-        let mut term = Self {
-            out: io::stdout(),
-            body: Body::default(),
-        };
-
-        // Execute failable commands after creating Terminal so that it will be dropped on failure.
-        execute!(term.out, EnterAlternateScreen, Hide)?;
-        Ok(term)
+    pub(crate) fn init(&mut self) -> Result<(), InitTerminalError> {
+        self.enter_alternate_screen()?;
+        self.hide()?;
+        self.flush().map_err(|e| e.into())
     }
 
     /// Returns input from the user.
@@ -180,8 +204,24 @@ impl Terminal {
     }
 
     /// Flushes the terminal output.
-    pub(crate) fn flush(&mut self) -> Result<(), FlushOutputError> {
+    pub(crate) fn flush(&mut self) -> Result<(), FlushCommandsError> {
         self.out.flush().map_err(|e| e.into())
+    }
+
+    fn enter_alternate_screen(&mut self) -> QueueCommandResult {
+        queue!(self.out, EnterAlternateScreen).map_err(|error| QueueCommandError {
+            command: "EnterAlternateScreen".to_string(),
+            error,
+        })?;
+        Ok(())
+    }
+
+    fn hide(&mut self) -> QueueCommandResult {
+        queue!(self.out, Hide).map_err(|error| QueueCommandError {
+            command: "Hide".to_string(),
+            error,
+        })?;
+        Ok(())
     }
 }
 

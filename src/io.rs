@@ -3,7 +3,7 @@ pub mod logging;
 pub mod lsp;
 pub mod ui;
 
-pub(crate) use ui::FlushOutputError;
+pub(crate) use ui::FlushCommandsError;
 
 use {
     clap::ArgMatches,
@@ -30,19 +30,54 @@ use {
     },
     thiserror::Error,
     toml::{value::Table, Value},
-    ui::{CommandError, Selection, SelectionConversionError, Size, Terminal},
+    ui::{InitTerminalError, CommandError, Selection, SelectionConversionError, Size, Terminal},
     url::Url,
 };
 
-/// An error while parsing arguments.
+/// Configures the initialization of `paper`.
+#[derive(Clone, Debug, Default)]
+pub struct Arguments<'a> {
+    /// The file to be viewed.
+    ///
+    /// [`None`] indicates that no file will be viewed.
+    ///
+    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
+    pub file: Option<&'a str>,
+}
+
+impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
+    #[inline]
+    fn from(value: &'a ArgMatches<'a>) -> Self {
+        Self {
+            file: value.value_of("file"),
+        }
+    }
+}
+
+/// An error creating an [`Interface`].
 #[derive(Debug, Error)]
-pub enum IntoArgumentsError {
+pub enum CreateInterfaceError {
+    /// An error initilizing the [`Terminal`].
+    #[error("initializing terminal: {0}")]
+    InitTerminal(#[from] InitTerminalError),
+    /// An error determining the home directory of the current user.
+    #[error("home directory of current user is unknown")]
+    HomeDir,
+    /// An error creating the config file watcher.
+    #[error("while creating config file watcher: {0}")]
+    Watcher(#[from] notify::Error),
     /// An error determing the root directory.
     #[error("current working directory is invalid: {0}")]
     RootDir(#[from] io::Error),
-    /// An error with a URL.
-    #[error("root directory is invalid: {0}")]
+    /// An error while working with a Url.
+    #[error("{0}")]
     Url(#[from] UrlError),
+    /// An error while reading a file.
+    #[error("{0}")]
+    CreateFile(#[from] CreateFileError),
+    /// An error while creating the logging configuration.
+    #[error("{0}")]
+    CreateLogConfig(#[from] logging::Fault),
 }
 
 /// An error while writing output.
@@ -77,52 +112,6 @@ pub enum ReadInputError {
     /// An error from the ui.
     #[error("{0}")]
     Ui(#[from] CommandError),
-}
-
-/// Configures the initialization of `paper`.
-#[derive(Clone, Debug, Default)]
-pub struct Arguments {
-    /// The file to be viewed.
-    ///
-    /// [`None`] indicates that the display should be empty.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    pub file: Option<String>,
-}
-
-impl From<ArgMatches<'_>> for Arguments {
-    #[inline]
-    fn from(value: ArgMatches<'_>) -> Self {
-        Self {
-            file: value.value_of("file").map(str::to_string),
-        }
-    }
-}
-
-/// An error while creating an [`Interface`].
-#[derive(Debug, Error)]
-pub enum CreateInterfaceError {
-    /// An error while determining the home directory of the current user.
-    #[error("unable to determine home directory of current user")]
-    HomeDir,
-    /// An error while working with a Url.
-    #[error("{0}")]
-    Url(#[from] UrlError),
-    /// An error while creating the user interface.
-    #[error("{0}")]
-    CreateUi(#[from] CommandError),
-    /// An error while creating the config file watcher.
-    #[error("while creating config file watcher: {0}")]
-    Watcher(#[from] notify::Error),
-    /// An error while reading a file.
-    #[error("{0}")]
-    CreateFile(#[from] CreateFileError),
-    /// An error while creating the logging configuration.
-    #[error("{0}")]
-    CreateLogConfig(#[from] logging::Fault),
-    /// An error while parsing the arguments.
-    #[error("failed to read arguments: {0}")]
-    Arguments(#[from] IntoArgumentsError),
 }
 
 /// An error while creating a file.
@@ -183,12 +172,13 @@ pub(crate) struct Interface {
 
 impl Interface {
     /// Creates a new interface.
-    pub(crate) fn new(arguments: Arguments) -> Result<Self, CreateInterfaceError> {
+    pub(crate) fn new(arguments: Arguments<'_>) -> Result<Self, CreateInterfaceError> {
+        let mut user_interface = Terminal::new();
+        user_interface.init()?;
         let config_file = dirs::home_dir()
             .ok_or(CreateInterfaceError::HomeDir)?
             .join(".config/paper.toml");
         let watcher = ConfigWatcher::new(&config_file)?;
-        let user_interface = Terminal::new()?;
 
         let mut interface = Self {
             user_interface,
@@ -196,7 +186,7 @@ impl Interface {
             watcher,
             config: Config::default(),
             lsp_servers: HashMap::default(),
-            root_dir: PathUrl::try_from(env::current_dir().map_err(IntoArgumentsError::from)?)?,
+            root_dir: PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?,
             log_config: LogConfig::new()?,
         };
 
@@ -206,7 +196,7 @@ impl Interface {
             .push_back(Input::User(Terminal::size().into()));
 
         if let Some(file) = arguments.file {
-            interface.add_file(&file)?;
+            interface.add_file(file)?;
         }
 
         Ok(interface)
@@ -316,7 +306,8 @@ impl Interface {
                     } => {
                         self.user_interface.edit(new_text, selection)?;
 
-                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
+                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id())
+                        {
                             if let Err(error) = lsp_server.did_change(
                                 url,
                                 *version,
@@ -328,7 +319,8 @@ impl Interface {
                         }
                     }
                     DocEdit::Close => {
-                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
+                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id())
+                        {
                             if let Err(error) = lsp_server.did_close(url) {
                                 error!(
                                     "failed to inform language server process about closing: {}",
@@ -400,11 +392,14 @@ impl Interface {
 
     /// Returns the [`LspServer`] for `url`.
     fn get_lang_client_mut(&mut self, url: &PathUrl) -> Option<&mut LspServer> {
-        self.lsp_servers.get_mut(url.language_id()).map(Option::as_mut).flatten()
+        self.lsp_servers
+            .get_mut(url.language_id())
+            .map(Option::as_mut)
+            .flatten()
     }
 
     /// Flushes the application I/O.
-    pub(crate) fn flush(&mut self) -> Result<(), FlushOutputError> {
+    pub(crate) fn flush(&mut self) -> Result<(), FlushCommandsError> {
         self.user_interface.flush()
     }
 }
