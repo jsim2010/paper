@@ -66,7 +66,7 @@ pub use io::Arguments;
 
 use {
     app::Processor,
-    io::{CreateInterfaceError, FlushCommandsError, Interface, ReadInputError, WriteOutputError},
+    io::{CreateInterfaceError, FlushCommandsError, Interface, RecvInputError, WriteOutputError},
     thiserror::Error,
 };
 
@@ -130,7 +130,7 @@ impl Paper {
     fn step(&mut self) -> Result<bool, RunPaperError> {
         let mut keep_running = true;
 
-        if let Some(input) = self.io.read()? {
+        let input = self.io.recv()?;
             for output in self.processor.process(input) {
                 keep_running &= self
                     .io
@@ -142,11 +142,12 @@ impl Paper {
             }
 
             self.io.flush()?;
-        }
 
         Ok(keep_running)
     }
 }
+
+use crate::io::ui::Sink;
 
 /// An error from which `paper` is unable to recover.
 #[derive(Debug, Error)]
@@ -162,11 +163,11 @@ pub enum Failure {
 /// An error while `paper` is running.
 #[derive(Debug, Error)]
 pub enum RunPaperError {
-    /// An error reading an [`Input`].
+    /// An error receiving an [`Input`].
     ///
     /// [`Input`]: io/struct.Input.html
-    #[error("failed to read input: {0}")]
-    Read(#[from] ReadInputError),
+    #[error("failed to receive input: {0}")]
+    Recv(#[from] RecvInputError),
     /// An error writing an [`Output`].
     ///
     /// [`Output`]: io/struct.Output.html

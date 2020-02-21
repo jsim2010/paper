@@ -12,6 +12,7 @@ edition = "2018"
 
 [dependencies]
 clap = "2.33.0"
+crossbeam-channel = "0.4.0"
 crossterm = "0.16"
 dirs = "2.0.2"
 enum-map = "0.6.2"

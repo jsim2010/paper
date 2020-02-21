@@ -30,7 +30,7 @@ use {
     },
     thiserror::Error,
     toml::{value::Table, Value},
-    ui::{InitTerminalError, CommandError, Selection, SelectionConversionError, Size, Terminal},
+    ui::{Sink, InitTerminalError, CommandError, Selection, SelectionConversionError, Size, Terminal},
     url::Url,
 };
 
@@ -78,6 +78,9 @@ pub enum CreateInterfaceError {
     /// An error while creating the logging configuration.
     #[error("{0}")]
     CreateLogConfig(#[from] logging::Fault),
+    /// An error sending an input.
+    #[error("{0}")]
+    Send(#[from] crossbeam_channel::SendError<Input>)
 }
 
 /// An error while writing output.
@@ -123,6 +126,9 @@ pub enum CreateFileError {
     /// An error while reading the text of the file.
     #[error("{0}")]
     ReadFile(#[from] ReadFileError),
+    /// An error sending an input.
+    #[error("{0}")]
+    Send(#[from] crossbeam_channel::SendError<Input>)
 }
 
 /// An error while reading a file.
@@ -139,7 +145,7 @@ pub struct ReadFileError {
 ///
 /// Until a glitch is resolved, certain functionality may not be properly completed.
 #[derive(Debug, Error)]
-pub(crate) enum Glitch {
+pub enum Glitch {
     /// Config file watcher disconnected.
     #[error("config file watcher disconnected")]
     WatcherConnection,
@@ -168,6 +174,8 @@ pub(crate) struct Interface {
     root_dir: PathUrl,
     /// The configuration of the logger.
     log_config: LogConfig,
+    rx: crossbeam_channel::Receiver<Input>,
+    tx: crossbeam_channel::Sender<Input>,
 }
 
 impl Interface {
@@ -179,6 +187,7 @@ impl Interface {
             .ok_or(CreateInterfaceError::HomeDir)?
             .join(".config/paper.toml");
         let watcher = ConfigWatcher::new(&config_file)?;
+        let (tx, rx) = crossbeam_channel::unbounded();
 
         let mut interface = Self {
             user_interface,
@@ -188,12 +197,12 @@ impl Interface {
             lsp_servers: HashMap::default(),
             root_dir: PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?,
             log_config: LogConfig::new()?,
+            rx,
+            tx,
         };
 
-        interface.add_config_updates(config_file);
-        interface
-            .inputs
-            .push_back(Input::User(Terminal::size().into()));
+        interface.tx.send(
+            Input::User(Terminal::size().into()))?;
 
         if let Some(file) = arguments.file {
             interface.add_file(file)?;
@@ -206,53 +215,14 @@ impl Interface {
     fn add_file(&mut self, path: &str) -> Result<(), CreateFileError> {
         let url = self.root_dir.join(path)?;
 
-        self.inputs.push_back(Input::File {
+        self.tx.send(Input::File {
             text: fs::read_to_string(&url).map_err(|error| ReadFileError {
                 file: url.to_string(),
                 error: error.kind(),
             })?,
             url,
-        });
+        })?;
         Ok(())
-    }
-
-    /// Checks for updates to [`Config`] and adds any changes the changed settings list.
-    fn add_config_updates(&mut self, config_file: PathBuf) {
-        match self.config.update(config_file) {
-            Ok(settings) => {
-                self.inputs.append(
-                    &mut settings
-                        .iter()
-                        .map(|setting| Input::Config(*setting))
-                        .collect(),
-                );
-            }
-            Err(glitch) => {
-                self.inputs.push_back(Input::Glitch(glitch));
-            }
-        }
-    }
-
-    /// Pulls an [`Input`].
-    pub(crate) fn read(&mut self) -> Result<Option<Input>, ReadInputError> {
-        match self.watcher.notify.try_recv() {
-            Ok(event) => {
-                if let DebouncedEvent::Write(config_file) = event {
-                    self.add_config_updates(config_file);
-                }
-            }
-            Err(TryRecvError::Empty) => (),
-            Err(TryRecvError::Disconnected) => {
-                self.inputs
-                    .push_back(Input::Glitch(Glitch::WatcherConnection));
-            }
-        }
-
-        if let Some(input) = self.inputs.pop_front() {
-            Ok(Some(input))
-        } else {
-            Ok(self.user_interface.pull()?.map(Input::from))
-        }
     }
 
     /// Pushes `output`.
@@ -335,6 +305,7 @@ impl Interface {
                 is_wrapped,
                 selection,
             } => {
+                self.config.wrap = Wrap(*is_wrapped);
                 self.user_interface.wrap(*is_wrapped, selection)?;
             }
             Output::MoveSelection { selection } => {
@@ -380,6 +351,7 @@ impl Interface {
                 self.user_interface.write(*ch)?;
             }
             Output::Log { starship_level } => {
+                self.config.starship_log = StarshipLog(*starship_level);
                 self.log_config.writer()?.starship_level = *starship_level;
             }
             Output::Quit => {
@@ -402,6 +374,59 @@ impl Interface {
     pub(crate) fn flush(&mut self) -> Result<(), FlushCommandsError> {
         self.user_interface.flush()
     }
+}
+
+impl Sink for Interface {
+    type Event = Input;
+    type Error = RecvInputError;
+
+    fn is_empty(&self) -> bool {
+        self.rx.is_empty() && self.user_interface.is_empty() && self.watcher.is_empty()
+    }
+
+    fn recv(&self) -> Result<Self::Event, Self::Error> {
+        let mut active_sink = None;
+
+        while active_sink.is_none() {
+            if !self.user_interface.is_empty() {
+                active_sink = Some(SinkId::Ui);
+            } else if !self.watcher.is_empty() {
+                active_sink = Some(SinkId::Watcher);
+            } else if !self.rx.is_empty() {
+                active_sink = Some(SinkId::Own);
+            }
+        }
+
+        match active_sink {
+            Some(SinkId::Ui) => self.user_interface.recv().map(|x| x.into()).map_err(|e| e.into()),
+            Some(SinkId::Watcher) => self.watcher.recv().map(|x| x.into()).map_err(|e| e.into()),
+            Some(SinkId::Own) => self.rx.recv().map_err(|e| e.into()),
+            None => Err(RecvInputError::Invalid),
+        }
+    }
+}
+
+enum SinkId {
+    Ui,
+    Watcher,
+    Own,
+}
+
+/// An error receiving input.
+#[derive(Debug, Error)]
+pub enum RecvInputError {
+    /// An error receiving user input.
+    #[error("{0}")]
+    User(#[from] ui::ErrorKind),
+    /// An error receiving config input.
+    #[error("{0}")]
+    Watcher(#[from] ConfigError),
+    /// An error receiving arguments.
+    #[error("{0}")]
+    Own(#[from] crossbeam_channel::RecvError),
+    /// An invalid error.
+    #[error("invalid")]
+    Invalid,
 }
 
 /// An error occurred while converting a directory path to a URL.
@@ -514,17 +539,15 @@ impl Config {
     }
 
     /// Updates `self` to match paper's config file, returning any changed [`Setting`]s.
-    fn update(&mut self, config_file: PathBuf) -> Result<VecDeque<Setting>, Glitch> {
+    fn update(&self, config_file: PathBuf) -> Result<VecDeque<Setting>, Glitch> {
         let mut settings = VecDeque::new();
         let config = Self::read(config_file)?;
 
         if self.wrap != config.wrap {
-            self.wrap = config.wrap;
             settings.push_back(Setting::Wrap(self.wrap.0));
         }
 
         if self.starship_log != config.starship_log {
-            self.starship_log = config.starship_log;
             settings.push_back(Setting::StarshipLog(self.starship_log.0));
         }
 
@@ -550,7 +573,7 @@ def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 
 /// Signifies a configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Setting {
+pub enum Setting {
     /// If the document shall wrap long text.
     Wrap(bool),
     /// The level at which starship records shall be logged.
@@ -564,19 +587,40 @@ struct ConfigWatcher {
     watcher: RecommendedWatcher,
     /// Receives events generated by `watcher`.
     notify: Receiver<DebouncedEvent>,
+    /// The current configuration of the application.
+    config: Config,
+    tx: crossbeam_channel::Sender<Input>,
+    rx: crossbeam_channel::Receiver<Input>,
 }
 
 impl ConfigWatcher {
     /// Creates a new [`ConfigWatcher`].
     fn new(config_file: &PathBuf) -> Result<Self, notify::Error> {
-        let (tx, notify) = mpsc::channel();
-        let mut watcher = notify::watcher(tx, Duration::from_secs(0))?;
+        let (notify_tx, notify) = mpsc::channel();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut watcher = notify::watcher(notify_tx, Duration::from_secs(0))?;
 
         if config_file.is_file() {
             watcher.watch(config_file, RecursiveMode::NonRecursive)?;
         }
 
-        Ok(Self { watcher, notify })
+        let config_watcher = Self { tx, rx, watcher, notify, config: Config::default()};
+        config_watcher.add_config_updates(config_file.to_path_buf());
+        Ok(config_watcher)
+    }
+
+    /// Checks for updates to [`Config`] and adds any changes the changed settings list.
+    fn add_config_updates(&self, config_file: PathBuf) {
+        match self.config.update(config_file) {
+            Ok(settings) => {
+                for input in settings.iter().map(|setting| Input::Config(*setting)) {
+                    self.tx.send(input).unwrap();
+                }
+            }
+            Err(glitch) => {
+                self.tx.send(Input::Glitch(glitch)).unwrap();
+            }
+        }
     }
 }
 
@@ -586,9 +630,60 @@ impl fmt::Debug for ConfigWatcher {
     }
 }
 
+impl Sink for ConfigWatcher {
+    type Event = Input;
+    type Error = ConfigError;
+
+    fn is_empty(&self) -> bool {
+        if self.rx.is_empty() {
+            match self.notify.try_recv() {
+                Err(TryRecvError::Disconnected) => false,
+                Err(TryRecvError::Empty) => true,
+                Ok(event) => {
+                    if let DebouncedEvent::Write(config_file) = event {
+                        self.add_config_updates(config_file);
+                    }
+
+                    self.rx.is_empty()
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    fn recv(&self) -> Result<Self::Event, Self::Error> {
+        while self.rx.is_empty() {
+            match self.notify.recv() {
+                Ok(event) => {
+                    if let DebouncedEvent::Write(config_file) = event {
+                        self.add_config_updates(config_file);
+                    }
+                }
+                Err(_) => {
+                    self.tx.send(Input::Glitch(Glitch::WatcherConnection))?;
+                }
+            }
+        }
+
+        self.rx.recv().map_err(|e| e.into())
+    }
+}
+
+/// An error with the config.
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    /// An error sending an input.
+    #[error("{0}")]
+    Send(#[from] crossbeam_channel::SendError<Input>),
+    /// An error receiving an input.
+    #[error("{0}")]
+    Rx(#[from] crossbeam_channel::RecvError),
+}
+
 /// An input.
 #[derive(Debug)]
-pub(crate) enum Input {
+pub enum Input {
     /// A file to be opened.
     File {
         /// The URL of the file.
