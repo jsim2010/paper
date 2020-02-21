@@ -79,7 +79,7 @@ pub struct QueueCommandError {
     command: String,
 }
 
-pub(crate) trait Sink {
+pub(crate) trait Drain {
     type Event;
     type Error;
 
@@ -96,7 +96,7 @@ pub(crate) trait Sink {
 }
 
 pub(crate) struct SinkIter<'a, V, R> {
-    sink: &'a dyn Sink<Event=V,Error=R>,
+    sink: &'a dyn Drain<Event=V,Error=R>,
 }
 
 impl<V, R> Iterator for SinkIter<'_, V, R> {
@@ -255,7 +255,10 @@ impl Drop for Terminal {
     }
 }
 
-impl Sink for Terminal {
+#[derive(Debug)]
+pub(crate) struct TerminalDrain;
+
+impl Drain for TerminalDrain {
     type Event = Input;
     type Error = ErrorKind;
 

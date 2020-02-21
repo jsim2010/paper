@@ -30,7 +30,7 @@ use {
     },
     thiserror::Error,
     toml::{value::Table, Value},
-    ui::{Sink, InitTerminalError, CommandError, Selection, SelectionConversionError, Size, Terminal},
+    ui::{Drain, InitTerminalError, TerminalDrain, CommandError, Selection, SelectionConversionError, Size, Terminal},
     url::Url,
 };
 
@@ -162,6 +162,7 @@ pub enum Glitch {
 pub(crate) struct Interface {
     /// Manages the user interface.
     user_interface: Terminal,
+    user_drain: TerminalDrain,
     /// The inputs of the interface.
     inputs: VecDeque<Input>,
     /// Notifies `self` of any events to the config file.
@@ -191,6 +192,7 @@ impl Interface {
 
         let mut interface = Self {
             user_interface,
+            user_drain: TerminalDrain,
             inputs: VecDeque::new(),
             watcher,
             config: Config::default(),
@@ -376,19 +378,19 @@ impl Interface {
     }
 }
 
-impl Sink for Interface {
+impl Drain for Interface {
     type Event = Input;
     type Error = RecvInputError;
 
     fn is_empty(&self) -> bool {
-        self.rx.is_empty() && self.user_interface.is_empty() && self.watcher.is_empty()
+        self.rx.is_empty() && self.user_drain.is_empty() && self.watcher.is_empty()
     }
 
     fn recv(&self) -> Result<Self::Event, Self::Error> {
         let mut active_sink = None;
 
         while active_sink.is_none() {
-            if !self.user_interface.is_empty() {
+            if !self.user_drain.is_empty() {
                 active_sink = Some(SinkId::Ui);
             } else if !self.watcher.is_empty() {
                 active_sink = Some(SinkId::Watcher);
@@ -398,7 +400,7 @@ impl Sink for Interface {
         }
 
         match active_sink {
-            Some(SinkId::Ui) => self.user_interface.recv().map(|x| x.into()).map_err(|e| e.into()),
+            Some(SinkId::Ui) => self.user_drain.recv().map(|x| x.into()).map_err(|e| e.into()),
             Some(SinkId::Watcher) => self.watcher.recv().map(|x| x.into()).map_err(|e| e.into()),
             Some(SinkId::Own) => self.rx.recv().map_err(|e| e.into()),
             None => Err(RecvInputError::Invalid),
@@ -630,7 +632,7 @@ impl fmt::Debug for ConfigWatcher {
     }
 }
 
-impl Sink for ConfigWatcher {
+impl Drain for ConfigWatcher {
     type Event = Input;
     type Error = ConfigError;
 

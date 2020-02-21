@@ -147,7 +147,7 @@ impl Paper {
     }
 }
 
-use crate::io::ui::Sink;
+use crate::io::ui::Drain;
 
 /// An error from which `paper` is unable to recover.
 #[derive(Debug, Error)]
