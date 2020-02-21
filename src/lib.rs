@@ -130,10 +130,11 @@ impl Paper {
     fn step(&mut self) -> Result<bool, RunPaperError> {
         let mut keep_running = true;
 
-        let input = self.io.recv()?;
+        for input in self.io.drain.iter() {
             for output in self.processor.process(input) {
                 keep_running &= self
                     .io
+                    .source
                     .write(&output)
                     .map_err(|error| RunPaperError::Write {
                         output: format!("{:?}", output),
@@ -141,7 +142,8 @@ impl Paper {
                     })?;
             }
 
-            self.io.flush()?;
+            self.io.source.flush()?;
+        }
 
         Ok(keep_running)
     }

@@ -57,15 +57,12 @@ impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
 /// An error creating an [`Interface`].
 #[derive(Debug, Error)]
 pub enum CreateInterfaceError {
+    /// An error creating drain.
+    #[error("{0}")]
+    CreateDrain(#[from] CreateInterfaceDrainError),
     /// An error initilizing the [`Terminal`].
     #[error("initializing terminal: {0}")]
     InitTerminal(#[from] InitTerminalError),
-    /// An error determining the home directory of the current user.
-    #[error("home directory of current user is unknown")]
-    HomeDir,
-    /// An error creating the config file watcher.
-    #[error("while creating config file watcher: {0}")]
-    Watcher(#[from] notify::Error),
     /// An error determing the root directory.
     #[error("current working directory is invalid: {0}")]
     RootDir(#[from] io::Error),
@@ -160,13 +157,29 @@ pub enum Glitch {
 /// The interface.
 #[derive(Debug)]
 pub(crate) struct Interface {
+    pub(crate) source: InterfaceSource,
+    pub(crate) drain: InterfaceDrain,
+}
+
+impl Interface {
+    /// Creates a new interface.
+    pub(crate) fn new(arguments: Arguments<'_>) -> Result<Self, CreateInterfaceError> {
+        let (drain, tx) = InterfaceDrain::new()?;
+
+        Ok(Self {
+            drain,
+            source: InterfaceSource::new(arguments, tx)?,
+        })
+    }
+}
+
+/// The interface.
+#[derive(Debug)]
+pub(crate) struct InterfaceSource {
     /// Manages the user interface.
     user_interface: Terminal,
-    user_drain: TerminalDrain,
     /// The inputs of the interface.
     inputs: VecDeque<Input>,
-    /// Notifies `self` of any events to the config file.
-    watcher: ConfigWatcher,
     /// The current configuration of the application.
     config: Config,
     /// The [`LspServer`]s managed by the application.
@@ -175,56 +188,31 @@ pub(crate) struct Interface {
     root_dir: PathUrl,
     /// The configuration of the logger.
     log_config: LogConfig,
-    rx: crossbeam_channel::Receiver<Input>,
     tx: crossbeam_channel::Sender<Input>,
 }
 
-impl Interface {
+impl InterfaceSource {
     /// Creates a new interface.
-    pub(crate) fn new(arguments: Arguments<'_>) -> Result<Self, CreateInterfaceError> {
+    pub(crate) fn new(arguments: Arguments<'_>, tx: crossbeam_channel::Sender<Input>) -> Result<Self, CreateInterfaceError> {
         let mut user_interface = Terminal::new();
         user_interface.init()?;
-        let config_file = dirs::home_dir()
-            .ok_or(CreateInterfaceError::HomeDir)?
-            .join(".config/paper.toml");
-        let watcher = ConfigWatcher::new(&config_file)?;
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let root_dir = PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?;
 
         let mut interface = Self {
             user_interface,
-            user_drain: TerminalDrain,
             inputs: VecDeque::new(),
-            watcher,
             config: Config::default(),
             lsp_servers: HashMap::default(),
-            root_dir: PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?,
+            root_dir,
             log_config: LogConfig::new()?,
-            rx,
             tx,
         };
 
-        interface.tx.send(
-            Input::User(Terminal::size().into()))?;
-
         if let Some(file) = arguments.file {
-            interface.add_file(file)?;
+            interface.add_file(file).unwrap();
         }
 
         Ok(interface)
-    }
-
-    /// Generates an Input for opening the file at `path`.
-    fn add_file(&mut self, path: &str) -> Result<(), CreateFileError> {
-        let url = self.root_dir.join(path)?;
-
-        self.tx.send(Input::File {
-            text: fs::read_to_string(&url).map_err(|error| ReadFileError {
-                file: url.to_string(),
-                error: error.kind(),
-            })?,
-            url,
-        })?;
-        Ok(())
     }
 
     /// Pushes `output`.
@@ -357,11 +345,27 @@ impl Interface {
                 self.log_config.writer()?.starship_level = *starship_level;
             }
             Output::Quit => {
+                // TODO: Force drain.iter() to return None.
                 keep_running = false;
             }
         }
 
         Ok(keep_running)
+    }
+
+    /// Generates an Input for opening the file at `path`.
+    fn add_file(&mut self, path: &str) -> Result<(), CreateFileError> {
+        let url = self.root_dir.join(path)?;
+
+        self.tx.send(Input::File {
+            text: fs::read_to_string(&url).map_err(|error| ReadFileError {
+                file: url.to_string(),
+                error: error.kind(),
+            })?,
+            url,
+        })?;
+        error!("added file");
+        Ok(())
     }
 
     /// Returns the [`LspServer`] for `url`.
@@ -378,7 +382,40 @@ impl Interface {
     }
 }
 
-impl Drain for Interface {
+/// An error creating interface drain.
+#[derive(Debug, Error)]
+pub enum CreateInterfaceDrainError {
+    /// An error determining the home directory of the current user.
+    #[error("home directory of current user is unknown")]
+    HomeDir,
+    /// An error creating the config file watcher.
+    #[error("while creating config file watcher: {0}")]
+    Watcher(#[from] notify::Error),
+}
+
+#[derive(Debug)]
+pub(crate) struct InterfaceDrain {
+    user_drain: TerminalDrain,
+    /// Notifies `self` of any events to the config file.
+    watcher: ConfigWatcher,
+    rx: crossbeam_channel::Receiver<Input>,
+}
+
+impl InterfaceDrain {
+    pub(crate) fn new() -> Result<(Self, crossbeam_channel::Sender<Input>), CreateInterfaceDrainError> {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let config_file = dirs::home_dir()
+            .ok_or(CreateInterfaceDrainError::HomeDir)?
+            .join(".config/paper.toml");
+        Ok((Self {
+            user_drain: TerminalDrain::new(),
+            watcher: ConfigWatcher::new(&config_file)?,
+            rx,
+        }, tx))
+    }
+}
+
+impl Drain for InterfaceDrain {
     type Event = Input;
     type Error = RecvInputError;
 
@@ -408,6 +445,7 @@ impl Drain for Interface {
     }
 }
 
+#[derive(Debug)]
 enum SinkId {
     Ui,
     Watcher,
@@ -419,7 +457,7 @@ enum SinkId {
 pub enum RecvInputError {
     /// An error receiving user input.
     #[error("{0}")]
-    User(#[from] ui::ErrorKind),
+    User(#[from] ui::RecvUserInputError),
     /// An error receiving config input.
     #[error("{0}")]
     Watcher(#[from] ConfigError),
