@@ -60,11 +60,13 @@
 )]
 
 mod app;
+mod kyoo;
 pub mod io;
 
 pub use io::Arguments;
 
 use {
+    kyoo::Consumer,
     app::Processor,
     io::{CreateInterfaceError, FlushCommandsError, Interface, RecvInputError, WriteOutputError},
     thiserror::Error,
@@ -130,11 +132,10 @@ impl Paper {
     fn step(&mut self) -> Result<bool, RunPaperError> {
         let mut keep_running = true;
 
-        for input in self.io.drain.iter() {
+        for input in self.io.records() {
             for output in self.processor.process(input) {
                 keep_running &= self
                     .io
-                    .source
                     .write(&output)
                     .map_err(|error| RunPaperError::Write {
                         output: format!("{:?}", output),
@@ -142,19 +143,17 @@ impl Paper {
                     })?;
             }
 
-            self.io.source.flush()?;
+            self.io.flush()?;
         }
 
         Ok(keep_running)
     }
 }
 
-use crate::io::ui::Drain;
-
 /// An error from which `paper` is unable to recover.
 #[derive(Debug, Error)]
 pub enum Failure {
-    /// An error while creating a [`Paper`].
+    /// An error creating a [`Paper`].
     #[error("failed to create interface: {0}")]
     Create(#[from] CreateInterfaceError),
     /// An error while `paper` is running.

@@ -5,7 +5,7 @@ use {
     // TODO: Move everything out of ui.
     crate::io::{
         ui::{Selection, Size},
-        DocEdit, Input, Output, PathUrl, Setting,
+        DocEdit, Input, Output, PathUrl, config::Setting,
     },
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},

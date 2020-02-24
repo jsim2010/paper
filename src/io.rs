@@ -1,4 +1,5 @@
 //! Implements the interface for all input and output to the application.
+pub mod config;
 pub mod logging;
 pub mod lsp;
 pub mod ui;
@@ -6,35 +7,36 @@ pub mod ui;
 pub(crate) use ui::FlushCommandsError;
 
 use {
+    config::ChangeFilter,
+    crate::kyoo::{Consumer, ConsumeError},
     clap::ArgMatches,
     core::{
+        cell::RefCell,
         convert::{TryFrom, TryInto},
         fmt,
-        time::Duration,
     },
     log::{error, LevelFilter},
     logging::LogConfig,
     lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
-    notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
     starship::{context::Context, print},
     std::{
-        collections::{hash_map::Entry, HashMap, VecDeque},
+        collections::{hash_map::Entry, HashMap},
         env,
         ffi::OsStr,
         fs,
         io::{self, ErrorKind},
         path::{Path, PathBuf},
-        sync::mpsc::{self, Receiver, TryRecvError},
+        rc::Rc,
     },
     thiserror::Error,
     toml::{value::Table, Value},
-    ui::{Drain, InitTerminalError, TerminalDrain, CommandError, Selection, SelectionConversionError, Size, Terminal},
+    ui::{InitTerminalError, CommandError, Selection, SelectionConversionError, Size, Terminal},
     url::Url,
 };
 
-/// Configures the initialization of `paper`.
+/// Defines how to initialize `paper`.
 #[derive(Clone, Debug, Default)]
 pub struct Arguments<'a> {
     /// The file to be viewed.
@@ -75,9 +77,17 @@ pub enum CreateInterfaceError {
     /// An error while creating the logging configuration.
     #[error("{0}")]
     CreateLogConfig(#[from] logging::Fault),
-    /// An error sending an input.
-    #[error("{0}")]
-    Send(#[from] crossbeam_channel::SendError<Input>)
+}
+
+/// An error creating interface drain.
+#[derive(Debug, Error)]
+pub enum CreateInterfaceDrainError {
+    /// An error determining the home directory of the current user.
+    #[error("home directory of current user is unknown")]
+    HomeDir,
+    /// An error creating the config file watcher.
+    #[error("while creating config file watcher: {0}")]
+    Watcher(#[from] notify::Error),
 }
 
 /// An error while writing output.
@@ -154,36 +164,16 @@ pub enum Glitch {
     ConfigFormat(#[from] toml::de::Error),
 }
 
-/// The interface.
+/// The interface between the application and all external components.
 #[derive(Debug)]
 pub(crate) struct Interface {
-    pub(crate) source: InterfaceSource,
-    pub(crate) drain: InterfaceDrain,
-}
-
-impl Interface {
-    /// Creates a new interface.
-    pub(crate) fn new(arguments: Arguments<'_>) -> Result<Self, CreateInterfaceError> {
-        let (drain, tx) = InterfaceDrain::new()?;
-
-        Ok(Self {
-            drain,
-            source: InterfaceSource::new(arguments, tx)?,
-        })
-    }
-}
-
-/// The interface.
-#[derive(Debug)]
-pub(crate) struct InterfaceSource {
+    /// Notifies `self` of any events to the config file.
+    config_drain: ChangeFilter,
+    rx: crossbeam_channel::Receiver<Input>,
     /// Manages the user interface.
-    user_interface: Terminal,
-    /// The inputs of the interface.
-    inputs: VecDeque<Input>,
-    /// The current configuration of the application.
-    config: Config,
+    user_interface: RefCell<Terminal>,
     /// The [`LspServer`]s managed by the application.
-    lsp_servers: HashMap<String, Option<LspServer>>,
+    lsp_servers: Rc<RefCell<HashMap<String, Option<LspServer>>>>,
     /// The root directory of the application.
     root_dir: PathUrl,
     /// The configuration of the logger.
@@ -191,18 +181,22 @@ pub(crate) struct InterfaceSource {
     tx: crossbeam_channel::Sender<Input>,
 }
 
-impl InterfaceSource {
+impl Interface {
     /// Creates a new interface.
-    pub(crate) fn new(arguments: Arguments<'_>, tx: crossbeam_channel::Sender<Input>) -> Result<Self, CreateInterfaceError> {
+    pub(crate) fn new(arguments: Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         let mut user_interface = Terminal::new();
         user_interface.init()?;
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let config_file = dirs::home_dir()
+            .ok_or(CreateInterfaceDrainError::HomeDir)?
+            .join(".config/paper.toml");
         let root_dir = PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?;
 
-        let mut interface = Self {
-            user_interface,
-            inputs: VecDeque::new(),
-            config: Config::default(),
-            lsp_servers: HashMap::default(),
+        let interface = Self {
+            config_drain: ChangeFilter::new(&config_file),
+            rx,
+            user_interface: RefCell::new(user_interface),
+            lsp_servers: Rc::new(RefCell::new(HashMap::default())),
             root_dir,
             log_config: LogConfig::new()?,
             tx,
@@ -216,8 +210,10 @@ impl InterfaceSource {
     }
 
     /// Pushes `output`.
-    pub(crate) fn write(&mut self, output: &Output<'_>) -> Result<bool, WriteOutputError> {
+    pub(crate) fn write(&self, output: &Output<'_>) -> Result<bool, WriteOutputError> {
         let mut keep_running = true;
+        let mut lsp_servers = self.lsp_servers.borrow_mut();
+        let mut user_interface = self.user_interface.borrow_mut();
 
         match output {
             Output::GetFile { path } => {
@@ -227,27 +223,27 @@ impl InterfaceSource {
                 let language_id = url.language_id();
 
                 if let DocEdit::Open { .. } = edit {
-                    if let Entry::Vacant(entry) = self.lsp_servers.entry(language_id.to_string()) {
+                    if let Entry::Vacant(entry) = lsp_servers.entry(language_id.to_string()) {
                         let _ = entry.insert(LspServer::new(language_id, &self.root_dir)?);
                     }
                 }
 
                 match edit {
                     DocEdit::Open { text, version } => {
-                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(language_id) {
+                        if let Some(Some(lsp_server)) = lsp_servers.get_mut(language_id) {
                             lsp_server.did_open(&url, language_id, *version, text)?;
                         }
 
-                        self.user_interface.open_doc(text)?;
+                        user_interface.open_doc(text)?;
                     }
                     DocEdit::Save { text } => {
-                        if let Some(lsp_server) = self.get_lang_client_mut(url) {
+                        if let Some(lsp_server) = lsp_servers.get_mut(url.language_id()).map(Option::as_mut).flatten() {
                             if let Err(error) = lsp_server.will_save(url) {
-                                self.user_interface.notify(&error.into())?;
+                                user_interface.notify(&error.into())?;
                             }
                         }
 
-                        self.user_interface.notify(&match fs::write(url, text) {
+                        user_interface.notify(&match fs::write(url, text) {
                             Ok(..) => ShowMessageParams {
                                 typ: MessageType::Info,
                                 message: format!("Saved document `{}`", url),
@@ -264,9 +260,9 @@ impl InterfaceSource {
                         version,
                         text,
                     } => {
-                        self.user_interface.edit(new_text, selection)?;
+                        user_interface.edit(new_text, selection)?;
 
-                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id())
+                        if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id())
                         {
                             if let Err(error) = lsp_server.did_change(
                                 url,
@@ -274,12 +270,12 @@ impl InterfaceSource {
                                 text,
                                 TextEdit::new(selection.range()?, new_text.to_string()),
                             ) {
-                                self.user_interface.notify(&error.into())?;
+                                user_interface.notify(&error.into())?;
                             }
                         }
                     }
                     DocEdit::Close => {
-                        if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id())
+                        if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id())
                         {
                             if let Err(error) = lsp_server.did_close(url) {
                                 error!(
@@ -295,11 +291,10 @@ impl InterfaceSource {
                 is_wrapped,
                 selection,
             } => {
-                self.config.wrap = Wrap(*is_wrapped);
-                self.user_interface.wrap(*is_wrapped, selection)?;
+                user_interface.wrap(*is_wrapped, selection)?;
             }
             Output::MoveSelection { selection } => {
-                self.user_interface.move_selection(selection)?;
+                user_interface.move_selection(selection)?;
             }
             Output::UpdateHeader => {
                 let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
@@ -320,28 +315,27 @@ impl InterfaceSource {
 
                     context.config.config = Some(config);
                 }
-                self.user_interface.set_header(print::get_prompt(context))?;
+                user_interface.set_header(print::get_prompt(context))?;
             }
             Output::Notify { message } => {
-                self.user_interface.notify(message)?;
+                user_interface.notify(message)?;
             }
             Output::Question { request } => {
-                self.user_interface.question(request)?;
+                user_interface.question(request)?;
             }
             Output::StartIntake { title } => {
-                self.user_interface.start_intake(title.to_string())?;
+                user_interface.start_intake(title.to_string())?;
             }
             Output::Reset { selection } => {
-                self.user_interface.reset(selection)?;
+                user_interface.reset(selection)?;
             }
             Output::Resize { size } => {
-                self.user_interface.resize(size.clone());
+                user_interface.resize(size.clone());
             }
             Output::Write { ch } => {
-                self.user_interface.write(*ch)?;
+                user_interface.write(*ch)?;
             }
             Output::Log { starship_level } => {
-                self.config.starship_log = StarshipLog(*starship_level);
                 self.log_config.writer()?.starship_level = *starship_level;
             }
             Output::Quit => {
@@ -354,7 +348,7 @@ impl InterfaceSource {
     }
 
     /// Generates an Input for opening the file at `path`.
-    fn add_file(&mut self, path: &str) -> Result<(), CreateFileError> {
+    fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
         let url = self.root_dir.join(path)?;
 
         self.tx.send(Input::File {
@@ -368,68 +362,26 @@ impl InterfaceSource {
         Ok(())
     }
 
-    /// Returns the [`LspServer`] for `url`.
-    fn get_lang_client_mut(&mut self, url: &PathUrl) -> Option<&mut LspServer> {
-        self.lsp_servers
-            .get_mut(url.language_id())
-            .map(Option::as_mut)
-            .flatten()
-    }
-
     /// Flushes the application I/O.
-    pub(crate) fn flush(&mut self) -> Result<(), FlushCommandsError> {
-        self.user_interface.flush()
+    pub(crate) fn flush(&self) -> Result<(), FlushCommandsError> {
+        self.user_interface.borrow_mut().flush()
     }
 }
 
-/// An error creating interface drain.
-#[derive(Debug, Error)]
-pub enum CreateInterfaceDrainError {
-    /// An error determining the home directory of the current user.
-    #[error("home directory of current user is unknown")]
-    HomeDir,
-    /// An error creating the config file watcher.
-    #[error("while creating config file watcher: {0}")]
-    Watcher(#[from] notify::Error),
-}
+impl Consumer for Interface {
+    type Record = Input;
 
-#[derive(Debug)]
-pub(crate) struct InterfaceDrain {
-    user_drain: TerminalDrain,
-    /// Notifies `self` of any events to the config file.
-    watcher: ConfigWatcher,
-    rx: crossbeam_channel::Receiver<Input>,
-}
-
-impl InterfaceDrain {
-    pub(crate) fn new() -> Result<(Self, crossbeam_channel::Sender<Input>), CreateInterfaceDrainError> {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let config_file = dirs::home_dir()
-            .ok_or(CreateInterfaceDrainError::HomeDir)?
-            .join(".config/paper.toml");
-        Ok((Self {
-            user_drain: TerminalDrain::new(),
-            watcher: ConfigWatcher::new(&config_file)?,
-            rx,
-        }, tx))
-    }
-}
-
-impl Drain for InterfaceDrain {
-    type Event = Input;
-    type Error = RecvInputError;
-
-    fn is_empty(&self) -> bool {
-        self.rx.is_empty() && self.user_drain.is_empty() && self.watcher.is_empty()
+    fn can_consume(&self) -> bool {
+        !self.rx.is_empty() && self.user_interface.borrow().can_consume() && self.config_drain.can_consume()
     }
 
-    fn recv(&self) -> Result<Self::Event, Self::Error> {
+    fn consume(&self) -> Result<Self::Record, ConsumeError> {
         let mut active_sink = None;
 
         while active_sink.is_none() {
-            if !self.user_drain.is_empty() {
+            if self.user_interface.borrow().can_consume() {
                 active_sink = Some(SinkId::Ui);
-            } else if !self.watcher.is_empty() {
+            } else if self.config_drain.can_consume() {
                 active_sink = Some(SinkId::Watcher);
             } else if !self.rx.is_empty() {
                 active_sink = Some(SinkId::Own);
@@ -437,10 +389,10 @@ impl Drain for InterfaceDrain {
         }
 
         match active_sink {
-            Some(SinkId::Ui) => self.user_drain.recv().map(|x| x.into()).map_err(|e| e.into()),
-            Some(SinkId::Watcher) => self.watcher.recv().map(|x| x.into()).map_err(|e| e.into()),
-            Some(SinkId::Own) => self.rx.recv().map_err(|e| e.into()),
-            None => Err(RecvInputError::Invalid),
+            Some(SinkId::Ui) => self.user_interface.borrow().consume().map(|x| x.into()).map_err(|e| e.into()),
+            Some(SinkId::Watcher) => self.config_drain.consume().map(|x| x.into()).map_err(|e| e.into()),
+            Some(SinkId::Own) => self.rx.recv().map_err(|_| ConsumeError),
+            None => Err(ConsumeError),
         }
     }
 }
@@ -455,15 +407,12 @@ enum SinkId {
 /// An error receiving input.
 #[derive(Debug, Error)]
 pub enum RecvInputError {
-    /// An error receiving user input.
-    #[error("{0}")]
-    User(#[from] ui::RecvUserInputError),
     /// An error receiving config input.
     #[error("{0}")]
     Watcher(#[from] ConfigError),
     /// An error receiving arguments.
     #[error("{0}")]
-    Own(#[from] crossbeam_channel::RecvError),
+    Own(#[from] ConsumeError),
     /// An invalid error.
     #[error("invalid")]
     Invalid,
@@ -570,31 +519,6 @@ struct Config {
     starship_log: StarshipLog,
 }
 
-impl Config {
-    /// Reads the config file into a `Config`.
-    fn read(config_file: PathBuf) -> Result<Self, Glitch> {
-        fs::read_to_string(config_file)
-            .map_err(Glitch::ReadConfig)
-            .and_then(|config_string| toml::from_str(&config_string).map_err(Glitch::ConfigFormat))
-    }
-
-    /// Updates `self` to match paper's config file, returning any changed [`Setting`]s.
-    fn update(&self, config_file: PathBuf) -> Result<VecDeque<Setting>, Glitch> {
-        let mut settings = VecDeque::new();
-        let config = Self::read(config_file)?;
-
-        if self.wrap != config.wrap {
-            settings.push_back(Setting::Wrap(self.wrap.0));
-        }
-
-        if self.starship_log != config.starship_log {
-            settings.push_back(Setting::StarshipLog(self.starship_log.0));
-        }
-
-        Ok(settings)
-    }
-}
-
 macro_rules! def_config {
     ($name:ident: $ty:ty = $default:expr) => {
         #[derive(Debug, Deserialize, PartialEq)]
@@ -620,96 +544,6 @@ pub enum Setting {
     StarshipLog(LevelFilter),
 }
 
-/// Triggers a callback if the config file is updated.
-struct ConfigWatcher {
-    /// Watches for events on the config file.
-    #[allow(dead_code)] // watcher must must be owned to avoid being dropped.
-    watcher: RecommendedWatcher,
-    /// Receives events generated by `watcher`.
-    notify: Receiver<DebouncedEvent>,
-    /// The current configuration of the application.
-    config: Config,
-    tx: crossbeam_channel::Sender<Input>,
-    rx: crossbeam_channel::Receiver<Input>,
-}
-
-impl ConfigWatcher {
-    /// Creates a new [`ConfigWatcher`].
-    fn new(config_file: &PathBuf) -> Result<Self, notify::Error> {
-        let (notify_tx, notify) = mpsc::channel();
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let mut watcher = notify::watcher(notify_tx, Duration::from_secs(0))?;
-
-        if config_file.is_file() {
-            watcher.watch(config_file, RecursiveMode::NonRecursive)?;
-        }
-
-        let config_watcher = Self { tx, rx, watcher, notify, config: Config::default()};
-        config_watcher.add_config_updates(config_file.to_path_buf());
-        Ok(config_watcher)
-    }
-
-    /// Checks for updates to [`Config`] and adds any changes the changed settings list.
-    fn add_config_updates(&self, config_file: PathBuf) {
-        match self.config.update(config_file) {
-            Ok(settings) => {
-                for input in settings.iter().map(|setting| Input::Config(*setting)) {
-                    self.tx.send(input).unwrap();
-                }
-            }
-            Err(glitch) => {
-                self.tx.send(Input::Glitch(glitch)).unwrap();
-            }
-        }
-    }
-}
-
-impl fmt::Debug for ConfigWatcher {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
-    }
-}
-
-impl Drain for ConfigWatcher {
-    type Event = Input;
-    type Error = ConfigError;
-
-    fn is_empty(&self) -> bool {
-        if self.rx.is_empty() {
-            match self.notify.try_recv() {
-                Err(TryRecvError::Disconnected) => false,
-                Err(TryRecvError::Empty) => true,
-                Ok(event) => {
-                    if let DebouncedEvent::Write(config_file) = event {
-                        self.add_config_updates(config_file);
-                    }
-
-                    self.rx.is_empty()
-                }
-            }
-        } else {
-            false
-        }
-    }
-
-    fn recv(&self) -> Result<Self::Event, Self::Error> {
-        while self.rx.is_empty() {
-            match self.notify.recv() {
-                Ok(event) => {
-                    if let DebouncedEvent::Write(config_file) = event {
-                        self.add_config_updates(config_file);
-                    }
-                }
-                Err(_) => {
-                    self.tx.send(Input::Glitch(Glitch::WatcherConnection))?;
-                }
-            }
-        }
-
-        self.rx.recv().map_err(|e| e.into())
-    }
-}
-
 /// An error with the config.
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -718,7 +552,7 @@ pub enum ConfigError {
     Send(#[from] crossbeam_channel::SendError<Input>),
     /// An error receiving an input.
     #[error("{0}")]
-    Rx(#[from] crossbeam_channel::RecvError),
+    Rx(#[from] ConsumeError),
 }
 
 /// An input.
@@ -734,7 +568,7 @@ pub enum Input {
     /// An input from the user.
     User(ui::Input),
     /// A configuration.
-    Config(Setting),
+    Config(config::Setting),
     /// A glitch.
     Glitch(Glitch),
 }

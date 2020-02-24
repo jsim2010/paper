@@ -2,7 +2,7 @@
 use {
     crate::io::{
         ui::{self, Key},
-        Input, PathUrl, Setting,
+        Input, PathUrl, config::Setting,
     },
     core::fmt::{self, Debug},
     enum_map::{enum_map, Enum, EnumMap},
