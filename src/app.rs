@@ -4,8 +4,9 @@ mod translate;
 use {
     // TODO: Move everything out of ui.
     crate::io::{
-        ui::{Selection, Size},
-        DocEdit, Input, Output, PathUrl, config::Setting,
+        config::Setting,
+        ui::{Selection, BodySize},
+        DocEdit, Input, Output, PathUrl,
     },
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
@@ -200,10 +201,10 @@ impl Pane {
     }
 
     /// Updates the size of `self` to match `size`;
-    fn update_size(&mut self, size: Size) -> Output<'_> {
+    fn update_size(&mut self, size: BodySize) -> Output<'_> {
         self.scroll_amount
             .borrow_mut()
-            .set(usize::from(size.rows.wrapping_div(3)));
+            .set(usize::from(size.0.rows.wrapping_div(3)));
         Output::Resize { size }
     }
 

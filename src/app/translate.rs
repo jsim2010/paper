@@ -1,8 +1,9 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
     crate::io::{
+        config::Setting,
         ui::{self, Key},
-        Input, PathUrl, config::Setting,
+        Input, PathUrl,
     },
     core::fmt::{self, Debug},
     enum_map::{enum_map, Enum, EnumMap},
@@ -14,7 +15,7 @@ use {
 #[derive(Debug, PartialEq)]
 pub(crate) enum Operation {
     /// Resizes the user interface.
-    Size(ui::Size),
+    Size(ui::BodySize),
     /// Resets the application.
     Reset,
     /// Confirms that the action is desired.
@@ -356,6 +357,7 @@ impl ModeInterpreter for ViewInterpreter {
             Input::Config(setting) => {
                 output.add_op(Operation::UpdateSetting(setting));
             }
+            Input::Quit => {}
         }
 
         output
@@ -389,7 +391,7 @@ impl ModeInterpreter for ConfirmInterpreter {
                     output.reset();
                 }
             },
-            Input::File { .. } | Input::Glitch(..) | Input::Config(..) => {}
+            Input::File { .. } | Input::Glitch(..) | Input::Config(..) | Input::Quit => {}
         }
 
         output
@@ -429,7 +431,7 @@ impl ModeInterpreter for CollectInterpreter {
                 }
                 ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {}
             },
-            Input::File { .. } | Input::Glitch(..) | Input::Config(..) => {}
+            Input::File { .. } | Input::Glitch(..) | Input::Config(..) | Input::Quit => {}
         }
 
         output

@@ -60,15 +60,16 @@
 )]
 
 mod app;
-mod kyoo;
 pub mod io;
+// TODO: Move this into its own crate.
+mod market;
 
 pub use io::Arguments;
 
 use {
-    kyoo::Consumer,
     app::Processor,
-    io::{CreateInterfaceError, FlushCommandsError, Interface, RecvInputError, WriteOutputError},
+    io::{CreateInterfaceError, Interface, ProduceOutputError},
+    market::{Producer, Consumer},
     thiserror::Error,
 };
 
@@ -81,13 +82,12 @@ use {
 /// # fn main() -> Result<(), Failure> {
 ///
 /// Paper::new(Arguments::default())?.run()?;
-///
 /// Ok(())
 /// # }
 /// ```
 #[derive(Debug)]
 pub struct Paper {
-    /// The interface between the application and everything else.
+    /// The interface of the application.
     io: Interface,
     /// The processor of the application.
     processor: Processor,
@@ -98,55 +98,35 @@ impl Paper {
     ///
     /// # Errors
     ///
-    /// If any error is encountered during creation, a [`CreateInterfaceError`] shall be returned.
+    /// If any error is encountered during creation, a [`CreatePaperError`] shall be returned.
     ///
-    /// [`CreateInterfaceError`]: io/struct.CreateInterfaceError.html
+    /// [`CreatePaperError`]: enum.CreatePaperError.html
     #[inline]
-    pub fn new(arguments: Arguments<'_>) -> Result<Self, CreateInterfaceError> {
+    pub fn new(arguments: Arguments<'_>) -> Result<Self, CreatePaperError> {
         Ok(Self {
             processor: Processor::new(),
             io: Interface::new(arguments)?,
         })
     }
 
-    /// Loops through program execution until a [`RunPaperError`] occurs or the application quits.
+    /// Loops through program execution until a failure occurs or the application quits.
     ///
     /// # Errors
     ///
-    /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned after `paper` makes all efforts to kill all processes and return the terminal to a clean state. In this case, a clean exit shall not be guaranteed.
+    /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
     ///
-    /// [`RunPaperError`]: struct.RunPaperError.html
+    /// [`RunPaperError`]: enum.RunPaperError.html
     #[inline]
     pub fn run(&mut self) -> Result<(), RunPaperError> {
-        loop {
-            if !self.step()? {
-                break;
+        for input in self.io.records() {
+            for output in self.processor.process(input) {
+                self
+                    .io
+                    .produce(output)?;
             }
         }
 
         Ok(())
-    }
-
-    /// Executes a single run of the runtime loop and returns if the program should keep running.
-    #[inline]
-    fn step(&mut self) -> Result<bool, RunPaperError> {
-        let mut keep_running = true;
-
-        for input in self.io.records() {
-            for output in self.processor.process(input) {
-                keep_running &= self
-                    .io
-                    .write(&output)
-                    .map_err(|error| RunPaperError::Write {
-                        output: format!("{:?}", output),
-                        error,
-                    })?;
-            }
-
-            self.io.flush()?;
-        }
-
-        Ok(keep_running)
     }
 }
 
@@ -154,35 +134,29 @@ impl Paper {
 #[derive(Debug, Error)]
 pub enum Failure {
     /// An error creating a [`Paper`].
-    #[error("failed to create interface: {0}")]
-    Create(#[from] CreateInterfaceError),
-    /// An error while `paper` is running.
-    #[error("{0}")]
+    #[error(transparent)]
+    Create(#[from] CreatePaperError),
+    /// An error running `paper`.
+    #[error(transparent)]
     Run(#[from] RunPaperError),
 }
 
-/// An error while `paper` is running.
+/// An error creating a [`Paper`].
+///
+/// [`Paper`]: struct.Paper.html
+#[derive(Debug, Error)]
+pub enum CreatePaperError {
+    /// An error creating an [`Interface`].
+    ///
+    /// [`Interface`]: io/struct.Interface.html
+    #[error("failed to create interface: {0}")]
+    Interface(#[from] CreateInterfaceError),
+}
+
+/// An error running `paper`.
 #[derive(Debug, Error)]
 pub enum RunPaperError {
-    /// An error receiving an [`Input`].
-    ///
-    /// [`Input`]: io/struct.Input.html
-    #[error("failed to receive input: {0}")]
-    Recv(#[from] RecvInputError),
-    /// An error writing an [`Output`].
-    ///
-    /// [`Output`]: io/struct.Output.html
-    #[error("failed to write `{output}`: {error}")]
-    Write {
-        /// The error.
-        #[source]
-        error: WriteOutputError,
-        /// The [`Output`] being written.
-        ///
-        /// [`Output`]: io/struct.Output.html
-        output: String,
-    },
-    /// An error flushing the output.
-    #[error("failed to flush output: {0}")]
-    Flush(#[from] FlushCommandsError),
+    /// An error producing an output.
+    #[error("failed to produce output: {0}")]
+    Produce(#[from] ProduceOutputError),
 }

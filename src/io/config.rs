@@ -1,11 +1,14 @@
 //! Implements [`Consumer`] for configs.
 use {
-    crate::{kyoo::{Consumer, StdConsumer, ConsumeError}, io::Input},
-    core::{cell::Cell, time::Duration, fmt},
+    crate::{
+        io::Input,
+        market::{ConsumeError, Consumer, StdConsumer},
+    },
+    core::{cell::Cell, fmt, time::Duration},
     log::{warn, LevelFilter},
+    notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
-    notify::{DebouncedEvent, Watcher, RecommendedWatcher, RecursiveMode},
-    std::{sync::mpsc, fs, path::PathBuf},
+    std::{fs, path::PathBuf, sync::mpsc},
 };
 
 pub(crate) struct ChangeFilter {
@@ -56,15 +59,21 @@ impl ChangeFilter {
 
     fn process(&self) {
         while self.file_event_drain.can_consume() {
-            if let Some(DebouncedEvent::Write(config_file)) = self.file_event_drain.optional_consume().unwrap() {
+            if let Some(DebouncedEvent::Write(config_file)) =
+                self.file_event_drain.optional_consume().unwrap()
+            {
                 let new_config = Config::read(&config_file);
 
                 if new_config.wrap != self.config.get().wrap {
-                    self.setting_tx.send(Setting::Wrap(new_config.wrap)).unwrap();
+                    self.setting_tx
+                        .send(Setting::Wrap(new_config.wrap))
+                        .unwrap();
                 }
 
                 if new_config.starship_log != self.config.get().starship_log {
-                    self.setting_tx.send(Setting::StarshipLog(new_config.starship_log)).unwrap();
+                    self.setting_tx
+                        .send(Setting::StarshipLog(new_config.starship_log))
+                        .unwrap();
                 }
 
                 self.config.set(new_config);
@@ -90,7 +99,10 @@ impl Consumer for ChangeFilter {
 
     fn consume(&self) -> Result<Self::Record, ConsumeError> {
         self.process();
-        self.setting_rx.recv().map(|setting| setting.into()).map_err(|_| ConsumeError)
+        self.setting_rx
+            .recv()
+            .map(|setting| setting.into())
+            .map_err(|_| ConsumeError)
     }
 }
 
