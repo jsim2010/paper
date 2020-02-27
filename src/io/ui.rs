@@ -16,10 +16,10 @@ pub(crate) use crossterm::{
 };
 
 use {
-    crate::market::{ConsumeError, Consumer, Queue, Producer},
+    crate::market::{Consumer, Producer, Queue},
     core::{
-        cmp,
         cell::RefCell,
+        cmp,
         convert::TryFrom,
         fmt::{self, Debug},
         num,
@@ -113,13 +113,15 @@ pub struct FlushCommandsError(#[from] io::Error);
 #[error("while converting between u64 and usize: {0}")]
 pub struct SelectionConversionError(#[from] num::TryFromIntError);
 
-/// An error queueing a command.
+/// An error consuming input.
 #[derive(Debug, Error)]
-#[error("failed to queue `{command}`: {error}")]
-pub struct QueueCommandError {
-    #[source]
-    error: ErrorKind,
-    command: String,
+pub enum ConsumeInputError {
+    /// Read.
+    #[error("")]
+    Read(#[from] ErrorKind),
+    /// Receives.
+    #[error("")]
+    Recv(#[from] <Queue<Input> as Consumer>::Error),
 }
 
 /// A user interface provided by a terminal.
@@ -166,7 +168,8 @@ impl Drop for Terminal {
 }
 
 impl Consumer for Terminal {
-    type Record = Input;
+    type Good = Input;
+    type Error = ConsumeInputError;
 
     fn can_consume(&self) -> bool {
         self.queue.can_consume()
@@ -176,13 +179,12 @@ impl Consumer for Terminal {
             }
     }
 
-    fn consume(&self) -> Result<Self::Record, ConsumeError> {
+    fn consume(&self) -> Result<Self::Good, Self::Error> {
         if self.queue.can_consume() {
-            self.queue.consume()
+            Ok(self.queue.consume()?)
         } else {
-            event::read()
-                .map(|event| event.into())
-                .map_err(|_| ConsumeError)
+            Ok(event::read()
+                .map(|event| event.into())?)
         }
     }
 }
@@ -193,49 +195,72 @@ impl<'a> Producer<'a> for Terminal {
 
     fn produce(&'a self, good: Self::Good) -> Result<(), Self::Error> {
         match good {
-            Output::Init => {
-                execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide).map_err(Self::Error::Init)
-            }
-            Output::OpenDoc { text } => {
-                self.body.borrow_mut().open(text).map_err(Self::Error::OpenDoc)
-            }
-            Output::Wrap { is_wrapped, selection } => {
+            Output::Init => execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
+                .map_err(Self::Error::Init),
+            Output::OpenDoc { text } => self
+                .body
+                .borrow_mut()
+                .open(text)
+                .map_err(Self::Error::OpenDoc),
+            Output::Wrap {
+                is_wrapped,
+                selection,
+            } => {
                 self.body.borrow_mut().is_wrapped = is_wrapped;
-                self.body.borrow_mut().refresh(selection).map_err(Self::Error::Wrap)
+                self.body
+                    .borrow_mut()
+                    .refresh(selection)
+                    .map_err(Self::Error::Wrap)
             }
-            Output::Edit { new_text, selection } => {
+            Output::Edit {
+                new_text,
+                selection,
+            } => {
                 self.body.borrow_mut().edit(&new_text, *selection);
-                self.body.borrow_mut().refresh(selection).map_err(Self::Error::Edit)
+                self.body
+                    .borrow_mut()
+                    .refresh(selection)
+                    .map_err(Self::Error::Edit)
             }
-            Output::MoveSelection { selection } => {
-                self.body.borrow_mut().refresh(selection).map_err(Self::Error::MoveSelection)
-            }
-            Output::SetHeader { header } => {
-                execute!(
-                    self.out.borrow_mut(),
-                    SavePosition,
-                    MoveTo(0, 0),
-                    Print(header),
-                    RestorePosition
-                ).map_err(Self::Error::SetHeader)
-            }
+            Output::MoveSelection { selection } => self
+                .body
+                .borrow_mut()
+                .refresh(selection)
+                .map_err(Self::Error::MoveSelection),
+            Output::SetHeader { header } => execute!(
+                self.out.borrow_mut(),
+                SavePosition,
+                MoveTo(0, 0),
+                Print(header),
+                RestorePosition
+            )
+            .map_err(Self::Error::SetHeader),
             Output::Resize { size } => {
                 self.body.borrow_mut().size = size.0;
                 Ok(())
             }
-            Output::Notify { message } => {
-                self.body.borrow_mut().add_alert(&message.message, message.typ).map_err(Self::Error::Notify)
-            }
+            Output::Notify { message } => self
+                .body
+                .borrow_mut()
+                .add_alert(&message.message, message.typ)
+                .map_err(Self::Error::Notify),
             Output::Question { request } => {
                 // TODO: Add implementation to use actions.
-                self.body.borrow_mut().add_alert(&request.message, request.typ).map_err(Self::Error::Question)
+                self.body
+                    .borrow_mut()
+                    .add_alert(&request.message, request.typ)
+                    .map_err(Self::Error::Question)
             }
-            Output::StartIntake { title } => {
-                self.body.borrow_mut().add_intake(title).map_err(Self::Error::StartIntake)
-            }
-            Output::Reset { selection } => {
-                self.body.borrow_mut().reset(selection).map_err(Self::Error::Reset)
-            }
+            Output::StartIntake { title } => self
+                .body
+                .borrow_mut()
+                .add_intake(title)
+                .map_err(Self::Error::StartIntake),
+            Output::Reset { selection } => self
+                .body
+                .borrow_mut()
+                .reset(selection)
+                .map_err(Self::Error::Reset),
             Output::Write { ch } => {
                 execute!(self.out.borrow_mut(), Print(ch)).map_err(Self::Error::Write)
             }

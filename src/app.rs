@@ -5,7 +5,7 @@ use {
     // TODO: Move everything out of ui.
     crate::io::{
         config::Setting,
-        ui::{Selection, BodySize},
+        ui::{BodySize, Selection},
         DocEdit, Input, Output, PathUrl,
     },
     log::trace,

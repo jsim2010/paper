@@ -5,7 +5,7 @@ pub mod lsp;
 pub mod ui;
 
 use {
-    crate::market::{ConsumeError, Consumer, Queue, Producer},
+    crate::market::{ConsumeError, Consumer, Producer, Queue},
     clap::ArgMatches,
     config::ChangeFilter,
     core::{
@@ -30,7 +30,10 @@ use {
     },
     thiserror::Error,
     toml::{value::Table, Value},
-    ui::{CommandError, CreateTerminalError, ProduceTerminalOutputError, Selection, SelectionConversionError, BodySize, Terminal},
+    ui::{
+        BodySize, CommandError, CreateTerminalError, ProduceTerminalOutputError, Selection,
+        SelectionConversionError, Terminal,
+    },
     url::Url,
 };
 
@@ -110,6 +113,9 @@ pub enum ProduceOutputError {
     /// Produce error from ui.
     #[error("{0}")]
     UiProduce(#[from] ProduceTerminalOutputError),
+    /// Produce error.
+    #[error(transparent)]
+    Produce(#[from] <Queue<Input> as Producer<'static>>::Error),
 }
 
 /// An error while pulling input.
@@ -160,11 +166,32 @@ pub enum Glitch {
     ConfigFormat(#[from] toml::de::Error),
 }
 
+/// An error consuming input.
+#[derive(Debug, Error)]
+pub enum ConsumeInputError {
+    /// Quit.
+    #[error("")]
+    Quit,
+    /// Receive.
+    #[error("")]
+    Recv(#[from] crossbeam_channel::RecvError),
+    /// Consume.
+    #[error("")]
+    Consume(#[from] ConsumeError),
+    /// Ui.
+    #[error("")]
+    Ui(#[from] ui::ConsumeInputError),
+    /// Send.
+    #[error("")]
+    Send(#[from] <Queue<Input> as Producer<'static>>::Error),
+}
+
 /// The interface between the application and all external components.
 #[derive(Debug)]
 pub(crate) struct Interface {
     /// Notifies `self` of any events to the config file.
     config_drain: ChangeFilter,
+    /// Queues [`Input`]s.
     queue: Queue<Input>,
     /// Manages the user interface.
     user_interface: Terminal,
@@ -178,24 +205,23 @@ pub(crate) struct Interface {
 
 impl Interface {
     /// Creates a new interface.
-    pub(crate) fn new(arguments: Arguments<'_>) -> Result<Self, CreateInterfaceError> {
-        let user_interface = Terminal::new()?;
-        let config_file = dirs::home_dir()
-            .ok_or(CreateInterfaceError::HomeDir)?
-            .join(".config/paper.toml");
-        let root_dir = PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?;
-
+    pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         let interface = Self {
-            config_drain: ChangeFilter::new(&config_file),
-            queue: Queue::new(),
-            user_interface,
-            lsp_servers: Rc::new(RefCell::new(HashMap::default())),
-            root_dir,
+            // Create log_config first as this is where the logger is initialized.
             log_config: LogConfig::new()?,
+            config_drain: ChangeFilter::new(
+                &dirs::home_dir()
+                    .ok_or(CreateInterfaceError::HomeDir)?
+                    .join(".config/paper.toml"),
+            ),
+            queue: Queue::new(),
+            user_interface: Terminal::new()?,
+            lsp_servers: Rc::new(RefCell::new(HashMap::default())),
+            root_dir: PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?,
         };
 
         if let Some(file) = arguments.file {
-            interface.add_file(file).unwrap();
+            interface.add_file(file)?;
         }
 
         Ok(interface)
@@ -205,19 +231,109 @@ impl Interface {
     fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
         let url = self.root_dir.join(path)?;
 
-        self.queue.produce(Input::File {
-            text: fs::read_to_string(&url).map_err(|error| ReadFileError {
-                file: url.to_string(),
-                error: error.kind(),
-            })?,
-            url,
-        }).map_err(|_| CreateFileError::Send)?;
+        self.queue
+            .produce(Input::File {
+                text: fs::read_to_string(&url).map_err(|error| ReadFileError {
+                    file: url.to_string(),
+                    error: error.kind(),
+                })?,
+                url,
+            })
+            .map_err(|_| CreateFileError::Send)?;
+        Ok(())
+    }
+
+    /// Edits the doc at `url`.
+    fn edit_doc(&self, url: PathUrl, edit: DocEdit<'_>) -> Result<(), ProduceOutputError> {
+        let language_id = url.language_id();
+        let mut lsp_servers = self.lsp_servers.borrow_mut();
+
+        if let DocEdit::Open { .. } = edit {
+            if let Entry::Vacant(entry) = lsp_servers.entry(language_id.to_string()) {
+                let _ = entry.insert(LspServer::new(language_id, &self.root_dir)?);
+            }
+        }
+
+        match edit {
+            DocEdit::Open { text, version } => {
+                if let Some(Some(lsp_server)) = lsp_servers.get_mut(language_id) {
+                    lsp_server.did_open(&url, language_id, version, text)?;
+                }
+
+                self.user_interface.produce(ui::Output::OpenDoc { text })?;
+            }
+            DocEdit::Save { text } => {
+                if let Some(lsp_server) = lsp_servers
+                    .get_mut(url.language_id())
+                    .map(Option::as_mut)
+                    .flatten()
+                {
+                    if let Err(error) = lsp_server.will_save(&url) {
+                        self.user_interface.produce(ui::Output::Notify {
+                            message: error.into(),
+                        })?;
+                    }
+                }
+
+                self.user_interface.produce(ui::Output::Notify {
+                    message: match fs::write(&url, text) {
+                        Ok(..) => ShowMessageParams {
+                            typ: MessageType::Info,
+                            message: format!("Saved document `{}`", url),
+                        },
+                        Err(error) => ShowMessageParams {
+                            typ: MessageType::Error,
+                            message: format!(
+                                "Failed to save document `{}`: {}",
+                                url, error
+                            ),
+                        },
+                    },
+                })?;
+            }
+            DocEdit::Change {
+                new_text,
+                selection,
+                version,
+                text,
+            } => {
+                self.user_interface.produce(ui::Output::Edit {
+                    new_text: new_text.clone(),
+                    selection,
+                })?;
+
+                if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id()) {
+                    if let Err(error) = lsp_server.did_change(
+                        url,
+                        version,
+                        text,
+                        TextEdit::new(selection.range()?, new_text),
+                    ) {
+                        self.user_interface.produce(ui::Output::Notify {
+                            message: error.into(),
+                        })?;
+                    }
+                }
+            }
+            DocEdit::Close => {
+                if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id()) {
+                    if let Err(error) = lsp_server.did_close(url) {
+                        error!(
+                            "failed to inform language server process about closing: {}",
+                            error,
+                        );
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }
 
 impl Consumer for Interface {
-    type Record = Input;
+    type Good = Input;
+    type Error = ConsumeInputError;
 
     fn can_consume(&self) -> bool {
         self.queue.can_consume()
@@ -225,23 +341,24 @@ impl Consumer for Interface {
             || self.config_drain.can_consume()
     }
 
-    fn consume(&self) -> Result<Self::Record, ConsumeError> {
-        loop {
-            if self.queue.can_consume() {
-                let mut good = self.queue.consume();
-                
-                if let Ok(Input::Quit) = good {
-                    good = Err(ConsumeError);
-                }
+    fn consume(&self) -> Result<Self::Good, Self::Error> {
+        while !self.queue.can_consume() {
+            if let Some(ui_input) = self.user_interface.optional_consume()? {
+                self.queue.produce(ui_input.into())?;
+            }
 
-                return good;
-            } else if self.user_interface.can_consume() {
-                return self.user_interface.consume().map(|record| record.into());
-            } else if self.config_drain.can_consume() {
-                return self.config_drain.consume();
-            } else {
+            if let Some(config_input) = self.config_drain.optional_consume()? {
+                self.queue.produce(config_input)?;
             }
         }
+
+        let mut good = Ok(self.queue.consume()?);
+
+        if let Ok(Input::Quit) = good {
+            good = Err(Self::Error::Quit);
+        }
+
+        good
     }
 }
 
@@ -250,92 +367,25 @@ impl<'a> Producer<'a> for Interface {
     type Error = ProduceOutputError;
 
     fn produce(&self, output: Self::Good) -> Result<(), Self::Error> {
-        let mut lsp_servers = self.lsp_servers.borrow_mut();
-
         match output {
             Output::GetFile { path } => {
                 self.add_file(&path)?;
             }
             Output::EditDoc { url, edit } => {
-                let language_id = url.language_id();
-
-                if let DocEdit::Open { .. } = edit {
-                    if let Entry::Vacant(entry) = lsp_servers.entry(language_id.to_string()) {
-                        let _ = entry.insert(LspServer::new(language_id, &self.root_dir)?);
-                    }
-                }
-
-                match edit {
-                    DocEdit::Open { text, version } => {
-                        if let Some(Some(lsp_server)) = lsp_servers.get_mut(language_id) {
-                            lsp_server.did_open(&url, language_id, version, text)?;
-                        }
-
-                        self.user_interface.produce(ui::Output::OpenDoc{text})?;
-                    }
-                    DocEdit::Save { text } => {
-                        if let Some(lsp_server) = lsp_servers
-                            .get_mut(url.language_id())
-                            .map(Option::as_mut)
-                            .flatten()
-                        {
-                            if let Err(error) = lsp_server.will_save(&url) {
-                                self.user_interface.produce(ui::Output::Notify{message: error.into()})?;
-                            }
-                        }
-
-                        self.user_interface.produce(ui::Output::Notify {
-                            message: match fs::write(&url, text) {
-                            Ok(..) => ShowMessageParams {
-                                typ: MessageType::Info,
-                                message: format!("Saved document `{}`", url),
-                            },
-                            Err(error) => ShowMessageParams {
-                                typ: MessageType::Error,
-                                message: format!("Failed to save document `{}`: {}", url, error),
-                            },
-                        }})?;
-                    }
-                    DocEdit::Change {
-                        new_text,
-                        selection,
-                        version,
-                        text,
-                    } => {
-                        self.user_interface.produce(ui::Output::Edit { new_text: new_text.clone(), selection })?;
-
-                        if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id()) {
-                            if let Err(error) = lsp_server.did_change(
-                                url,
-                                version,
-                                text,
-                                TextEdit::new(selection.range()?, new_text.to_string()),
-                            ) {
-                                self.user_interface.produce(ui::Output::Notify {
-                                    message: error.into()})?;
-                            }
-                        }
-                    }
-                    DocEdit::Close => {
-                        if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id()) {
-                            if let Err(error) = lsp_server.did_close(url) {
-                                error!(
-                                    "failed to inform language server process about closing: {}",
-                                    error,
-                                );
-                            }
-                        }
-                    }
-                }
+                self.edit_doc(url, edit)?;
             }
             Output::Wrap {
                 is_wrapped,
                 selection,
             } => {
-                self.user_interface.produce(ui::Output::Wrap { is_wrapped, selection })?;
+                self.user_interface.produce(ui::Output::Wrap {
+                    is_wrapped,
+                    selection,
+                })?;
             }
             Output::MoveSelection { selection } => {
-                self.user_interface.produce(ui::Output::MoveSelection { selection })?;
+                self.user_interface
+                    .produce(ui::Output::MoveSelection { selection })?;
             }
             Output::UpdateHeader => {
                 let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
@@ -356,31 +406,37 @@ impl<'a> Producer<'a> for Interface {
 
                     context.config.config = Some(config);
                 }
-                self.user_interface.produce(ui::Output::SetHeader{ header: print::get_prompt(context)})?;
+                self.user_interface.produce(ui::Output::SetHeader {
+                    header: print::get_prompt(context),
+                })?;
             }
             Output::Notify { message } => {
-                self.user_interface.produce(ui::Output::Notify{message})?;
+                self.user_interface
+                    .produce(ui::Output::Notify { message })?;
             }
             Output::Question { request } => {
-                self.user_interface.produce(ui::Output::Question{request})?;
+                self.user_interface
+                    .produce(ui::Output::Question { request })?;
             }
             Output::StartIntake { title } => {
-                self.user_interface.produce(ui::Output::StartIntake{title: title.to_string()})?;
+                self.user_interface
+                    .produce(ui::Output::StartIntake { title })?;
             }
             Output::Reset { selection } => {
-                self.user_interface.produce(ui::Output::Reset{selection})?;
+                self.user_interface
+                    .produce(ui::Output::Reset { selection })?;
             }
             Output::Resize { size } => {
-                self.user_interface.produce(ui::Output::Resize {size})?;
+                self.user_interface.produce(ui::Output::Resize { size })?;
             }
             Output::Write { ch } => {
-                self.user_interface.produce(ui::Output::Write{ch})?;
+                self.user_interface.produce(ui::Output::Write { ch })?;
             }
             Output::Log { starship_level } => {
                 self.log_config.writer()?.starship_level = starship_level;
             }
             Output::Quit => {
-                self.queue.produce(Input::Quit).unwrap();
+                self.queue.produce(Input::Quit)?;
             }
         }
 

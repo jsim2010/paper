@@ -69,7 +69,7 @@ pub use io::Arguments;
 use {
     app::Processor,
     io::{CreateInterfaceError, Interface, ProduceOutputError},
-    market::{Producer, Consumer},
+    market::{Consumer, Producer},
     thiserror::Error,
 };
 
@@ -102,10 +102,11 @@ impl Paper {
     ///
     /// [`CreatePaperError`]: enum.CreatePaperError.html
     #[inline]
-    pub fn new(arguments: Arguments<'_>) -> Result<Self, CreatePaperError> {
+    pub fn new(arguments: &Arguments<'_>) -> Result<Self, CreatePaperError> {
         Ok(Self {
-            processor: Processor::new(),
+            // Create io first as this is where the logger is initialized.
             io: Interface::new(arguments)?,
+            processor: Processor::new(),
         })
     }
 
@@ -120,9 +121,7 @@ impl Paper {
     pub fn run(&mut self) -> Result<(), RunPaperError> {
         for input in self.io.records() {
             for output in self.processor.process(input) {
-                self
-                    .io
-                    .produce(output)?;
+                self.io.produce(output)?;
             }
         }
 

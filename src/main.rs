@@ -9,7 +9,7 @@ fn main() -> Result<(), Failure> {
     let _ = include_str!("../Cargo.toml");
 
     Paper::new(
-        (&app_from_crate!()
+        &(&app_from_crate!()
             .arg(Arg::with_name("file").help("the file to be viewed"))
             .get_matches())
             .into(),
