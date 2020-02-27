@@ -1,8 +1,9 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
     crate::io::{
+        config::Setting,
         ui::{self, Key},
-        Input, Setting,
+        Input, PathUrl,
     },
     core::fmt::{self, Debug},
     enum_map::{enum_map, Enum, EnumMap},
@@ -14,7 +15,7 @@ use {
 #[derive(Debug, PartialEq)]
 pub(crate) enum Operation {
     /// Resizes the user interface.
-    Size(ui::Size),
+    Size(ui::BodySize),
     /// Resets the application.
     Reset,
     /// Confirms that the action is desired.
@@ -34,7 +35,12 @@ pub(crate) enum Operation {
     /// An operation to edit the text or selection of the document.
     Document(DocOp),
     /// Opens a file.
-    OpenFile(String),
+    OpenDoc {
+        /// The URL of the file.
+        url: PathUrl,
+        /// The text of the file.
+        text: String,
+    },
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
@@ -339,8 +345,8 @@ impl ModeInterpreter for ViewInterpreter {
                 }
                 ui::Input::Mouse => {}
             },
-            Input::File(file) => {
-                output.add_op(Operation::OpenFile(file));
+            Input::File { url, text } => {
+                output.add_op(Operation::OpenDoc { url, text });
             }
             Input::Glitch(glitch) => {
                 output.add_op(Operation::Alert(ShowMessageParams {
@@ -351,6 +357,7 @@ impl ModeInterpreter for ViewInterpreter {
             Input::Config(setting) => {
                 output.add_op(Operation::UpdateSetting(setting));
             }
+            Input::Quit => {}
         }
 
         output
@@ -384,7 +391,7 @@ impl ModeInterpreter for ConfirmInterpreter {
                     output.reset();
                 }
             },
-            Input::File(..) | Input::Glitch(..) | Input::Config(..) => {}
+            Input::File { .. } | Input::Glitch(..) | Input::Config(..) | Input::Quit => {}
         }
 
         output
@@ -424,7 +431,7 @@ impl ModeInterpreter for CollectInterpreter {
                 }
                 ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {}
             },
-            Input::File(..) | Input::Glitch(..) | Input::Config(..) => {}
+            Input::File { .. } | Input::Glitch(..) | Input::Config(..) | Input::Quit => {}
         }
 
         output
@@ -435,7 +442,7 @@ impl ModeInterpreter for CollectInterpreter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::io::{ui::Modifiers, Glitch, Setting};
+    use crate::io::{config::Setting, ui::Modifiers, Glitch};
 
     /// Tests decoding user input while the [`Interpreter`] is in [`Mode::View`].
     mod view {

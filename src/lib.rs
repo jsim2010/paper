@@ -4,14 +4,11 @@
 //! 1) All functionality shall be able to be performed via the keys reachable from the home row. Where it makes sense, functionality may additionally be performed via the mouse and other keys.
 //! 2) All input shall be modal, i.e. keys shall implement different functionality depending on the current mode of the application.
 //! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the [Language Server Protocol].
-//! 4) Paper shall follow [rustfmt] and as many [clippy] lints as reasonably possible.
 //!
 //! ## Upcoming
 //! - Text manipulation shall involve a 3-step process of identifying the location should occur, marking that location, and then performing the desired edit.
 //!
 //! [Language Server Protocol]: https://microsoft.github.io/language-server-protocol/
-//! [rustfmt]: https://github.com/rust-lang/rustfmt
-//! [clippy]: https://rust-lang.github.io/rust-clippy/current/index.html
 #![warn(
     absolute_paths_not_starting_with_crate,
     anonymous_parameters,
@@ -62,14 +59,15 @@
     single_use_lifetimes, // Flags PartialEq derive.
 )]
 
-pub mod app;
+mod app;
 pub mod io;
 
 pub use io::Arguments;
 
 use {
     app::Processor,
-    io::{CreateInterfaceError, FlushError, Interface, IntoArgumentsError, PullError, PushError},
+    io::{CreateInterfaceError, Interface, ProduceOutputError},
+    market::{Consumer, Producer},
     thiserror::Error,
 };
 
@@ -81,15 +79,15 @@ use {
 /// use paper::{Arguments, Failure, Paper};
 /// # fn main() -> Result<(), Failure> {
 ///
-/// let result: Result<(), Failure> = Paper::new(Arguments::default())?.run();
-/// # Ok(())
+/// Paper::new(&Arguments::default())?.run()?;
+/// Ok(())
 /// # }
 /// ```
 #[derive(Debug)]
 pub struct Paper {
-    /// Manages the interface with everything outside of the application.
+    /// The interface of the application.
     io: Interface,
-    /// Processes application operations.
+    /// The processor of the application.
     processor: Processor,
 }
 
@@ -98,73 +96,64 @@ impl Paper {
     ///
     /// # Errors
     ///
-    /// If any error is encountered during creation, a [`Failure`] will be returned.
+    /// If any error is encountered during creation, a [`CreatePaperError`] shall be returned.
     ///
-    /// [`Failure`]: struct.Failure.html
+    /// [`CreatePaperError`]: enum.CreatePaperError.html
     #[inline]
-    pub fn new(arguments: Arguments) -> Result<Self, Failure> {
+    pub fn new(arguments: &Arguments<'_>) -> Result<Self, CreatePaperError> {
         Ok(Self {
-            processor: Processor::new(&arguments.working_dir)?,
+            // Create io first as this is where the logger is initialized.
             io: Interface::new(arguments)?,
+            processor: Processor::new(),
         })
     }
 
-    /// Loops through program execution until a [`Failure`] occurs or the application quits.
+    /// Loops through program execution until a failure occurs or the application quits.
     ///
     /// # Errors
     ///
-    /// If any error from which the program is unable to recover is encountered, a [`Failure`] will be returned; in this case, the program will make all efforts to kill all processes and return the terminal to a clean state but these cannot be guaranteed.
+    /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
     ///
-    /// [`Failure`]: struct.Failure.html
+    /// [`RunPaperError`]: enum.RunPaperError.html
     #[inline]
-    pub fn run(&mut self) -> Result<(), Failure> {
-        loop {
-            if !self.step()? {
-                break;
+    pub fn run(&mut self) -> Result<(), RunPaperError> {
+        for input in self.io.records() {
+            for output in self.processor.process(input) {
+                self.io.produce(output)?;
             }
         }
 
         Ok(())
     }
-
-    /// Executes a single run of the runtime loop and returns if the program should keep running.
-    #[inline]
-    fn step(&mut self) -> Result<bool, Failure> {
-        let mut keep_running = true;
-
-        if let Some(input) = self.io.pull()? {
-            for output in self.processor.process(input)? {
-                keep_running &= self.io.push(output)?;
-            }
-
-            self.io.flush()?;
-        }
-
-        Ok(keep_running)
-    }
 }
 
-/// An error from which `paper` was unable to recover.
+/// An error from which `paper` is unable to recover.
 #[derive(Debug, Error)]
 pub enum Failure {
-    /// An error while parsing the arguments.
-    #[error("failed to read arguments: {0}")]
-    Arguments(#[from] IntoArgumentsError),
-    /// An error while creating the interface.
+    /// An error creating a [`Paper`].
+    #[error(transparent)]
+    Create(#[from] CreatePaperError),
+    /// An error running `paper`.
+    #[error(transparent)]
+    Run(#[from] RunPaperError),
+}
+
+/// An error creating a [`Paper`].
+///
+/// [`Paper`]: struct.Paper.html
+#[derive(Debug, Error)]
+pub enum CreatePaperError {
+    /// An error creating an [`Interface`].
+    ///
+    /// [`Interface`]: io/struct.Interface.html
     #[error("failed to create interface: {0}")]
     Interface(#[from] CreateInterfaceError),
-    /// An error while pulling the input.
-    #[error("failed to retrieve input: {0}")]
-    Input(#[from] PullError),
-    /// An error while pushing output.
-    #[error("failed to apply output: {0}")]
-    Output(#[from] PushError),
-    /// An error while flushing output.
-    #[error("failed to flush output: {0}")]
-    Flush(#[from] FlushError),
-    /// An error from [`app`].
-    ///
-    /// [`app`]: app/index.html
-    #[error("{0}")]
-    App(#[from] app::Fault),
+}
+
+/// An error running `paper`.
+#[derive(Debug, Error)]
+pub enum RunPaperError {
+    /// An error producing an output.
+    #[error("failed to produce output: {0}")]
+    Produce(#[from] ProduceOutputError),
 }

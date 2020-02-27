@@ -10,10 +10,14 @@
 //! - All remaining space on the screen is primarily used for displaying the text of the currently viewed document.
 //! - If the application needs to alert the user, it may do so via a message box that will temporarily overlap the top rows of the document.
 //! - If the application requires input from the user, it may do so via an input box that will temporarily overlap the bottom rows of the document.
-pub(crate) use crossterm::event::{KeyCode as Key, KeyModifiers as Modifiers};
+pub(crate) use crossterm::{
+    event::{KeyCode as Key, KeyModifiers as Modifiers},
+    ErrorKind,
+};
 
 use {
     core::{
+        cell::RefCell,
         cmp,
         convert::TryFrom,
         fmt::{self, Debug},
@@ -27,10 +31,10 @@ use {
         execute, queue,
         style::{Color, Print, ResetColor, SetBackgroundColor},
         terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
-        ErrorKind,
     },
     log::{error, warn},
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
+    market::{Consumer, Producer, Queue},
     std::{
         collections::VecDeque,
         io::{self, Stdout, Write},
@@ -38,8 +42,59 @@ use {
     thiserror::Error,
 };
 
+/// An error creating a [`Terminal`].
+///
+/// [`Terminal`]: struct.Terminal.html
+#[derive(Debug, Error)]
+pub enum CreateTerminalError {
+    /// An error producing the size of the body.
+    #[error("producing body size: {0}")]
+    ProduceSize(#[source] <Queue<Input> as Producer<'static>>::Error),
+    /// An error initializing the terminal output.
+    #[error("initializing output: {0}")]
+    Init(#[from] ProduceTerminalOutputError),
+}
+
 /// A span of time that equal to no time.
 static INSTANT: Duration = Duration::from_secs(0);
+
+/// An error producing terminal output.
+#[derive(Debug, Error)]
+pub enum ProduceTerminalOutputError {
+    /// An error initializing the terminal output.
+    #[error("{0}")]
+    Init(#[source] ErrorKind),
+    /// An error displaying a new document on the terminal.
+    #[error("{0}")]
+    OpenDoc(#[source] ErrorKind),
+    /// An error displaying a document edit on the terminal.
+    #[error("{0}")]
+    Edit(#[source] ErrorKind),
+    /// An error setting the wrap config on a document.
+    #[error("{0}")]
+    Wrap(#[source] ErrorKind),
+    /// An error moving the selection.
+    #[error("{0}")]
+    MoveSelection(#[source] ErrorKind),
+    /// An error setting the header
+    #[error("{0}")]
+    SetHeader(#[source] ErrorKind),
+    /// An error adding a notification.
+    #[error("{0}")]
+    Notify(#[source] ErrorKind),
+    /// An error adding a question.
+    #[error("{0}")]
+    Question(#[source] ErrorKind),
+    /// An error starting an intake.
+    #[error("{0}")]
+    StartIntake(#[source] ErrorKind),
+    /// An error resetting the body.
+    #[error("{0}")]
+    Reset(#[source] ErrorKind),
+    /// An error writing a char.
+    #[error("{0}")]
+    Write(#[source] ErrorKind),
+}
 
 /// An error while executing or queueing a [`crossterm`] command.
 ///
@@ -50,138 +105,53 @@ pub struct CommandError(#[from] ErrorKind);
 
 /// An error while flushing terminal output.
 #[derive(Debug, Error)]
-#[error("while flushing terminal output: {0}")]
-pub struct FlushError(#[from] io::Error);
+#[error("{0}")]
+pub struct FlushCommandsError(#[from] io::Error);
 
 /// An error while converting between Selection and Range units.
 #[derive(Clone, Copy, Debug, Error)]
 #[error("while converting between u64 and usize: {0}")]
 pub struct SelectionConversionError(#[from] num::TryFromIntError);
 
+/// An error consuming input.
+#[derive(Debug, Error)]
+pub enum ConsumeInputError {
+    /// Read.
+    #[error("")]
+    Read(#[from] ErrorKind),
+    /// Consume queue.
+    #[error("")]
+    ConsumeQueue(#[source] <Queue<Input> as Consumer>::Error),
+}
+
 /// A user interface provided by a terminal.
 pub(crate) struct Terminal {
     /// The output of the application.
-    out: Stdout,
+    out: RefCell<Stdout>,
     /// The body of the screen, where all document text is displayed.
-    body: Body,
+    body: RefCell<Body>,
+    /// A queue of [`Input`]s.
+    queue: Queue<Input>,
 }
 
 #[allow(clippy::unused_self)] // For pull(), will be used when user interface becomes a trait.
 impl Terminal {
-    /// Returns the size of the terminal.
-    pub(crate) fn size() -> Size {
-        match terminal::size() {
-            Ok((columns, rows)) => TerminalSize::new(rows, columns),
-            Err(e) => {
-                warn!("unable to retrieve size of terminal: {}", e);
-                TerminalSize::default()
-            }
-        }
-        .into()
-    }
-
     /// Creates a new [`Terminal`].
-    pub(crate) fn new() -> Result<Self, CommandError> {
-        let mut term = Self {
-            out: io::stdout(),
-            body: Body::default(),
+    pub(crate) fn new() -> Result<Self, CreateTerminalError> {
+        let queue = Queue::new();
+
+        queue
+            .produce(get_body_size().into())
+            .map_err(CreateTerminalError::ProduceSize)?;
+
+        let terminal = Self {
+            out: RefCell::new(io::stdout()),
+            body: RefCell::new(Body::default()),
+            queue,
         };
 
-        // Execute failable commands after creating Terminal so that it will be dropped on failure.
-        execute!(term.out, EnterAlternateScreen, Hide)?;
-        Ok(term)
-    }
-
-    /// Returns input from the user.
-    ///
-    /// [`None`] indicates there is no input from the user.
-    pub(crate) fn pull(&self) -> Result<Option<Input>, CommandError> {
-        Ok(if event::poll(INSTANT)? {
-            Some(event::read()?.into())
-        } else {
-            None
-        })
-    }
-
-    /// Displays `text` on `self`.
-    pub(crate) fn open_doc(&mut self, text: &str) -> Result<(), CommandError> {
-        self.body.open(text)
-    }
-
-    /// Sets the wrapping property of `self` to `is_wrapped`.
-    pub(crate) fn wrap(
-        &mut self,
-        is_wrapped: bool,
-        selection: &Selection,
-    ) -> Result<(), CommandError> {
-        self.body.is_wrapped = is_wrapped;
-        self.body.refresh(selection)
-    }
-
-    /// Sets the text covered by `selection` to `new_text`.
-    pub(crate) fn edit(
-        &mut self,
-        new_text: &str,
-        selection: &Selection,
-    ) -> Result<(), CommandError> {
-        self.body.edit(new_text, *selection);
-        self.body.refresh(selection)
-    }
-
-    /// Sets the [`Selection`] of `self` to `selection`.
-    pub(crate) fn move_selection(&mut self, selection: &Selection) -> Result<(), CommandError> {
-        self.body.refresh(selection)
-    }
-
-    /// Sets the header of `self` to `header`.
-    pub(crate) fn set_header(&mut self, header: String) -> Result<(), CommandError> {
-        queue!(
-            self.out,
-            SavePosition,
-            MoveTo(0, 0),
-            Print(header),
-            RestorePosition
-        )
-        .map_err(|e| e.into())
-    }
-
-    /// Adds `message` to `self`.
-    pub(crate) fn notify(&mut self, message: &ShowMessageParams) -> Result<(), CommandError> {
-        self.body.add_alert(&message.message, message.typ)
-    }
-
-    /// Adds `request` to `self`.
-    pub(crate) fn question(
-        &mut self,
-        request: &ShowMessageRequestParams,
-    ) -> Result<(), CommandError> {
-        // TODO: Add implementation to use actions.
-        self.body.add_alert(&request.message, request.typ)
-    }
-
-    /// Adds an intake box to `self` with `title` as the prompt.
-    pub(crate) fn start_intake(&mut self, title: String) -> Result<(), CommandError> {
-        self.body.add_intake(title)
-    }
-
-    /// Resets `self` with `selection`.
-    pub(crate) fn reset(&mut self, selection: &Selection) -> Result<(), CommandError> {
-        self.body.reset(selection)
-    }
-
-    /// Resizes the [`Body`] of `self` to `size`.
-    pub(crate) fn resize(&mut self, size: Size) {
-        self.body.size = size;
-    }
-
-    /// Writes `ch`.
-    pub(crate) fn write(&mut self, ch: char) -> Result<(), CommandError> {
-        queue!(self.out, Print(ch)).map_err(|e| e.into())
-    }
-
-    /// Flushes the terminal output.
-    pub(crate) fn flush(&mut self) -> Result<(), FlushError> {
-        self.out.flush().map_err(|e| e.into())
+        terminal.produce(Output::Init)?;
+        Ok(terminal)
     }
 }
 
@@ -193,20 +163,120 @@ impl Debug for Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        if execute!(self.out, LeaveAlternateScreen).is_err() {
+        if execute!(self.out.borrow_mut(), LeaveAlternateScreen).is_err() {
             warn!("Failed to leave alternate screen");
         }
     }
 }
 
+impl Consumer for Terminal {
+    type Good = Input;
+    type Error = ConsumeInputError;
+
+    fn can_consume(&self) -> bool {
+        self.queue.can_consume()
+            || match event::poll(INSTANT) {
+                Ok(has_event) => has_event,
+                Err(_) => true,
+            }
+    }
+
+    fn consume(&self) -> Result<Self::Good, Self::Error> {
+        if self.queue.can_consume() {
+            self.queue.consume().map_err(Self::Error::ConsumeQueue)
+        } else {
+            Ok(event::read().map(|event| event.into())?)
+        }
+    }
+}
+
+impl<'a> Producer<'a> for Terminal {
+    type Good = Output<'a>;
+    type Error = ProduceTerminalOutputError;
+
+    fn produce(&'a self, good: Self::Good) -> Result<(), Self::Error> {
+        match good {
+            Output::Init => execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
+                .map_err(Self::Error::Init),
+            Output::OpenDoc { text } => self
+                .body
+                .borrow_mut()
+                .open(text)
+                .map_err(Self::Error::OpenDoc),
+            Output::Wrap {
+                is_wrapped,
+                selection,
+            } => {
+                self.body.borrow_mut().is_wrapped = is_wrapped;
+                self.body
+                    .borrow_mut()
+                    .refresh(selection)
+                    .map_err(Self::Error::Wrap)
+            }
+            Output::Edit {
+                new_text,
+                selection,
+            } => {
+                self.body.borrow_mut().edit(&new_text, *selection);
+                self.body
+                    .borrow_mut()
+                    .refresh(selection)
+                    .map_err(Self::Error::Edit)
+            }
+            Output::MoveSelection { selection } => self
+                .body
+                .borrow_mut()
+                .refresh(selection)
+                .map_err(Self::Error::MoveSelection),
+            Output::SetHeader { header } => execute!(
+                self.out.borrow_mut(),
+                SavePosition,
+                MoveTo(0, 0),
+                Print(header),
+                RestorePosition
+            )
+            .map_err(Self::Error::SetHeader),
+            Output::Resize { size } => {
+                self.body.borrow_mut().size = size.0;
+                Ok(())
+            }
+            Output::Notify { message } => self
+                .body
+                .borrow_mut()
+                .add_alert(&message.message, message.typ)
+                .map_err(Self::Error::Notify),
+            Output::Question { request } => {
+                // TODO: Add implementation to use actions.
+                self.body
+                    .borrow_mut()
+                    .add_alert(&request.message, request.typ)
+                    .map_err(Self::Error::Question)
+            }
+            Output::StartIntake { title } => self
+                .body
+                .borrow_mut()
+                .add_intake(title)
+                .map_err(Self::Error::StartIntake),
+            Output::Reset { selection } => self
+                .body
+                .borrow_mut()
+                .reset(selection)
+                .map_err(Self::Error::Reset),
+            Output::Write { ch } => {
+                execute!(self.out.borrow_mut(), Print(ch)).map_err(Self::Error::Write)
+            }
+        }
+    }
+}
+
 /// Input generated by the user.
-#[derive(Debug)]
-pub(crate) enum Input {
+#[derive(Clone, Copy, Debug)]
+pub enum Input {
     /// The space available for display has been resized.
     ///
     /// The parameter is the new size of the body.
     #[allow(dead_code)] // False positive.
-    Resize(Size),
+    Resize(BodySize),
     /// A mouse event has occurred.
     Mouse,
     /// A key has been pressed.
@@ -220,6 +290,7 @@ pub(crate) enum Input {
 }
 
 impl From<Event> for Input {
+    #[inline]
     fn from(value: Event) -> Self {
         match value {
             Event::Resize(columns, rows) => Self::Resize(TerminalSize::new(rows, columns).into()),
@@ -232,30 +303,113 @@ impl From<Event> for Input {
     }
 }
 
-impl From<Size> for Input {
-    fn from(value: Size) -> Self {
+impl From<BodySize> for Input {
+    #[inline]
+    fn from(value: BodySize) -> Self {
         Self::Resize(value)
     }
 }
 
+/// An output.
+pub(crate) enum Output<'a> {
+    /// Initializes the terminal.
+    Init,
+    /// Opens a doc.
+    OpenDoc {
+        /// The text.
+        text: &'a str,
+    },
+    /// Sets the wrapped configuration.
+    Wrap {
+        /// If the text is wrapped.
+        is_wrapped: bool,
+        /// The selection.
+        selection: &'a Selection,
+    },
+    /// Sets the text covered by `selection` to `new_text`.
+    Edit {
+        /// The new text.
+        new_text: String,
+        /// The selection.
+        selection: &'a Selection,
+    },
+    /// Sets the selection.
+    MoveSelection {
+        /// The selection.
+        selection: &'a Selection,
+    },
+    /// Sets the header to `header`.
+    SetHeader {
+        /// The header.
+        header: String,
+    },
+    /// Resizes the body.
+    Resize {
+        /// The size.
+        size: BodySize,
+    },
+    /// Adds `message`.
+    Notify {
+        /// The message.
+        message: ShowMessageParams,
+    },
+    /// Adds `request`.
+    Question {
+        /// The request.
+        request: ShowMessageRequestParams,
+    },
+    /// Adds an intake box to `self` with `title` as the prompt.
+    StartIntake {
+        /// The title.
+        title: String,
+    },
+    /// Resets `self` with `selection`.
+    Reset {
+        /// The selection.
+        selection: &'a Selection,
+    },
+    /// Writes `ch`.
+    Write {
+        /// The char.
+        ch: char,
+    },
+}
+
 /// The dimensions of a grid of [`char`]s.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct Size {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Size {
     /// The number of rows.
     pub(crate) rows: UiUnit,
     /// The number of columns.
     pub(crate) columns: UiUnit,
 }
 
-impl From<TerminalSize> for Size {
+/// The size of the body.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodySize(pub(crate) Size);
+
+impl From<TerminalSize> for BodySize {
+    #[inline]
     fn from(value: TerminalSize) -> Self {
-        Self {
+        Self(Size {
             // Account for header in first row.
             rows: value.0.rows.saturating_sub(1),
             // Windows command prompt does not print a character in the last reported column.
             columns: value.0.columns.saturating_sub(1),
+        })
+    }
+}
+
+/// Returns the size of the body.
+fn get_body_size() -> BodySize {
+    match terminal::size() {
+        Ok((columns, rows)) => TerminalSize::new(rows, columns),
+        Err(e) => {
+            warn!("unable to retrieve size of terminal: {}", e);
+            TerminalSize::default()
         }
     }
+    .into()
 }
 
 /// The [`Size`] of the terminal.
@@ -299,7 +453,7 @@ struct Body {
 
 impl Body {
     /// Sets `text` and prints it.
-    fn open(&mut self, text: &str) -> Result<(), CommandError> {
+    fn open(&mut self, text: &str) -> Result<(), ErrorKind> {
         self.lines = text.lines().map(ToString::to_string).collect();
         self.refresh(&Selection::default())
     }
@@ -321,7 +475,7 @@ impl Body {
     }
 
     /// Prints all of `self` with `selection` marked.
-    fn refresh(&mut self, selection: &Selection) -> Result<(), CommandError> {
+    fn refresh(&mut self, selection: &Selection) -> Result<(), ErrorKind> {
         let start_line = selection.start_line;
         if start_line < self.top_line {
             self.top_line = start_line
@@ -361,7 +515,7 @@ impl Body {
     }
 
     /// Adds an alert box over the grid.
-    fn add_alert(&mut self, message: &str, typ: MessageType) -> Result<(), CommandError> {
+    fn add_alert(&mut self, message: &str, typ: MessageType) -> Result<(), ErrorKind> {
         for line in message.lines() {
             self.printer.print_row(
                 self.alert_rows,
@@ -378,7 +532,7 @@ impl Body {
     }
 
     /// Adds an input box beginning with `prompt`
-    fn add_intake(&mut self, mut prompt: String) -> Result<(), CommandError> {
+    fn add_intake(&mut self, mut prompt: String) -> Result<(), ErrorKind> {
         prompt.push_str(": ");
         self.printer.print_row(
             self.size.rows.saturating_sub(1),
@@ -393,7 +547,7 @@ impl Body {
     }
 
     /// Removes all temporary boxes and re-displays the full grid.
-    fn reset(&mut self, selection: &Selection) -> Result<(), CommandError> {
+    fn reset(&mut self, selection: &Selection) -> Result<(), ErrorKind> {
         if self.alert_rows != 0 {
             self.printer.print_rows(
                 Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()),
@@ -454,7 +608,7 @@ impl Printer {
         index: UiUnit,
         row: Row<'a>,
         context: &Context,
-    ) -> Result<(), CommandError> {
+    ) -> Result<(), ErrorKind> {
         // Add 1 to account for header.
         queue!(self.out, MoveTo(0, index.saturating_add(1)))?;
 
@@ -485,7 +639,7 @@ impl Printer {
             queue!(self.out, ResetColor)?;
         }
 
-        Ok(())
+        self.out.flush().map_err(|e| e.into())
     }
 
     /// Prints `rows` with `context`.
@@ -493,12 +647,12 @@ impl Printer {
         &mut self,
         rows: impl Iterator<Item = Row<'a>>,
         context: Context,
-    ) -> Result<(), CommandError> {
+    ) -> Result<(), ErrorKind> {
         for (index, row) in (0..).zip(rows) {
             self.print_row(index, row, &context)?;
         }
 
-        queue!(self.out, Clear(ClearType::FromCursorDown)).map_err(|e| e.into())
+        execute!(self.out, Clear(ClearType::FromCursorDown))
     }
 }
 

@@ -1,5 +1,3 @@
-set shell := ["cmd.exe", "/c"]
-
 alias b := build
 alias f := fix
 alias t := test

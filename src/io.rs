@@ -1,48 +1,94 @@
 //! Implements the interface for all input and output to the application.
+pub mod config;
+pub mod logging;
 pub mod lsp;
 pub mod ui;
 
-pub(crate) use ui::FlushError;
-
 use {
     clap::ArgMatches,
+    config::{ChangeFilter, ConsumeChangeError},
     core::{
+        cell::RefCell,
         convert::{TryFrom, TryInto},
         fmt,
-        time::Duration,
     },
     log::{error, LevelFilter},
+    logging::LogConfig,
     lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
-    notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
+    market::{Consumer, Producer, Queue},
     serde::Deserialize,
+    starship::{context::Context, print},
     std::{
-        collections::{hash_map::Entry, HashMap, VecDeque},
+        collections::{hash_map::Entry, HashMap},
         env,
         ffi::OsStr,
-        fs, io,
+        fs,
+        io::{self, ErrorKind},
         path::{Path, PathBuf},
-        sync::mpsc::{self, Receiver, TryRecvError},
+        rc::Rc,
     },
     thiserror::Error,
-    ui::{CommandError, Selection, SelectionConversionError, Size, Terminal},
+    toml::{value::Table, Value},
+    ui::{
+        BodySize, CommandError, CreateTerminalError, ProduceTerminalOutputError, Selection,
+        SelectionConversionError, Terminal,
+    },
     url::Url,
 };
 
-/// An error while parsing arguments.
+/// A configuration of the initialization of a [`Paper`].
+///
+/// [`Paper`]: ../struct.Paper.html
+#[derive(Clone, Debug, Default)]
+pub struct Arguments<'a> {
+    /// The file to be viewed.
+    ///
+    /// [`None`] indicates that no file will be viewed.
+    ///
+    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
+    pub file: Option<&'a str>,
+}
+
+impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
+    #[inline]
+    fn from(value: &'a ArgMatches<'a>) -> Self {
+        Self {
+            file: value.value_of("file"),
+        }
+    }
+}
+
+/// An error creating an [`Interface`].
+///
+/// [`Interface`]: struct.Interface.html
 #[derive(Debug, Error)]
-pub enum IntoArgumentsError {
+pub enum CreateInterfaceError {
+    /// An error creating a [`Terminal`].
+    ///
+    /// [`Terminal`]: ui/struct.Terminal.html
+    #[error("creating terminal: {0}")]
+    CreateTerminal(#[from] CreateTerminalError),
+    /// An error determining the home directory of the current user.
+    #[error("home directory of current user is unknown")]
+    HomeDir,
     /// An error determing the root directory.
     #[error("current working directory is invalid: {0}")]
     RootDir(#[from] io::Error),
-    /// An error with a URL.
-    #[error("root directory is invalid: {0}")]
+    /// An error while working with a Url.
+    #[error("{0}")]
     Url(#[from] UrlError),
+    /// An error while reading a file.
+    #[error("{0}")]
+    CreateFile(#[from] CreateFileError),
+    /// An error while creating the logging configuration.
+    #[error("{0}")]
+    CreateLogConfig(#[from] logging::Fault),
 }
 
-/// An error while pushing output.
+/// An error while writing output.
 #[derive(Debug, Error)]
-pub enum PushError {
+pub enum ProduceOutputError {
     /// An error in the ui.
     #[error("{0}")]
     Ui(#[from] CommandError),
@@ -58,63 +104,57 @@ pub enum PushError {
     /// Failed to send notification.
     #[error("{0}")]
     SendNotification(#[from] SendNotificationError),
+    /// An error while reading a file.
+    #[error("{0}")]
+    CreateFile(#[from] CreateFileError),
+    /// An error while configuring the logger.
+    #[error("{0}")]
+    Log(#[from] logging::Fault),
+    /// Produce error from ui.
+    #[error("{0}")]
+    UiProduce(#[from] ProduceTerminalOutputError),
+    /// Add to queue.
+    #[error("{0}")]
+    Queue(#[source] <Queue<Input> as Producer<'static>>::Error),
 }
 
 /// An error while pulling input.
 #[derive(Debug, Error)]
-pub enum PullError {
+pub enum ReadInputError {
     /// An error from the ui.
     #[error("{0}")]
     Ui(#[from] CommandError),
 }
 
-/// Configures the initialization of `paper`.
-#[derive(Clone, Debug, Default)]
-pub struct Arguments {
-    /// The file to be viewed.
-    ///
-    /// [`None`] indicates that the display should be empty.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    pub file: Option<String>,
-    /// The working directory of `paper`.
-    pub working_dir: PathUrl,
-}
-
-impl TryFrom<ArgMatches<'_>> for Arguments {
-    type Error = IntoArgumentsError;
-
-    #[inline]
-    fn try_from(value: ArgMatches<'_>) -> Result<Self, Self::Error> {
-        Ok(Self {
-            file: value.value_of("file").map(str::to_string),
-            working_dir: PathUrl::try_from(env::current_dir().map_err(IntoArgumentsError::from)?)?,
-        })
-    }
-}
-
-/// An error while creating the interface.
+/// An error while creating a file.
 #[derive(Debug, Error)]
-pub enum CreateInterfaceError {
-    /// An error while working with a Url.
+pub enum CreateFileError {
+    /// An error while generating the URL of the file.
     #[error("{0}")]
-    Url(#[from] UrlError),
-    /// An error while creating the user interface.
+    CreateUrl(#[from] UrlError),
+    /// An error while reading the text of the file.
     #[error("{0}")]
-    CreateUi(#[from] CommandError),
-    /// An error while retrieving the home directory of the user.
-    #[error("unable to determine home directory of user")]
-    HomeDir,
-    /// An error while creating the config file watcher.
-    #[error("while creating config file watcher: {0}")]
-    Watcher(#[from] notify::Error),
+    ReadFile(#[from] ReadFileError),
+    /// An error sending an input.
+    #[error("sending error")]
+    Send,
+}
+
+/// An error while reading a file.
+#[derive(Debug, Error)]
+#[error("failed to read `{file}`: {error:?}")]
+pub struct ReadFileError {
+    /// The error.
+    error: ErrorKind,
+    /// The path of the file being read.
+    file: String,
 }
 
 /// An error in the user interface that is recoverable.
 ///
 /// Until a glitch is resolved, certain functionality may not be properly completed.
 #[derive(Debug, Error)]
-pub(crate) enum Glitch {
+pub enum Glitch {
     /// Config file watcher disconnected.
     #[error("config file watcher disconnected")]
     WatcherConnection,
@@ -126,161 +166,154 @@ pub(crate) enum Glitch {
     ConfigFormat(#[from] toml::de::Error),
 }
 
-/// The interface.
+/// An error consuming input.
+#[derive(Debug, Error)]
+pub enum ConsumeInputError {
+    /// Quit.
+    #[error("")]
+    Quit,
+    /// Ui.
+    #[error("")]
+    Ui(#[from] ui::ConsumeInputError),
+    /// Add to queue.
+    #[error("{0}")]
+    Queue(#[source] <Queue<Input> as Producer<'static>>::Error),
+    /// Change
+    #[error("")]
+    Change(#[from] ConsumeChangeError),
+    /// Consume.
+    #[error("")]
+    Consume(#[source] <Queue<Input> as Consumer>::Error),
+}
+
+/// The interface between the application and all external components.
 #[derive(Debug)]
 pub(crate) struct Interface {
+    /// Notifies `self` of any events to the config file.
+    config_drain: ChangeFilter,
+    /// Queues [`Input`]s.
+    queue: Queue<Input>,
     /// Manages the user interface.
     user_interface: Terminal,
-    /// The inputs of the interface.
-    inputs: VecDeque<Input>,
-    /// Notifies `self` of any events to the config file.
-    watcher: ConfigWatcher,
-    /// The current configuration of the application.
-    config: Config,
     /// The [`LspServer`]s managed by the application.
-    lsp_servers: HashMap<String, Option<LspServer>>,
+    lsp_servers: Rc<RefCell<HashMap<String, Option<LspServer>>>>,
+    /// The root directory of the application.
+    root_dir: PathUrl,
+    /// The configuration of the logger.
+    log_config: LogConfig,
 }
 
 impl Interface {
     /// Creates a new interface.
-    pub(crate) fn new(arguments: Arguments) -> Result<Self, CreateInterfaceError> {
-        let config_file = dirs::home_dir()
-            .ok_or(CreateInterfaceError::HomeDir)?
-            .join(".config/paper.toml");
-        let watcher = ConfigWatcher::new(&config_file)?;
-        Terminal::new()
-            .map(|user_interface| {
-                let mut interface = Self {
-                    user_interface,
-                    inputs: VecDeque::new(),
-                    watcher,
-                    config: Config::default(),
-                    lsp_servers: HashMap::default(),
-                };
+    pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
+        let interface = Self {
+            // Create log_config first as this is where the logger is initialized.
+            log_config: LogConfig::new()?,
+            config_drain: ChangeFilter::new(
+                &dirs::home_dir()
+                    .ok_or(CreateInterfaceError::HomeDir)?
+                    .join(".config/paper.toml"),
+            ),
+            queue: Queue::new(),
+            user_interface: Terminal::new()?,
+            lsp_servers: Rc::new(RefCell::new(HashMap::default())),
+            root_dir: PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?,
+        };
 
-                interface.add_config_updates(config_file);
-                interface
-                    .inputs
-                    .push_back(Input::User(Terminal::size().into()));
-
-                if let Some(file) = arguments.file {
-                    interface.inputs.push_back(Input::File(file));
-                }
-
-                interface
-            })
-            .map_err(|e| e.into())
-    }
-
-    /// Checks for updates to [`Config`] and adds any changes the changed settings list.
-    fn add_config_updates(&mut self, config_file: PathBuf) {
-        match self.config.update(config_file) {
-            Ok(settings) => {
-                self.inputs.append(
-                    &mut settings
-                        .iter()
-                        .map(|setting| Input::Config(*setting))
-                        .collect(),
-                );
-            }
-            Err(glitch) => {
-                self.inputs.push_back(Input::Glitch(glitch));
-            }
-        }
-    }
-
-    /// Pulls an [`Input`].
-    pub(crate) fn pull(&mut self) -> Result<Option<Input>, PullError> {
-        match self.watcher.notify.try_recv() {
-            Ok(event) => {
-                if let DebouncedEvent::Write(config_file) = event {
-                    self.add_config_updates(config_file);
-                }
-            }
-            Err(TryRecvError::Empty) => (),
-            Err(TryRecvError::Disconnected) => {
-                self.inputs
-                    .push_back(Input::Glitch(Glitch::WatcherConnection));
-            }
+        if let Some(file) = arguments.file {
+            interface.add_file(file)?;
         }
 
-        if let Some(input) = self.inputs.pop_front() {
-            Ok(Some(input))
-        } else {
-            Ok(self.user_interface.pull()?.map(Input::from))
-        }
+        Ok(interface)
     }
 
-    /// Pushes `output`.
-    pub(crate) fn push(&mut self, output: Output<'_>) -> Result<bool, PushError> {
-        let mut keep_running = true;
+    /// Generates an Input for opening the file at `path`.
+    fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
+        let url = self.root_dir.join(path)?;
 
-        match output {
-            Output::OpenDoc {
-                text,
-                root_dir,
+        self.queue
+            .produce(Input::File {
+                text: fs::read_to_string(&url).map_err(|error| ReadFileError {
+                    file: url.to_string(),
+                    error: error.kind(),
+                })?,
                 url,
-                version,
-            } => {
-                let language_id = url.language_id();
+            })
+            .map_err(|_| CreateFileError::Send)?;
+        Ok(())
+    }
 
-                let _ = match self.lsp_servers.entry(language_id.to_string()) {
-                    Entry::Vacant(vacant) => vacant.insert(LspServer::new(language_id, &root_dir)?),
-                    Entry::Occupied(mut occupied) => occupied.get_mut(),
-                };
+    /// Edits the doc at `url`.
+    fn edit_doc(&self, url: PathUrl, edit: DocEdit<'_>) -> Result<(), ProduceOutputError> {
+        let language_id = url.language_id();
+        let mut lsp_servers = self.lsp_servers.borrow_mut();
 
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(language_id) {
+        if let DocEdit::Open { .. } = edit {
+            if let Entry::Vacant(entry) = lsp_servers.entry(language_id.to_string()) {
+                let _ = entry.insert(LspServer::new(language_id, &self.root_dir)?);
+            }
+        }
+
+        match edit {
+            DocEdit::Open { text, version } => {
+                if let Some(Some(lsp_server)) = lsp_servers.get_mut(language_id) {
                     lsp_server.did_open(&url, language_id, version, text)?;
                 }
 
-                self.user_interface.open_doc(text)?;
+                self.user_interface.produce(ui::Output::OpenDoc { text })?;
             }
-            Output::Wrap {
-                is_wrapped,
-                selection,
-            } => {
-                self.user_interface.wrap(is_wrapped, selection)?;
+            DocEdit::Save { text } => {
+                if let Some(lsp_server) = lsp_servers
+                    .get_mut(url.language_id())
+                    .map(Option::as_mut)
+                    .flatten()
+                {
+                    if let Err(error) = lsp_server.will_save(&url) {
+                        self.user_interface.produce(ui::Output::Notify {
+                            message: error.into(),
+                        })?;
+                    }
+                }
+
+                self.user_interface.produce(ui::Output::Notify {
+                    message: match fs::write(&url, text) {
+                        Ok(..) => ShowMessageParams {
+                            typ: MessageType::Info,
+                            message: format!("Saved document `{}`", url),
+                        },
+                        Err(error) => ShowMessageParams {
+                            typ: MessageType::Error,
+                            message: format!("Failed to save document `{}`: {}", url, error),
+                        },
+                    },
+                })?;
             }
-            Output::EditDoc {
+            DocEdit::Change {
                 new_text,
                 selection,
-                url,
                 version,
                 text,
             } => {
-                self.user_interface.edit(&new_text, selection)?;
+                self.user_interface.produce(ui::Output::Edit {
+                    new_text: new_text.clone(),
+                    selection,
+                })?;
 
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
+                if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id()) {
                     if let Err(error) = lsp_server.did_change(
                         url,
                         version,
                         text,
                         TextEdit::new(selection.range()?, new_text),
                     ) {
-                        self.user_interface.notify(&error.into())?;
+                        self.user_interface.produce(ui::Output::Notify {
+                            message: error.into(),
+                        })?;
                     }
                 }
             }
-            Output::SaveDoc { url, text } => {
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
-                    if let Err(error) = lsp_server.will_save(url) {
-                        self.user_interface.notify(&error.into())?;
-                    }
-                }
-
-                self.user_interface.notify(&match fs::write(url, text) {
-                    Ok(..) => ShowMessageParams {
-                        typ: MessageType::Info,
-                        message: format!("Saved document `{}`", url),
-                    },
-                    Err(error) => ShowMessageParams {
-                        typ: MessageType::Error,
-                        message: format!("Failed to save document `{}`: {}", url, error),
-                    },
-                })?;
-            }
-            Output::CloseDoc { url } => {
-                if let Some(Some(lsp_server)) = self.lsp_servers.get_mut(url.language_id()) {
+            DocEdit::Close => {
+                if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id()) {
                     if let Err(error) = lsp_server.did_close(url) {
                         error!(
                             "failed to inform language server process about closing: {}",
@@ -289,41 +322,132 @@ impl Interface {
                     }
                 }
             }
-            Output::MoveSelection { selection } => {
-                self.user_interface.move_selection(selection)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Consumer for Interface {
+    type Good = Input;
+    type Error = ConsumeInputError;
+
+    fn can_consume(&self) -> bool {
+        self.queue.can_consume()
+            || self.user_interface.can_consume()
+            || self.config_drain.can_consume()
+    }
+
+    fn consume(&self) -> Result<Self::Good, Self::Error> {
+        while !self.queue.can_consume() {
+            if let Some(ui_input) = self.user_interface.optional_consume()? {
+                self.queue
+                    .produce(ui_input.into())
+                    .map_err(Self::Error::Queue)?;
             }
-            Output::SetHeader { header } => {
-                self.user_interface.set_header(header)?;
-            }
-            Output::Notify { message } => {
-                self.user_interface.notify(&message)?;
-            }
-            Output::Question { request } => {
-                self.user_interface.question(&request)?;
-            }
-            Output::StartIntake { title } => {
-                self.user_interface.start_intake(title)?;
-            }
-            Output::Reset { selection } => {
-                self.user_interface.reset(selection)?;
-            }
-            Output::Resize { size } => {
-                self.user_interface.resize(size);
-            }
-            Output::Write { ch } => {
-                self.user_interface.write(ch)?;
-            }
-            Output::Quit => {
-                keep_running = false;
+
+            if let Some(config_input) = self
+                .config_drain
+                .optional_consume()
+                .map_err(Self::Error::Change)?
+            {
+                self.queue
+                    .produce(config_input)
+                    .map_err(Self::Error::Queue)?;
             }
         }
 
-        Ok(keep_running)
-    }
+        let mut good = Ok(self.queue.consume().map_err(Self::Error::Consume)?);
 
-    /// Flushes the application I/O.
-    pub(crate) fn flush(&mut self) -> Result<(), FlushError> {
-        self.user_interface.flush()
+        if let Ok(Input::Quit) = good {
+            good = Err(Self::Error::Quit);
+        }
+
+        good
+    }
+}
+
+impl<'a> Producer<'a> for Interface {
+    type Good = Output<'a>;
+    type Error = ProduceOutputError;
+
+    fn produce(&self, output: Self::Good) -> Result<(), Self::Error> {
+        match output {
+            Output::GetFile { path } => {
+                self.add_file(&path)?;
+            }
+            Output::EditDoc { url, edit } => {
+                self.edit_doc(url, edit)?;
+            }
+            Output::Wrap {
+                is_wrapped,
+                selection,
+            } => {
+                self.user_interface.produce(ui::Output::Wrap {
+                    is_wrapped,
+                    selection,
+                })?;
+            }
+            Output::MoveSelection { selection } => {
+                self.user_interface
+                    .produce(ui::Output::MoveSelection { selection })?;
+            }
+            Output::UpdateHeader => {
+                let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
+
+                // config will always be Some after Context::new_with_dir().
+                if let Some(mut config) = context.config.config.clone() {
+                    if let Some(table) = config.as_table_mut() {
+                        let _ = table.insert("add_newline".to_string(), Value::Boolean(false));
+
+                        if let Some(line_break) = table
+                            .entry("line_break")
+                            .or_insert(Value::Table(Table::new()))
+                            .as_table_mut()
+                        {
+                            let _ = line_break.insert("disabled".to_string(), Value::Boolean(true));
+                        }
+                    }
+
+                    context.config.config = Some(config);
+                }
+                self.user_interface.produce(ui::Output::SetHeader {
+                    header: print::get_prompt(context),
+                })?;
+            }
+            Output::Notify { message } => {
+                self.user_interface
+                    .produce(ui::Output::Notify { message })?;
+            }
+            Output::Question { request } => {
+                self.user_interface
+                    .produce(ui::Output::Question { request })?;
+            }
+            Output::StartIntake { title } => {
+                self.user_interface
+                    .produce(ui::Output::StartIntake { title })?;
+            }
+            Output::Reset { selection } => {
+                self.user_interface
+                    .produce(ui::Output::Reset { selection })?;
+            }
+            Output::Resize { size } => {
+                self.user_interface.produce(ui::Output::Resize { size })?;
+            }
+            Output::Write { ch } => {
+                self.user_interface.produce(ui::Output::Write { ch })?;
+            }
+            Output::Log { starship_level } => {
+                self.log_config.writer()?.starship_level = starship_level;
+            }
+            Output::Quit => {
+                self.queue
+                    .produce(Input::Quit)
+                    .map_err(Self::Error::Queue)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -335,7 +459,7 @@ pub struct UrlError(String);
 /// A URL that is a valid path.
 ///
 /// Useful for preventing repeat translations between URL and path formats.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PathUrl {
     /// The path.
     path: PathBuf,
@@ -428,33 +552,6 @@ struct Config {
     starship_log: StarshipLog,
 }
 
-impl Config {
-    /// Reads the config file into a `Config`.
-    fn read(config_file: PathBuf) -> Result<Self, Glitch> {
-        fs::read_to_string(config_file)
-            .map_err(Glitch::ReadConfig)
-            .and_then(|config_string| toml::from_str(&config_string).map_err(Glitch::ConfigFormat))
-    }
-
-    /// Updates `self` to match paper's config file, returning any changed [`Setting`]s.
-    fn update(&mut self, config_file: PathBuf) -> Result<VecDeque<Setting>, Glitch> {
-        let mut settings = VecDeque::new();
-        let config = Self::read(config_file)?;
-
-        if self.wrap != config.wrap {
-            self.wrap = config.wrap;
-            settings.push_back(Setting::Wrap(self.wrap.0));
-        }
-
-        if self.starship_log != config.starship_log {
-            self.starship_log = config.starship_log;
-            settings.push_back(Setting::StarshipLog(self.starship_log.0));
-        }
-
-        Ok(settings)
-    }
-}
-
 macro_rules! def_config {
     ($name:ident: $ty:ty = $default:expr) => {
         #[derive(Debug, Deserialize, PartialEq)]
@@ -473,56 +570,35 @@ def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
 
 /// Signifies a configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Setting {
+pub enum Setting {
     /// If the document shall wrap long text.
     Wrap(bool),
     /// The level at which starship records shall be logged.
     StarshipLog(LevelFilter),
 }
 
-/// Triggers a callback if the config file is updated.
-struct ConfigWatcher {
-    /// Watches for events on the config file.
-    #[allow(dead_code)] // watcher must must be owned to avoid being dropped.
-    watcher: RecommendedWatcher,
-    /// Receives events generated by `watcher`.
-    notify: Receiver<DebouncedEvent>,
-}
-
-impl ConfigWatcher {
-    /// Creates a new [`ConfigWatcher`].
-    fn new(config_file: &PathBuf) -> Result<Self, notify::Error> {
-        let (tx, notify) = mpsc::channel();
-        let mut watcher = notify::watcher(tx, Duration::from_secs(0))?;
-
-        if config_file.is_file() {
-            watcher.watch(config_file, RecursiveMode::NonRecursive)?;
-        }
-
-        Ok(Self { watcher, notify })
-    }
-}
-
-impl fmt::Debug for ConfigWatcher {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
-    }
-}
-
 /// An input.
 #[derive(Debug)]
-pub(crate) enum Input {
+pub enum Input {
     /// A file to be opened.
-    File(String),
+    File {
+        /// The URL of the file.
+        url: PathUrl,
+        /// The text of the file.
+        text: String,
+    },
     /// An input from the user.
     User(ui::Input),
     /// A configuration.
-    Config(Setting),
+    Config(config::Setting),
     /// A glitch.
     Glitch(Glitch),
+    /// Quit.
+    Quit,
 }
 
 impl From<ui::Input> for Input {
+    #[inline]
     fn from(value: ui::Input) -> Self {
         Self::User(value)
     }
@@ -531,23 +607,17 @@ impl From<ui::Input> for Input {
 /// An output.
 #[derive(Debug)]
 pub(crate) enum Output<'a> {
-    /// Opens a document.
-    OpenDoc {
-        /// The root directory of the project.
-        root_dir: PathUrl,
-        /// The URL of the document.
-        url: &'a PathUrl,
-        /// The version of the document.
-        version: i64,
-        /// The full text of the document
-        text: &'a str,
+    /// Retrieves the URL and text of a file.
+    GetFile {
+        /// The relative path of the file.
+        path: String,
     },
-    /// Saves the document.
-    SaveDoc {
-        /// The URL.
-        url: &'a PathUrl,
-        /// The text of the document.
-        text: &'a str,
+    /// Edits a document.
+    EditDoc {
+        /// The URL of the document.
+        url: PathUrl,
+        /// The edit to be performed.
+        edit: DocEdit<'a>,
     },
     /// Sets the wrapping of the text.
     Wrap {
@@ -556,34 +626,13 @@ pub(crate) enum Output<'a> {
         /// The selection.
         selection: &'a Selection,
     },
-    /// Edits the document.
-    EditDoc {
-        /// The new text.
-        new_text: String,
-        /// The selection.
-        selection: &'a Selection,
-        /// The URL.
-        url: &'a PathUrl,
-        /// The version.
-        version: i64,
-        /// The full text of the document.
-        text: &'a str,
-    },
-    /// Closes the document.
-    CloseDoc {
-        /// The URL of the document to be closed.
-        url: PathUrl,
-    },
     /// Moves the selection.
     MoveSelection {
         /// The selection.
         selection: &'a Selection,
     },
     /// Sets the header of the application.
-    SetHeader {
-        /// The header.
-        header: String,
-    },
+    UpdateHeader,
     /// Notifies the user of a message.
     Notify {
         /// The message.
@@ -607,7 +656,7 @@ pub(crate) enum Output<'a> {
     /// Resizes the application display.
     Resize {
         /// The new [`Size`].
-        size: Size,
+        size: BodySize,
     },
     /// Write a [`char`] to the application.
     Write {
@@ -616,4 +665,39 @@ pub(crate) enum Output<'a> {
     },
     /// Quit the application.
     Quit,
+    /// Configure the logger.
+    Log {
+        /// The level for starship logs.
+        starship_level: LevelFilter,
+    },
+}
+
+/// Edits a document.
+#[derive(Debug)]
+pub(crate) enum DocEdit<'a> {
+    /// Opens a document.
+    Open {
+        /// The version of the document.
+        version: i64,
+        /// The full text of the document
+        text: &'a str,
+    },
+    /// Saves the document.
+    Save {
+        /// The text of the document.
+        text: &'a str,
+    },
+    /// Edits the document.
+    Change {
+        /// The new text.
+        new_text: String,
+        /// The selection.
+        selection: &'a Selection,
+        /// The version.
+        version: i64,
+        /// The full text of the document.
+        text: &'a str,
+    },
+    /// Closes the document.
+    Close,
 }

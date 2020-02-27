@@ -18,10 +18,11 @@ Bugs are viewed as the application failing to implement a given feature - namely
 
 ## Coding Style
 
-As many source code style conventions as possible shall be tested via lints or tests.
+The formatting of source code shall be handled by [rustfmt](https://github.com/rust-lang/rustfmt).
+As many source code style conventions as possible shall be tested via [clippy](https://rust-lang.github.io/rust-clippy/current/index.html).
 
-In addition, source code should adhere to the following recommendations which (unfortunately) cannot be automatically tested:
-- Regular comments (i.e. not documentation comments) should only be used when they would assist a reasonably knowledgable reader in understanding why a section of code was written in its current form. A "reasonably knowledge reader" is a reader who has a solid understanding of the Rust language and a basic idea of how the program operates.
+In addition, source code should adhere to the following recommendations which cannot be automatically tested:
+- Comments (those that are not documentation comments) should only be used when they would assist a reasonably knowledgable reader in understanding why a section of code was written in its current form. A "reasonably knowledge reader" is a reader who has a solid understanding of the Rust language and a basic idea of how the program operates.
 - Lints should be allowed sparingly and only after careful consideration. The rationale for allowing the lint must be described in a comment following the attribute. Lints may be allowed under the following conditions:
     + When a lint is not desired for any part of the project, it should be allowed at the beginning of `src/lib.rs`.
     + When the risks of allowing a lint are understood but they are acceptable or desired for the given context, the `allow` attribute for that lint should be added to the appropriate section of code. Code where a lint is allowed should be as consise as possible to avoid other cases of the lint being allowed unintentionally.

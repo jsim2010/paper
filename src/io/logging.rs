@@ -7,7 +7,7 @@ use {
         sync::{Arc, RwLock, RwLockWriteGuard},
     },
     thiserror::Error,
-    time::PrimitiveDateTime,
+    time::OffsetDateTime,
 };
 
 /// An error from which the logging functionality was unable to recover.
@@ -75,7 +75,7 @@ impl Writer {
         let _ = writeln!(
             self.file,
             "{} [{}]: {}",
-            PrimitiveDateTime::now().format("%F %T"),
+            OffsetDateTime::now_local().format("%F %T"),
             record.level(),
             record.args()
         );
