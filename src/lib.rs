@@ -61,8 +61,6 @@
 
 mod app;
 pub mod io;
-// TODO: Move this into its own crate.
-mod market;
 
 pub use io::Arguments;
 
@@ -81,7 +79,7 @@ use {
 /// use paper::{Arguments, Failure, Paper};
 /// # fn main() -> Result<(), Failure> {
 ///
-/// Paper::new(Arguments::default())?.run()?;
+/// Paper::new(&Arguments::default())?.run()?;
 /// Ok(())
 /// # }
 /// ```

@@ -5,9 +5,8 @@ pub mod lsp;
 pub mod ui;
 
 use {
-    crate::market::{ConsumeError, Consumer, Producer, Queue},
     clap::ArgMatches,
-    config::ChangeFilter,
+    config::{ChangeFilter, ConsumeChangeError},
     core::{
         cell::RefCell,
         convert::{TryFrom, TryInto},
@@ -17,6 +16,7 @@ use {
     logging::LogConfig,
     lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
+    market::{Consumer, Producer, Queue},
     serde::Deserialize,
     starship::{context::Context, print},
     std::{
@@ -113,9 +113,9 @@ pub enum ProduceOutputError {
     /// Produce error from ui.
     #[error("{0}")]
     UiProduce(#[from] ProduceTerminalOutputError),
-    /// Produce error.
-    #[error(transparent)]
-    Produce(#[from] <Queue<Input> as Producer<'static>>::Error),
+    /// Add to queue.
+    #[error("{0}")]
+    Queue(#[source] <Queue<Input> as Producer<'static>>::Error),
 }
 
 /// An error while pulling input.
@@ -172,18 +172,18 @@ pub enum ConsumeInputError {
     /// Quit.
     #[error("")]
     Quit,
-    /// Receive.
-    #[error("")]
-    Recv(#[from] crossbeam_channel::RecvError),
-    /// Consume.
-    #[error("")]
-    Consume(#[from] ConsumeError),
     /// Ui.
     #[error("")]
     Ui(#[from] ui::ConsumeInputError),
-    /// Send.
+    /// Add to queue.
+    #[error("{0}")]
+    Queue(#[source] <Queue<Input> as Producer<'static>>::Error),
+    /// Change
     #[error("")]
-    Send(#[from] <Queue<Input> as Producer<'static>>::Error),
+    Change(#[from] ConsumeChangeError),
+    /// Consume.
+    #[error("")]
+    Consume(#[source] <Queue<Input> as Consumer>::Error),
 }
 
 /// The interface between the application and all external components.
@@ -283,10 +283,7 @@ impl Interface {
                         },
                         Err(error) => ShowMessageParams {
                             typ: MessageType::Error,
-                            message: format!(
-                                "Failed to save document `{}`: {}",
-                                url, error
-                            ),
+                            message: format!("Failed to save document `{}`: {}", url, error),
                         },
                     },
                 })?;
@@ -344,15 +341,23 @@ impl Consumer for Interface {
     fn consume(&self) -> Result<Self::Good, Self::Error> {
         while !self.queue.can_consume() {
             if let Some(ui_input) = self.user_interface.optional_consume()? {
-                self.queue.produce(ui_input.into())?;
+                self.queue
+                    .produce(ui_input.into())
+                    .map_err(Self::Error::Queue)?;
             }
 
-            if let Some(config_input) = self.config_drain.optional_consume()? {
-                self.queue.produce(config_input)?;
+            if let Some(config_input) = self
+                .config_drain
+                .optional_consume()
+                .map_err(Self::Error::Change)?
+            {
+                self.queue
+                    .produce(config_input)
+                    .map_err(Self::Error::Queue)?;
             }
         }
 
-        let mut good = Ok(self.queue.consume()?);
+        let mut good = Ok(self.queue.consume().map_err(Self::Error::Consume)?);
 
         if let Ok(Input::Quit) = good {
             good = Err(Self::Error::Quit);
@@ -436,26 +441,14 @@ impl<'a> Producer<'a> for Interface {
                 self.log_config.writer()?.starship_level = starship_level;
             }
             Output::Quit => {
-                self.queue.produce(Input::Quit)?;
+                self.queue
+                    .produce(Input::Quit)
+                    .map_err(Self::Error::Queue)?;
             }
         }
 
         Ok(())
     }
-}
-
-/// An error receiving input.
-#[derive(Debug, Error)]
-pub enum RecvInputError {
-    /// An error receiving config input.
-    #[error("{0}")]
-    Watcher(#[from] ConfigError),
-    /// An error receiving arguments.
-    #[error("{0}")]
-    Own(#[from] ConsumeError),
-    /// An invalid error.
-    #[error("invalid")]
-    Invalid,
 }
 
 /// An error occurred while converting a directory path to a URL.
@@ -582,17 +575,6 @@ pub enum Setting {
     Wrap(bool),
     /// The level at which starship records shall be logged.
     StarshipLog(LevelFilter),
-}
-
-/// An error with the config.
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    /// An error sending an input.
-    #[error("{0}")]
-    Send(#[from] crossbeam_channel::SendError<Input>),
-    /// An error receiving an input.
-    #[error("{0}")]
-    Rx(#[from] ConsumeError),
 }
 
 /// An input.

@@ -442,7 +442,7 @@ impl ModeInterpreter for CollectInterpreter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::io::{ui::Modifiers, Glitch, Setting};
+    use crate::io::{config::Setting, ui::Modifiers, Glitch};
 
     /// Tests decoding user input while the [`Interpreter`] is in [`Mode::View`].
     mod view {

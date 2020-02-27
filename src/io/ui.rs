@@ -16,7 +16,6 @@ pub(crate) use crossterm::{
 };
 
 use {
-    crate::market::{Consumer, Producer, Queue},
     core::{
         cell::RefCell,
         cmp,
@@ -35,6 +34,7 @@ use {
     },
     log::{error, warn},
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
+    market::{Consumer, Producer, Queue},
     std::{
         collections::VecDeque,
         io::{self, Stdout, Write},
@@ -49,7 +49,7 @@ use {
 pub enum CreateTerminalError {
     /// An error producing the size of the body.
     #[error("producing body size: {0}")]
-    ProduceSize(#[from] <Queue<Input> as Producer<'static>>::Error),
+    ProduceSize(#[source] <Queue<Input> as Producer<'static>>::Error),
     /// An error initializing the terminal output.
     #[error("initializing output: {0}")]
     Init(#[from] ProduceTerminalOutputError),
@@ -119,9 +119,9 @@ pub enum ConsumeInputError {
     /// Read.
     #[error("")]
     Read(#[from] ErrorKind),
-    /// Receives.
+    /// Consume queue.
     #[error("")]
-    Recv(#[from] <Queue<Input> as Consumer>::Error),
+    ConsumeQueue(#[source] <Queue<Input> as Consumer>::Error),
 }
 
 /// A user interface provided by a terminal.
@@ -140,7 +140,9 @@ impl Terminal {
     pub(crate) fn new() -> Result<Self, CreateTerminalError> {
         let queue = Queue::new();
 
-        queue.produce(get_body_size().into())?;
+        queue
+            .produce(get_body_size().into())
+            .map_err(CreateTerminalError::ProduceSize)?;
 
         let terminal = Self {
             out: RefCell::new(io::stdout()),
@@ -181,10 +183,9 @@ impl Consumer for Terminal {
 
     fn consume(&self) -> Result<Self::Good, Self::Error> {
         if self.queue.can_consume() {
-            Ok(self.queue.consume()?)
+            self.queue.consume().map_err(Self::Error::ConsumeQueue)
         } else {
-            Ok(event::read()
-                .map(|event| event.into())?)
+            Ok(event::read().map(|event| event.into())?)
         }
     }
 }
