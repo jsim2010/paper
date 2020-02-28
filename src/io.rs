@@ -16,7 +16,7 @@ use {
     logging::LogConfig,
     lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
-    market::{Consumer, Producer, Queue},
+    market::{Consumer, Producer, UnlimitedQueue},
     serde::Deserialize,
     starship::{context::Context, print},
     std::{
@@ -115,7 +115,7 @@ pub enum ProduceOutputError {
     UiProduce(#[from] ProduceTerminalOutputError),
     /// Add to queue.
     #[error("{0}")]
-    Queue(#[source] <Queue<Input> as Producer<'static>>::Error),
+    Queue(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
 }
 
 /// An error while pulling input.
@@ -177,13 +177,13 @@ pub enum ConsumeInputError {
     Ui(#[from] ui::ConsumeInputError),
     /// Add to queue.
     #[error("{0}")]
-    Queue(#[source] <Queue<Input> as Producer<'static>>::Error),
+    Queue(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
     /// Change
     #[error("")]
     Change(#[from] ConsumeChangeError),
     /// Consume.
     #[error("")]
-    Consume(#[source] <Queue<Input> as Consumer>::Error),
+    Consume(#[source] <UnlimitedQueue<Input> as Consumer>::Error),
 }
 
 /// The interface between the application and all external components.
@@ -192,7 +192,7 @@ pub(crate) struct Interface {
     /// Notifies `self` of any events to the config file.
     config_drain: ChangeFilter,
     /// Queues [`Input`]s.
-    queue: Queue<Input>,
+    queue: UnlimitedQueue<Input>,
     /// Manages the user interface.
     user_interface: Terminal,
     /// The [`LspServer`]s managed by the application.
@@ -214,7 +214,7 @@ impl Interface {
                     .ok_or(CreateInterfaceError::HomeDir)?
                     .join(".config/paper.toml"),
             ),
-            queue: Queue::new(),
+            queue: UnlimitedQueue::new(),
             user_interface: Terminal::new()?,
             lsp_servers: Rc::new(RefCell::new(HashMap::default())),
             root_dir: PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?,
@@ -340,19 +340,15 @@ impl Consumer for Interface {
 
     fn consume(&self) -> Result<Self::Good, Self::Error> {
         while !self.queue.can_consume() {
-            if let Some(ui_input) = self.user_interface.optional_consume()? {
+            if let Some(ui_input) = self.user_interface.optional_consume() {
                 self.queue
-                    .produce(ui_input.into())
+                    .produce(ui_input?.into())
                     .map_err(Self::Error::Queue)?;
             }
 
-            if let Some(config_input) = self
-                .config_drain
-                .optional_consume()
-                .map_err(Self::Error::Change)?
-            {
+            if let Some(config_input) = self.config_drain.optional_consume() {
                 self.queue
-                    .produce(config_input)
+                    .produce(config_input?)
                     .map_err(Self::Error::Queue)?;
             }
         }

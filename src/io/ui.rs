@@ -34,7 +34,7 @@ use {
     },
     log::{error, warn},
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
-    market::{Consumer, Producer, Queue},
+    market::{Consumer, Producer, UnlimitedQueue},
     std::{
         collections::VecDeque,
         io::{self, Stdout, Write},
@@ -49,7 +49,7 @@ use {
 pub enum CreateTerminalError {
     /// An error producing the size of the body.
     #[error("producing body size: {0}")]
-    ProduceSize(#[source] <Queue<Input> as Producer<'static>>::Error),
+    ProduceSize(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
     /// An error initializing the terminal output.
     #[error("initializing output: {0}")]
     Init(#[from] ProduceTerminalOutputError),
@@ -121,7 +121,7 @@ pub enum ConsumeInputError {
     Read(#[from] ErrorKind),
     /// Consume queue.
     #[error("")]
-    ConsumeQueue(#[source] <Queue<Input> as Consumer>::Error),
+    ConsumeQueue(#[source] <UnlimitedQueue<Input> as Consumer>::Error),
 }
 
 /// A user interface provided by a terminal.
@@ -131,14 +131,14 @@ pub(crate) struct Terminal {
     /// The body of the screen, where all document text is displayed.
     body: RefCell<Body>,
     /// A queue of [`Input`]s.
-    queue: Queue<Input>,
+    queue: UnlimitedQueue<Input>,
 }
 
 #[allow(clippy::unused_self)] // For pull(), will be used when user interface becomes a trait.
 impl Terminal {
     /// Creates a new [`Terminal`].
     pub(crate) fn new() -> Result<Self, CreateTerminalError> {
-        let queue = Queue::new();
+        let queue = UnlimitedQueue::new();
 
         queue
             .produce(get_body_size().into())
