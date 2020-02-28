@@ -117,7 +117,7 @@ impl Paper {
     /// [`RunPaperError`]: enum.RunPaperError.html
     #[inline]
     pub fn run(&mut self) -> Result<(), RunPaperError> {
-        for input in self.io.records() {
+        for input in self.io.goods() {
             for output in self.processor.process(input) {
                 self.io.produce(output)?;
             }
