@@ -346,10 +346,7 @@ impl Consumer for Interface {
                     .map_err(Self::Error::Queue)?;
             }
 
-            if let Some(config_input) = self
-                .config_drain
-                .optional_consume()
-            {
+            if let Some(config_input) = self.config_drain.optional_consume() {
                 self.queue
                     .produce(config_input?)
                     .map_err(Self::Error::Queue)?;

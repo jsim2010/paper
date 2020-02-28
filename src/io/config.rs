@@ -3,7 +3,7 @@ use {
     crate::io::Input,
     core::{cell::Cell, fmt, time::Duration},
     log::{warn, LevelFilter},
-    market::{Consumer, Producer, UnlimitedQueue, MpscConsumer},
+    market::{Consumer, MpscConsumer, Producer, UnlimitedQueue},
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
     std::{fs, path::PathBuf, sync::mpsc},
