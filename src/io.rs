@@ -13,7 +13,7 @@ use {
         fmt,
     },
     log::{error, LevelFilter},
-    logging::LogConfig,
+    logging::LogManager,
     lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
     market::{Consumer, Producer, UnlimitedQueue},
@@ -202,7 +202,7 @@ pub(crate) struct Interface {
     /// The root directory of the application.
     root_dir: PathUrl,
     /// The configuration of the logger.
-    log_config: LogConfig,
+    log_config: LogManager,
 }
 
 impl Interface {
@@ -210,7 +210,7 @@ impl Interface {
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         let interface = Self {
             // Create log_config first as this is where the logger is initialized.
-            log_config: LogConfig::new()?,
+            log_config: LogManager::new()?,
             config_drain: SettingConsumer::new(
                 &dirs::home_dir()
                     .ok_or(CreateInterfaceError::HomeDir)?
@@ -430,7 +430,7 @@ impl<'a> Producer<'a> for Interface {
                 self.user_interface.produce(ui::Output::Write { ch })?;
             }
             Output::Log { starship_level } => {
-                self.log_config.writer()?.starship_level = starship_level;
+                self.log_config.produce(logging::Output::StarshipLevel(starship_level))?;
             }
             Output::Quit => {
                 self.queue.close();
