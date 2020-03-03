@@ -6,7 +6,7 @@ pub mod ui;
 
 use {
     clap::ArgMatches,
-    config::{ChangeFilter, ConsumeChangeError},
+    config::{Setting, SettingConsumer, CreateSettingConsumerError},
     core::{
         cell::RefCell,
         convert::{TryFrom, TryInto},
@@ -17,7 +17,6 @@ use {
     lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
     market::{Consumer, Producer, UnlimitedQueue},
-    serde::Deserialize,
     starship::{context::Context, print},
     std::{
         collections::{hash_map::Entry, HashMap},
@@ -84,6 +83,9 @@ pub enum CreateInterfaceError {
     /// An error while creating the logging configuration.
     #[error("{0}")]
     CreateLogConfig(#[from] logging::Fault),
+    /// An error creating the setting consumer.
+    #[error("")]
+    CreateConfig(#[from] CreateSettingConsumerError),
 }
 
 /// An error while writing output.
@@ -180,7 +182,7 @@ pub enum ConsumeInputError {
     Queue(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
     /// Change
     #[error("")]
-    Change(#[from] ConsumeChangeError),
+    Change(#[source] <UnlimitedQueue<Setting> as Consumer>::Error),
     /// Consume.
     #[error("")]
     Consume(#[source] <UnlimitedQueue<Input> as Consumer>::Error),
@@ -190,7 +192,7 @@ pub enum ConsumeInputError {
 #[derive(Debug)]
 pub(crate) struct Interface {
     /// Notifies `self` of any events to the config file.
-    config_drain: ChangeFilter,
+    config_drain: SettingConsumer,
     /// Queues [`Input`]s.
     queue: UnlimitedQueue<Input>,
     /// Manages the user interface.
@@ -209,11 +211,11 @@ impl Interface {
         let interface = Self {
             // Create log_config first as this is where the logger is initialized.
             log_config: LogConfig::new()?,
-            config_drain: ChangeFilter::new(
+            config_drain: SettingConsumer::new(
                 &dirs::home_dir()
                     .ok_or(CreateInterfaceError::HomeDir)?
                     .join(".config/paper.toml"),
-            ),
+            )?,
             queue: UnlimitedQueue::new(),
             user_interface: Terminal::new()?,
             lsp_servers: Rc::new(RefCell::new(HashMap::default())),
@@ -346,20 +348,14 @@ impl Consumer for Interface {
                     .map_err(Self::Error::Queue)?;
             }
 
-            if let Some(config_input) = self.config_drain.optional_consume() {
+            if let Some(setting) = self.config_drain.optional_consume() {
                 self.queue
-                    .produce(config_input?)
+                    .produce(setting.map_err(Self::Error::Change)?.into())
                     .map_err(Self::Error::Queue)?;
             }
         }
 
-        let mut good = Ok(self.queue.consume().map_err(Self::Error::Consume)?);
-
-        if let Ok(Input::Quit) = good {
-            good = Err(Self::Error::Quit);
-        }
-
-        good
+        self.queue.consume().map_err(Self::Error::Consume)
     }
 }
 
@@ -437,9 +433,7 @@ impl<'a> Producer<'a> for Interface {
                 self.log_config.writer()?.starship_level = starship_level;
             }
             Output::Quit => {
-                self.queue
-                    .produce(Input::Quit)
-                    .map_err(Self::Error::Queue)?;
+                self.queue.close();
             }
         }
 
@@ -538,41 +532,6 @@ impl TryFrom<PathBuf> for PathUrl {
     }
 }
 
-/// Signifies any configurable parameter of the application.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct Config {
-    /// If the application wraps long lines.
-    wrap: Wrap,
-    /// The [`LevelFilter`] of the starship library.
-    starship_log: StarshipLog,
-}
-
-macro_rules! def_config {
-    ($name:ident: $ty:ty = $default:expr) => {
-        #[derive(Debug, Deserialize, PartialEq)]
-        struct $name($ty);
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self($default)
-            }
-        }
-    };
-}
-
-def_config!(Wrap: bool = false);
-def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
-
-/// Signifies a configuration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Setting {
-    /// If the document shall wrap long text.
-    Wrap(bool),
-    /// The level at which starship records shall be logged.
-    StarshipLog(LevelFilter),
-}
-
 /// An input.
 #[derive(Debug)]
 pub enum Input {
@@ -586,17 +545,22 @@ pub enum Input {
     /// An input from the user.
     User(ui::Input),
     /// A configuration.
-    Config(config::Setting),
+    Setting(Setting),
     /// A glitch.
     Glitch(Glitch),
-    /// Quit.
-    Quit,
 }
 
 impl From<ui::Input> for Input {
     #[inline]
     fn from(value: ui::Input) -> Self {
         Self::User(value)
+    }
+}
+
+impl From<Setting> for Input {
+    #[inline]
+    fn from(value: Setting) -> Self {
+        Self::Setting(value)
     }
 }
 
