@@ -4,6 +4,10 @@ mod utils;
 pub(crate) use utils::SendNotificationError;
 
 use {
+    market::Producer,
+    enum_map::{enum_map, EnumMap},
+    crate::io::{PathUrl, LanguageId},
+    core::cell::RefCell,
     log::warn,
     lsp_types::{
         notification::{
@@ -11,6 +15,7 @@ use {
             WillSaveTextDocument,
         },
         request::{Initialize, Shutdown},
+        Range,
         ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
         MessageType, ShowMessageParams, SynchronizationCapability, TextDocumentClientCapabilities,
@@ -20,6 +25,7 @@ use {
     },
     std::{
         io,
+        rc::Rc,
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     },
     thiserror::Error,
@@ -130,74 +136,71 @@ pub(crate) struct LspServer {
 
 impl LspServer {
     /// Creates a new `LspServer` for `language_id`.
-    pub(crate) fn new<U>(language_id: &str, root: U) -> Result<Option<Self>, CreateLangClientError>
+    pub(crate) fn new<U>(language_id: LanguageId, root: U) -> Result<Self, CreateLangClientError>
     where
         U: AsRef<Url>,
     {
-        Ok(if let Some(mut server) = LangServer::new(language_id)? {
-            let mut transmitter = LspTransmitter::new(server.stdin()?);
-            let receiver = LspReceiver::new(server.stdout()?, &transmitter);
-            let capabilities = ClientCapabilities {
-                workspace: None,
-                text_document: Some(TextDocumentClientCapabilities {
-                    synchronization: Some(SynchronizationCapability {
-                        dynamic_registration: None,
-                        will_save: Some(true),
-                        will_save_wait_until: None,
-                        did_save: None,
-                    }),
-                    completion: None,
-                    hover: None,
-                    signature_help: None,
-                    references: None,
-                    document_highlight: None,
-                    document_symbol: None,
-                    formatting: None,
-                    range_formatting: None,
-                    on_type_formatting: None,
-                    declaration: None,
-                    definition: None,
-                    type_definition: None,
-                    implementation: None,
-                    code_action: None,
-                    code_lens: None,
-                    document_link: None,
-                    color_provider: None,
-                    rename: None,
-                    publish_diagnostics: None,
-                    folding_range: None,
+        let mut server = LangServer::new(language_id)?;
+        let mut transmitter = LspTransmitter::new(server.stdin()?);
+        let receiver = LspReceiver::new(server.stdout()?, &transmitter);
+        let capabilities = ClientCapabilities {
+            workspace: None,
+            text_document: Some(TextDocumentClientCapabilities {
+                synchronization: Some(SynchronizationCapability {
+                    dynamic_registration: None,
+                    will_save: Some(true),
+                    will_save_wait_until: None,
+                    did_save: None,
                 }),
-                window: None,
-                experimental: None,
-            };
+                completion: None,
+                hover: None,
+                signature_help: None,
+                references: None,
+                document_highlight: None,
+                document_symbol: None,
+                formatting: None,
+                range_formatting: None,
+                on_type_formatting: None,
+                declaration: None,
+                definition: None,
+                type_definition: None,
+                implementation: None,
+                code_action: None,
+                code_lens: None,
+                document_link: None,
+                color_provider: None,
+                rename: None,
+                publish_diagnostics: None,
+                folding_range: None,
+            }),
+            window: None,
+            experimental: None,
+        };
 
-            #[allow(deprecated)] // root_path is a required field.
-            let settings = LspSettings::from(transmitter.request::<Initialize>(
-                InitializeParams {
-                    process_id: Some(u64::from(process::id())),
-                    root_path: None,
-                    root_uri: Some(root.as_ref().clone()),
-                    initialization_options: None,
-                    capabilities,
-                    trace: None,
-                    workspace_folders: None,
-                    client_info: None,
-                },
-                &receiver,
-            )?);
+        #[allow(deprecated)] // root_path is a required field.
+        let settings = LspSettings::from(transmitter.request::<Initialize>(
+            InitializeParams {
+                process_id: Some(u64::from(process::id())),
+                root_path: None,
+                root_uri: Some(root.as_ref().clone()),
+                initialization_options: None,
+                capabilities,
+                trace: None,
+                workspace_folders: None,
+                client_info: None,
+            },
+            &receiver,
+        )?);
 
-            transmitter.notify::<Initialized>(InitializedParams {})?;
+        transmitter.notify::<Initialized>(InitializedParams {})?;
 
-            Some(Self {
-                // error_processor must be created before server is moved.
-                error_processor: LspErrorProcessor::new(server.stderr()?),
-                server,
-                transmitter,
-                settings,
-                receiver,
-            })
-        } else {
-            None
+        Ok(Self {
+            // error_processor must be created before server is moved.
+            error_processor: LspErrorProcessor::new(server.stderr()?),
+            server,
+            transmitter,
+            settings,
+            receiver,
         })
     }
 
@@ -316,33 +319,142 @@ impl Drop for LspServer {
     }
 }
 
+/// An error creating client.
+#[derive(Debug, Error)]
+pub enum CreateLanguageClientError {
+    /// Server.
+    #[error("")]
+    Server(#[from] CreateLangClientError),
+}
+
+/// An error editing language client.
+#[derive(Debug, Error)]
+pub enum EditLanguageClientError {
+    /// An error with notification.
+    #[error("")]
+    Notification(#[from] SendNotificationError),
+    /// An error with fault.
+    #[error("")]
+    Fault(#[from] Fault),
+}
+
+impl From<EditLanguageClientError> for ShowMessageParams {
+    #[inline]
+    #[must_use]
+    fn from(value: EditLanguageClientError) -> Self {
+        Self {
+            typ: MessageType::Error,
+            message: value.to_string(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct LanguageClient {
+    // Require Rc due to LspServer not impl Copy, see https://gitlab.com/KonradBorowski/enum-map/-/merge_requests/30.
+    servers: EnumMap<LanguageId, Rc<RefCell<LspServer>>>,
+}
+
+impl LanguageClient {
+    pub(crate) fn new(root_dir: &PathUrl) -> Result<Self, CreateLanguageClientError> {
+        let rust_server = Rc::new(RefCell::new(LspServer::new(LanguageId::Rust, &root_dir)?));
+
+        Ok(Self {
+            servers: enum_map! {
+                LanguageId::Rust => rust_server.clone(),
+            },
+        })
+    }
+}
+
+impl Producer<'_> for LanguageClient {
+    type Good = Protocol;
+    type Error = ProduceProtocolError;
+
+    fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
+        if let Some(language_id) = good.url.language_id() {
+            let mut server = self.servers[language_id].borrow_mut();
+
+            match good.message {
+                Message::Open{version, text} => {
+                    server.did_open(good.url, &language_id.to_string(), version, &text)?;
+                }
+                Message::Save => {
+                    server.will_save(good.url)?;
+                }
+                Message::Change{version, text, range, new_text} => {
+                    server.did_change(good.url, version, &text, TextEdit::new(range, new_text))?;
+                }
+                Message::Close => {
+                    server.did_close(good.url)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+pub(crate) struct Protocol {
+    pub(crate) url: PathUrl,
+    pub(crate) message: Message,
+}
+
+pub(crate) enum Message {
+    Open {
+        version: i64,
+        text: String,
+    },
+    Save,
+    Change {
+        version: i64,
+        text: String,
+        range: Range,
+        new_text: String,
+    },
+    Close,
+}
+
+/// An error producing protocol.
+#[derive(Debug, Error)]
+pub enum ProduceProtocolError {
+    /// An error with notification.
+    #[error("")]
+    Notification(#[from] SendNotificationError),
+    /// An error with fault.
+    #[error("")]
+    Fault(#[from] Fault),
+}
+
+impl From<ProduceProtocolError> for ShowMessageParams {
+    #[inline]
+    #[must_use]
+    fn from(value: ProduceProtocolError) -> Self {
+        Self {
+            typ: MessageType::Error,
+            message: value.to_string(),
+        }
+    }
+}
+
 /// Signifies a language server process.
 #[derive(Debug)]
 struct LangServer(Child);
 
 impl LangServer {
     /// Creates a new [`LangServer`].
-    fn new(language_id: &str) -> Result<Option<Self>, SpawnLangServerError> {
-        let command = match language_id {
-            "rust" => Some("rls"),
-            _ => None,
-        };
-
-        Ok(if let Some(cmd) = command {
-            Some(Self(
-                Command::new(cmd)
+    fn new(language_id: LanguageId) -> Result<Self, SpawnLangServerError> {
+        Ok(Self(
+                Command::new(language_id.server_cmd())
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()
                     .map_err(|error| SpawnLangServerError {
-                        command: cmd.to_string(),
+                        command: language_id.to_string(),
                         error,
                     })?,
-            ))
-        } else {
-            None
-        })
+        ))
     }
 
     /// Returns the stderr of the process.
