@@ -4,10 +4,9 @@ mod utils;
 pub(crate) use utils::SendNotificationError;
 
 use {
-    market::Producer,
-    enum_map::{enum_map, EnumMap},
-    crate::io::{PathUrl, LanguageId},
+    crate::io::{LanguageId, PathUrl},
     core::cell::RefCell,
+    enum_map::{enum_map, EnumMap},
     log::warn,
     lsp_types::{
         notification::{
@@ -15,18 +14,18 @@ use {
             WillSaveTextDocument,
         },
         request::{Initialize, Shutdown},
-        Range,
         ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-        MessageType, ShowMessageParams, SynchronizationCapability, TextDocumentClientCapabilities,
-        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-        TextDocumentSaveReason, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
-        VersionedTextDocumentIdentifier, WillSaveTextDocumentParams,
+        MessageType, Range, ShowMessageParams, SynchronizationCapability,
+        TextDocumentClientCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+        TextDocumentItem, TextDocumentSaveReason, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextEdit, Url, VersionedTextDocumentIdentifier, WillSaveTextDocumentParams,
     },
+    market::Producer,
     std::{
         io,
-        rc::Rc,
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
+        rc::Rc,
     },
     thiserror::Error,
     utils::{LspErrorProcessor, LspReceiver, LspTransmitter, RequestResponseError},
@@ -380,13 +379,18 @@ impl Producer<'_> for LanguageClient {
             let mut server = self.servers[language_id].borrow_mut();
 
             match good.message {
-                Message::Open{version, text} => {
+                Message::Open { version, text } => {
                     server.did_open(good.url, &language_id.to_string(), version, &text)?;
                 }
                 Message::Save => {
                     server.will_save(good.url)?;
                 }
-                Message::Change{version, text, range, new_text} => {
+                Message::Change {
+                    version,
+                    text,
+                    range,
+                    new_text,
+                } => {
                     server.did_change(good.url, version, &text, TextEdit::new(range, new_text))?;
                 }
                 Message::Close => {
@@ -464,15 +468,15 @@ impl LangServer {
     /// Creates a new [`LangServer`].
     fn new(language_id: LanguageId) -> Result<Self, SpawnLangServerError> {
         Ok(Self(
-                Command::new(language_id.server_cmd())
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|error| SpawnLangServerError {
-                        command: language_id.to_string(),
-                        error,
-                    })?,
+            Command::new(language_id.server_cmd())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| SpawnLangServerError {
+                    command: language_id.to_string(),
+                    error,
+                })?,
         ))
     }
 

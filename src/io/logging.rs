@@ -77,7 +77,9 @@ impl Logger {
         let log_filename = "paper.log".to_string();
 
         Ok(Self {
-            file: Arc::new(RwLock::new(File::create(&log_filename).map_err(|e| Fault::CreateFile(log_filename, e))?)),
+            file: Arc::new(RwLock::new(
+                File::create(&log_filename).map_err(|e| Fault::CreateFile(log_filename, e))?,
+            )),
             config: Arc::new(RwLock::new(Config::new())),
         })
     }

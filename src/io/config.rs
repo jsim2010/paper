@@ -2,7 +2,7 @@
 use {
     core::{cell::Cell, fmt, time::Duration},
     log::LevelFilter,
-    market::{Strip, Validator, Filter, Consumer, MpscConsumer, Stripper, UnlimitedQueue},
+    market::{Consumer, Filter, MpscConsumer, Strip, Stripper, Validator},
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
     std::{fs, io, path::PathBuf, sync::mpsc},
@@ -34,6 +34,17 @@ pub enum CreateConfigurationError {
     Deserialize(#[from] toml::de::Error),
 }
 
+/// An error consuming [`Setting`]s.
+#[derive(Clone, Copy, Debug, Error)]
+pub enum ConsumeSettingError {
+    /// Consume.
+    #[error("")]
+    Consume(
+        #[source]
+        <Filter<Setting, <MpscConsumer<DebouncedEvent> as Consumer>::Error> as Consumer>::Error,
+    ),
+}
+
 /// The Change Filter.
 pub(crate) struct SettingConsumer {
     /// Watches for events on the config file.
@@ -47,15 +58,21 @@ impl SettingConsumer {
     /// Creates a new [`SettingConsumer`].
     pub(crate) fn new(path: &PathBuf) -> Result<Self, CreateSettingConsumerError> {
         let (event_tx, event_rx) = mpsc::channel();
-        let mut watcher = notify::watcher(event_tx, Duration::from_secs(0)).map_err(CreateSettingConsumerError::CreateWatcher)?;
+        let mut watcher = notify::watcher(event_tx, Duration::from_secs(0))
+            .map_err(CreateSettingConsumerError::CreateWatcher)?;
 
         if path.is_file() {
-            watcher.watch(path, RecursiveMode::NonRecursive).map_err(CreateSettingConsumerError::WatchFile)?;
+            watcher
+                .watch(path, RecursiveMode::NonRecursive)
+                .map_err(CreateSettingConsumerError::WatchFile)?;
         }
 
         Ok(Self {
             watcher,
-            consumer: Filter::new(Stripper::new(MpscConsumer::from(event_rx)), SettingDeduplicator::new(path)),
+            consumer: Filter::new(
+                Stripper::new(MpscConsumer::from(event_rx)),
+                SettingDeduplicator::new(path),
+            ),
         })
     }
 }
@@ -69,21 +86,24 @@ impl fmt::Debug for SettingConsumer {
 
 impl Consumer for SettingConsumer {
     type Good = Setting;
-    type Error = <UnlimitedQueue<Setting> as Consumer>::Error;
+    type Error = ConsumeSettingError;
 
     fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        self.consumer.consume()
+        self.consumer
+            .consume()
+            .map(|c| c.map_err(Self::Error::Consume))
     }
 }
 
 impl Strip<DebouncedEvent> for Setting {
+    #[inline]
     fn strip(intermediate_good: DebouncedEvent) -> Vec<Self> {
         let mut finished_goods = Vec::new();
 
         if let DebouncedEvent::Write(file) = intermediate_good {
             if let Ok(config) = Configuration::new(&file) {
-                finished_goods.push(Setting::Wrap(config.wrap.0));
-                finished_goods.push(Setting::StarshipLog(config.starship_log.0));
+                finished_goods.push(Self::Wrap(config.wrap.0));
+                finished_goods.push(Self::StarshipLog(config.starship_log.0));
             }
         }
 
@@ -91,11 +111,14 @@ impl Strip<DebouncedEvent> for Setting {
     }
 }
 
+/// Filters settings that already match the current configuration.
 struct SettingDeduplicator {
+    /// The current configuration.
     config: Cell<Configuration>,
 }
 
 impl SettingDeduplicator {
+    /// Creates a new [`SettingDeduplicator`].
     fn new(path: &PathBuf) -> Self {
         Self {
             config: Cell::new(Configuration::new(path).unwrap_or_default()),
@@ -108,7 +131,7 @@ impl Validator for SettingDeduplicator {
 
     fn is_valid(&self, good: &Self::Good) -> bool {
         let config = self.config.get();
-        let mut new_config = config.clone();
+        let mut new_config = config;
         let result;
 
         match good {

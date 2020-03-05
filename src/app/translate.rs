@@ -472,7 +472,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Config(Setting::Wrap(true))),
+                int.translate(Input::Setting(Setting::Wrap(true))),
                 Some(Operation::UpdateSetting(Setting::Wrap(true)))
             );
             assert_eq!(int.mode, Mode::View);

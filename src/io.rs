@@ -5,16 +5,16 @@ pub mod lsp;
 pub mod ui;
 
 use {
-    enum_map::Enum,
     clap::ArgMatches,
-    config::{Setting, SettingConsumer, CreateSettingConsumerError},
+    config::{ConsumeSettingError, CreateSettingConsumerError, Setting, SettingConsumer},
     core::{
         convert::{TryFrom, TryInto},
         fmt::{self, Display},
     },
+    enum_map::Enum,
     log::{error, LevelFilter},
     logging::LogManager,
-    lsp::{LanguageClient, CreateLangClientError, Fault, SendNotificationError},
+    lsp::{CreateLangClientError, Fault, LanguageClient, SendNotificationError},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     market::{Consumer, Producer, UnlimitedQueue},
     starship::{context::Context, print},
@@ -125,9 +125,6 @@ pub enum ProduceOutputError {
     /// Produce error from ui.
     #[error("{0}")]
     UiProduce(#[from] ProduceTerminalOutputError),
-    /// Add to queue.
-    #[error("{0}")]
-    Queue(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
 }
 
 /// An error while pulling input.
@@ -196,6 +193,9 @@ pub enum ConsumeInputError {
     /// Consume.
     #[error("")]
     Consume(#[source] <UnlimitedQueue<Input> as Consumer>::Error),
+    /// Setting.
+    #[error("{0}")]
+    Setting(#[from] ConsumeSettingError),
 }
 
 /// The interface between the application and all external components.
@@ -259,7 +259,7 @@ impl Interface {
     }
 
     /// Edits the doc at `url`.
-    fn edit_doc(&self, url: PathUrl, edit: DocEdit<'_>) -> Result<(), ProduceOutputError> {
+    fn edit_doc(&self, url: &PathUrl, edit: DocEdit<'_>) -> Result<(), ProduceOutputError> {
         match edit {
             DocEdit::Open { text, .. } => {
                 self.user_interface.produce(ui::Output::OpenDoc { text })?;
@@ -284,7 +284,7 @@ impl Interface {
                 ..
             } => {
                 self.user_interface.produce(ui::Output::Edit {
-                    new_text: new_text.clone(),
+                    new_text,
                     selection,
                 })?;
             }
@@ -301,20 +301,14 @@ impl Consumer for Interface {
 
     fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
         if let Some(ui_input) = self.user_interface.consume() {
-            if let Err(e) = self.queue
-                .produce(ui_input.unwrap().into()) {
-                return Some(Err(Self::Error::Queue(e)));
-            }
+            Some(ui_input.map(Self::Good::from).map_err(Self::Error::from))
+        } else if let Some(setting) = self.setting_consumer.consume() {
+            Some(setting.map(Self::Good::from).map_err(Self::Error::from))
+        } else {
+            self.queue
+                .consume()
+                .map(|consumable| consumable.map_err(Self::Error::Consume))
         }
-
-        if let Some(setting) = self.setting_consumer.consume() {
-            if let Err(e) = self.queue
-                .produce(setting.unwrap().into()) {
-                return Some(Err(Self::Error::Queue(e)));
-            }
-        }
-
-        self.queue.consume().map(|consumable| consumable.map_err(Self::Error::Consume))
     }
 }
 
@@ -336,7 +330,7 @@ impl<'a> Producer<'a> for Interface {
                 self.add_file(&path)?;
             }
             Output::EditDoc { url, edit } => {
-                self.edit_doc(url, edit)?;
+                self.edit_doc(&url, edit)?;
             }
             Output::Wrap {
                 is_wrapped,
@@ -397,7 +391,8 @@ impl<'a> Producer<'a> for Interface {
                 self.user_interface.produce(ui::Output::Write { ch })?;
             }
             Output::Log { starship_level } => {
-                self.log_manager.produce(logging::Output::StarshipLevel(starship_level))?;
+                self.log_manager
+                    .produce(logging::Output::StarshipLevel(starship_level))?;
             }
             Output::Quit => {
                 self.queue.close();
@@ -432,9 +427,13 @@ impl LanguageId {
 
 impl Display for LanguageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", match self {
-            Self::Rust => "rust",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Rust => "rust",
+            }
+        )
     }
 }
 
@@ -629,20 +628,36 @@ impl TryFrom<Output<'_>> for lsp::Protocol {
 
     fn try_from(value: Output<'_>) -> Result<Self, Self::Error> {
         match value {
-            Output::EditDoc {url, edit} => {
-                Ok(lsp::Protocol {
-                    url,
-                    message: edit.into(),
-                })
-            }
-            _ => Err(TryIntoProtocolError),
+            Output::EditDoc { url, edit } => Ok(Self {
+                url,
+                message: edit.try_into()?,
+            }),
+            Output::GetFile { .. }
+            | Output::Wrap { .. }
+            | Output::MoveSelection { .. }
+            | Output::UpdateHeader
+            | Output::Notify { .. }
+            | Output::Question { .. }
+            | Output::StartIntake { .. }
+            | Output::Reset { .. }
+            | Output::Resize { .. }
+            | Output::Write { .. }
+            | Output::Quit
+            | Output::Log { .. } => Err(TryIntoProtocolError::InvalidOutput),
         }
     }
 }
 
 /// An error converting [`Output`] into a [`Protocol`].
-#[derive(Clone, Copy, Debug)]
-pub struct TryIntoProtocolError;
+#[derive(Clone, Copy, Debug, Error)]
+pub enum TryIntoProtocolError {
+    /// Invalid [`Output`].
+    #[error("")]
+    InvalidOutput,
+    /// Invalid edit doc.
+    #[error("")]
+    InvalidEditDoc(#[from] TryIntoMessageError),
+}
 
 /// Edits a document.
 #[derive(Clone, Debug)]
@@ -674,13 +689,36 @@ pub(crate) enum DocEdit<'a> {
     Close,
 }
 
-impl From<DocEdit<'_>> for lsp::Message {
-    fn from(value: DocEdit<'_>) -> Self {
-        match value {
-            DocEdit::Open{version, text} => Self::Open{version, text: text.to_string()},
-            DocEdit::Save{..} => Self::Save,
-            DocEdit::Change{version, text, selection, new_text} => Self::Change{version, text: text.to_string(), range: selection.range().unwrap(), new_text},
+impl TryFrom<DocEdit<'_>> for lsp::Message {
+    type Error = TryIntoMessageError;
+
+    fn try_from(value: DocEdit<'_>) -> Result<Self, Self::Error> {
+        Ok(match value {
+            DocEdit::Open { version, text } => Self::Open {
+                version,
+                text: text.to_string(),
+            },
+            DocEdit::Save { .. } => Self::Save,
+            DocEdit::Change {
+                version,
+                text,
+                selection,
+                new_text,
+            } => Self::Change {
+                version,
+                text: text.to_string(),
+                range: selection.range()?,
+                new_text,
+            },
             DocEdit::Close => Self::Close,
-        }
+        })
     }
+}
+
+/// An error converting [`DocEdit`] into [`Message`].
+#[derive(Clone, Copy, Debug, Error)]
+pub enum TryIntoMessageError {
+    /// Selection.
+    #[error(transparent)]
+    Selection(#[from] SelectionConversionError),
 }

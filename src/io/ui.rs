@@ -23,7 +23,7 @@ use {
         fmt::{self, Debug},
         num,
         ops::{Bound, RangeBounds},
-        sync::atomic::{Ordering, AtomicBool},
+        sync::atomic::{AtomicBool, Ordering},
         time::Duration,
     },
     crossterm::{
@@ -128,6 +128,7 @@ pub(crate) struct Terminal {
     out: RefCell<Stdout>,
     /// The body of the screen, where all document text is displayed.
     body: RefCell<Body>,
+    /// If the terminal has been initialized.
     is_initialized: AtomicBool,
 }
 
@@ -165,18 +166,24 @@ impl Consumer for Terminal {
     type Error = ConsumeInputError;
 
     fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        if !self.is_initialized.load(Ordering::Relaxed) {
-            self.is_initialized.store(true, Ordering::Relaxed);
-            Some(Ok(get_body_size().into()))
-        } else {
+        if self.is_initialized.load(Ordering::Relaxed) {
             match event::poll(INSTANT) {
-                Ok(can_consume) => if can_consume {
-                    Some(event::read().map(|event| event.into()).map_err(Self::Error::Read))
-                } else {
-                    None
+                Ok(can_consume) => {
+                    if can_consume {
+                        Some(
+                            event::read()
+                                .map(|event| event.into())
+                                .map_err(Self::Error::Read),
+                        )
+                    } else {
+                        None
+                    }
                 }
                 Err(error) => Some(Err(error).map_err(Self::Error::Read)),
             }
+        } else {
+            self.is_initialized.store(true, Ordering::Relaxed);
+            Some(Ok(get_body_size().into()))
         }
     }
 }
