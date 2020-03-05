@@ -7,16 +7,20 @@ alias v := validate
 build:
     cargo build
 
+# Checks the formatting of the project
+check_format:
+    cargo fmt -- --check
+
+# Generates documentation for public items.
+doc:
+    cargo doc
+
 # Generates documentation for public and private items.
 doc_all:
     cargo doc --document-private-items
 
 # Fixes issues that can be addressed automatically
 fix: format
-
-# Validates that code is formatted correctly
-validate_format:
-    cargo fmt -- --check
 
 # Formats rust code
 format:
@@ -31,8 +35,4 @@ test:
     cargo test --verbose --all-features
 
 # Validates the project
-validate: validate_fmt build test lint
-
-# Validates the formatting of the project
-validate_fmt:
-    cargo fmt -- --check
+validate: check_format build test lint

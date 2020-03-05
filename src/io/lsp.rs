@@ -349,19 +349,22 @@ impl From<EditLanguageClientError> for ShowMessageParams {
     }
 }
 
+/// Manages the langauge servers.
 #[derive(Debug)]
 pub(crate) struct LanguageClient {
+    /// The servers that have been created by the application.
     // Require Rc due to LspServer not impl Copy, see https://gitlab.com/KonradBorowski/enum-map/-/merge_requests/30.
     servers: EnumMap<LanguageId, Rc<RefCell<LspServer>>>,
 }
 
 impl LanguageClient {
+    /// Creates a new [`LanguageClient`].
     pub(crate) fn new(root_dir: &PathUrl) -> Result<Self, CreateLanguageClientError> {
         let rust_server = Rc::new(RefCell::new(LspServer::new(LanguageId::Rust, &root_dir)?));
 
         Ok(Self {
             servers: enum_map! {
-                LanguageId::Rust => rust_server.clone(),
+                LanguageId::Rust => Rc::clone(&rust_server),
             },
         })
     }
@@ -373,6 +376,7 @@ impl Producer<'_> for LanguageClient {
 
     fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
         if let Some(language_id) = good.url.language_id() {
+            #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
             let mut server = self.servers[language_id].borrow_mut();
 
             match good.message {
@@ -395,23 +399,38 @@ impl Producer<'_> for LanguageClient {
     }
 }
 
+/// Protocol of language server.
 pub(crate) struct Protocol {
+    /// The URL that generated.
     pub(crate) url: PathUrl,
+    /// The message.
     pub(crate) message: Message,
 }
 
+#[allow(dead_code)] // False positive.
+/// Message to language server.
 pub(crate) enum Message {
+    /// Open a doc.
     Open {
+        /// The version.
         version: i64,
+        /// The text.
         text: String,
     },
+    /// Save a doc.
     Save,
+    /// Change a doc.
     Change {
+        /// The version.
         version: i64,
+        /// The text.
         text: String,
+        /// The range.
         range: Range,
+        /// The new text.
         new_text: String,
     },
+    /// Close a doc.
     Close,
 }
 

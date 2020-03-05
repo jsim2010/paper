@@ -207,6 +207,7 @@ pub(crate) struct Interface {
     setting_consumer: SettingConsumer,
     /// Queues [`Input`]s.
     queue: UnlimitedQueue<Input>,
+    /// Manages the language servers of the application.
     language_client: LanguageClient,
     /// The root directory of the application.
     root_dir: PathUrl,
@@ -260,26 +261,10 @@ impl Interface {
     /// Edits the doc at `url`.
     fn edit_doc(&self, url: PathUrl, edit: DocEdit<'_>) -> Result<(), ProduceOutputError> {
         match edit {
-            DocEdit::Open { text, version } => {
-                self.language_client.produce(lsp::Protocol{
-                    url: url.clone(),
-                    message: lsp::Message::Open {
-                        version,
-                        text: text.to_string()
-                    },
-                })?;
+            DocEdit::Open { text, .. } => {
                 self.user_interface.produce(ui::Output::OpenDoc { text })?;
             }
             DocEdit::Save { text } => {
-                if let Err(error) = self.language_client.produce(lsp::Protocol {
-                    url: url.clone(),
-                    message: lsp::Message::Save,
-                }) {
-                    self.user_interface.produce(ui::Output::Notify {
-                        message: error.into(),
-                    })?;
-                }
-
                 self.user_interface.produce(ui::Output::Notify {
                     message: match fs::write(&url, text) {
                         Ok(..) => ShowMessageParams {
@@ -296,39 +281,14 @@ impl Interface {
             DocEdit::Change {
                 new_text,
                 selection,
-                version,
-                text,
+                ..
             } => {
                 self.user_interface.produce(ui::Output::Edit {
                     new_text: new_text.clone(),
                     selection,
                 })?;
-
-                if let Err(error) = self.language_client.produce(lsp::Protocol {
-                    url: url.clone(),
-                    message: lsp::Message::Change {
-                        version,
-                        text: text.to_string(),
-                        range: selection.range()?,
-                        new_text,
-                    },
-                }) {
-                    self.user_interface.produce(ui::Output::Notify {
-                        message: error.into(),
-                    })?;
-                }
             }
-            DocEdit::Close => {
-                if let Err(error) = self.language_client.produce(lsp::Protocol {
-                    url: url.clone(),
-                    message: lsp::Message::Close,
-                }) {
-                    error!(
-                        "failed to inform language server process about closing: {}",
-                        error,
-                    );
-                }
-            }
+            DocEdit::Close => {}
         }
 
         Ok(())
@@ -339,28 +299,22 @@ impl Consumer for Interface {
     type Good = Input;
     type Error = ConsumeInputError;
 
-    fn can_consume(&self) -> bool {
-        self.queue.can_consume()
-            || self.user_interface.can_consume()
-            || self.setting_consumer.can_consume()
-    }
-
-    fn consume(&self) -> Result<Self::Good, Self::Error> {
-        while !self.queue.can_consume() {
-            if let Some(ui_input) = self.user_interface.optional_consume() {
-                self.queue
-                    .produce(ui_input?.into())
-                    .map_err(Self::Error::Queue)?;
-            }
-
-            if let Some(setting) = self.setting_consumer.optional_consume() {
-                self.queue
-                    .produce(setting.map_err(Self::Error::Change)?.into())
-                    .map_err(Self::Error::Queue)?;
+    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
+        if let Some(ui_input) = self.user_interface.consume() {
+            if let Err(e) = self.queue
+                .produce(ui_input.unwrap().into()) {
+                return Some(Err(Self::Error::Queue(e)));
             }
         }
 
-        self.queue.consume().map_err(Self::Error::Consume)
+        if let Some(setting) = self.setting_consumer.consume() {
+            if let Err(e) = self.queue
+                .produce(setting.unwrap().into()) {
+                return Some(Err(Self::Error::Queue(e)));
+            }
+        }
+
+        self.queue.consume().map(|consumable| consumable.map_err(Self::Error::Consume))
     }
 }
 
@@ -369,6 +323,14 @@ impl<'a> Producer<'a> for Interface {
     type Error = ProduceOutputError;
 
     fn produce(&self, output: Self::Good) -> Result<(), Self::Error> {
+        if let Ok(protocol) = lsp::Protocol::try_from(output.clone()) {
+            if let Err(error) = self.language_client.produce(protocol) {
+                self.user_interface.produce(ui::Output::Notify {
+                    message: error.into(),
+                })?;
+            }
+        }
+
         match output {
             Output::GetFile { path } => {
                 self.add_file(&path)?;
@@ -451,12 +413,16 @@ impl<'a> Producer<'a> for Interface {
 #[error("while converting `{0}` to a URL")]
 pub struct UrlError(String);
 
+/// The language ids supported by `paper`.
 #[derive(Clone, Copy, Debug, Enum, Eq, Hash, PartialEq)]
 pub(crate) enum LanguageId {
+    /// The rust language.
     Rust,
 }
 
 impl LanguageId {
+    /// Returns the server cmd for `self`.
+    #[allow(clippy::missing_const_for_fn)] // For stable rust, match is not allowed in const fn.
     fn server_cmd(&self) -> &str {
         match self {
             Self::Rust => "rls",
@@ -497,7 +463,7 @@ impl PathUrl {
         self.path
             .extension()
             .and_then(OsStr::to_str)
-            .map_or(None, |ext| match ext {
+            .and_then(|ext| match ext {
                 "rs" => Some(LanguageId::Rust),
                 _ => None,
             })
@@ -591,7 +557,7 @@ impl From<Setting> for Input {
 }
 
 /// An output.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum Output<'a> {
     /// Retrieves the URL and text of a file.
     GetFile {
@@ -658,8 +624,28 @@ pub(crate) enum Output<'a> {
     },
 }
 
+impl TryFrom<Output<'_>> for lsp::Protocol {
+    type Error = TryIntoProtocolError;
+
+    fn try_from(value: Output<'_>) -> Result<Self, Self::Error> {
+        match value {
+            Output::EditDoc {url, edit} => {
+                Ok(lsp::Protocol {
+                    url,
+                    message: edit.into(),
+                })
+            }
+            _ => Err(TryIntoProtocolError),
+        }
+    }
+}
+
+/// An error converting [`Output`] into a [`Protocol`].
+#[derive(Clone, Copy, Debug)]
+pub struct TryIntoProtocolError;
+
 /// Edits a document.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum DocEdit<'a> {
     /// Opens a document.
     Open {
@@ -686,4 +672,15 @@ pub(crate) enum DocEdit<'a> {
     },
     /// Closes the document.
     Close,
+}
+
+impl From<DocEdit<'_>> for lsp::Message {
+    fn from(value: DocEdit<'_>) -> Self {
+        match value {
+            DocEdit::Open{version, text} => Self::Open{version, text: text.to_string()},
+            DocEdit::Save{..} => Self::Save,
+            DocEdit::Change{version, text, selection, new_text} => Self::Change{version, text: text.to_string(), range: selection.range().unwrap(), new_text},
+            DocEdit::Close => Self::Close,
+        }
+    }
 }

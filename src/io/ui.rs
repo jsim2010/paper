@@ -23,6 +23,7 @@ use {
         fmt::{self, Debug},
         num,
         ops::{Bound, RangeBounds},
+        sync::atomic::{Ordering, AtomicBool},
         time::Duration,
     },
     crossterm::{
@@ -119,9 +120,6 @@ pub enum ConsumeInputError {
     /// Read.
     #[error("")]
     Read(#[from] ErrorKind),
-    /// Consume queue.
-    #[error("")]
-    ConsumeQueue(#[source] <UnlimitedQueue<Input> as Consumer>::Error),
 }
 
 /// A user interface provided by a terminal.
@@ -130,24 +128,17 @@ pub(crate) struct Terminal {
     out: RefCell<Stdout>,
     /// The body of the screen, where all document text is displayed.
     body: RefCell<Body>,
-    /// A queue of [`Input`]s.
-    queue: UnlimitedQueue<Input>,
+    is_initialized: AtomicBool,
 }
 
 #[allow(clippy::unused_self)] // For pull(), will be used when user interface becomes a trait.
 impl Terminal {
     /// Creates a new [`Terminal`].
     pub(crate) fn new() -> Result<Self, CreateTerminalError> {
-        let queue = UnlimitedQueue::new();
-
-        queue
-            .produce(get_body_size().into())
-            .map_err(CreateTerminalError::ProduceSize)?;
-
         let terminal = Self {
             out: RefCell::new(io::stdout()),
             body: RefCell::new(Body::default()),
-            queue,
+            is_initialized: AtomicBool::new(false),
         };
 
         terminal.produce(Output::Init)?;
@@ -173,19 +164,19 @@ impl Consumer for Terminal {
     type Good = Input;
     type Error = ConsumeInputError;
 
-    fn can_consume(&self) -> bool {
-        self.queue.can_consume()
-            || match event::poll(INSTANT) {
-                Ok(has_event) => has_event,
-                Err(_) => true,
-            }
-    }
-
-    fn consume(&self) -> Result<Self::Good, Self::Error> {
-        if self.queue.can_consume() {
-            self.queue.consume().map_err(Self::Error::ConsumeQueue)
+    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
+        if !self.is_initialized.load(Ordering::Relaxed) {
+            self.is_initialized.store(true, Ordering::Relaxed);
+            Some(Ok(get_body_size().into()))
         } else {
-            Ok(event::read().map(|event| event.into())?)
+            match event::poll(INSTANT) {
+                Ok(can_consume) => if can_consume {
+                    Some(event::read().map(|event| event.into()).map_err(Self::Error::Read))
+                } else {
+                    None
+                }
+                Err(error) => Some(Err(error).map_err(Self::Error::Read)),
+            }
         }
     }
 }

@@ -2,7 +2,7 @@
 use {
     core::{cell::Cell, fmt, time::Duration},
     log::LevelFilter,
-    market::{GoodFinisher, Consumer, MpscConsumer, IntermediateConsumer, UnlimitedQueue},
+    market::{Strip, Validator, Filter, Consumer, MpscConsumer, Stripper, UnlimitedQueue},
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
     std::{fs, io, path::PathBuf, sync::mpsc},
@@ -39,8 +39,8 @@ pub(crate) struct SettingConsumer {
     /// Watches for events on the config file.
     #[allow(dead_code)] // Must keep ownership of watcher.
     watcher: RecommendedWatcher,
-    /// The consumer of config file events.
-    consumer: IntermediateConsumer<DebouncedEvent, <MpscConsumer<DebouncedEvent> as Consumer>::Error, SettingFinisher, Setting>,
+    /// The consumer of settings.
+    consumer: Filter<Setting, <MpscConsumer<DebouncedEvent> as Consumer>::Error>,
 }
 
 impl SettingConsumer {
@@ -48,7 +48,6 @@ impl SettingConsumer {
     pub(crate) fn new(path: &PathBuf) -> Result<Self, CreateSettingConsumerError> {
         let (event_tx, event_rx) = mpsc::channel();
         let mut watcher = notify::watcher(event_tx, Duration::from_secs(0)).map_err(CreateSettingConsumerError::CreateWatcher)?;
-        let finisher = SettingFinisher::new(path)?;
 
         if path.is_file() {
             watcher.watch(path, RecursiveMode::NonRecursive).map_err(CreateSettingConsumerError::WatchFile)?;
@@ -56,7 +55,7 @@ impl SettingConsumer {
 
         Ok(Self {
             watcher,
-            consumer: IntermediateConsumer::new(MpscConsumer::from(event_rx), finisher),
+            consumer: Filter::new(Stripper::new(MpscConsumer::from(event_rx)), SettingDeduplicator::new(path)),
         })
     }
 }
@@ -64,11 +63,7 @@ impl SettingConsumer {
 impl fmt::Debug for SettingConsumer {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "SettingConsumer {{consumer: {:?}}}",
-            self.consumer
-        )
+        write!(f, "SettingConsumer {{ .. }}")
     }
 }
 
@@ -76,54 +71,59 @@ impl Consumer for SettingConsumer {
     type Good = Setting;
     type Error = <UnlimitedQueue<Setting> as Consumer>::Error;
 
-    fn can_consume(&self) -> bool {
-        self.consumer.can_consume()
-    }
-
-    fn consume(&self) -> Result<Self::Good, Self::Error> {
+    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
         self.consumer.consume()
     }
 }
 
-/// Manages the finishing of [`Setting`]s.
-#[derive(Debug)]
-struct SettingFinisher {
-    /// The deserialization of the config file.
-    config: Cell<Configuration>,
-}
-
-impl SettingFinisher {
-    /// Creates a new [`SettingFinisher`].
-    fn new(path: &PathBuf) -> Result<Self, CreateSettingConsumerError> {
-        Ok(Self {
-            config: Cell::new(Configuration::new(path).unwrap_or_default()),
-        })
-    }
-}
-
-impl GoodFinisher for SettingFinisher {
-    type Intermediate = DebouncedEvent;
-    type Final = Setting;
-
-    fn finish(&self, intermediate_good: Self::Intermediate) -> Vec<Self::Final> {
+impl Strip<DebouncedEvent> for Setting {
+    fn strip(intermediate_good: DebouncedEvent) -> Vec<Self> {
         let mut finished_goods = Vec::new();
 
         if let DebouncedEvent::Write(file) = intermediate_good {
-            let new_config = Configuration::new(&file).unwrap_or_default();
-            let config = self.config.get();
-
-            if config.wrap != new_config.wrap {
-                finished_goods.push(Setting::Wrap(new_config.wrap.0));
+            if let Ok(config) = Configuration::new(&file) {
+                finished_goods.push(Setting::Wrap(config.wrap.0));
+                finished_goods.push(Setting::StarshipLog(config.starship_log.0));
             }
-
-            if config.starship_log != new_config.starship_log {
-                finished_goods.push(Setting::StarshipLog(new_config.starship_log.0));
-            }
-
-            self.config.set(new_config);
         }
 
         finished_goods
+    }
+}
+
+struct SettingDeduplicator {
+    config: Cell<Configuration>,
+}
+
+impl SettingDeduplicator {
+    fn new(path: &PathBuf) -> Self {
+        Self {
+            config: Cell::new(Configuration::new(path).unwrap_or_default()),
+        }
+    }
+}
+
+impl Validator for SettingDeduplicator {
+    type Good = Setting;
+
+    fn is_valid(&self, good: &Self::Good) -> bool {
+        let config = self.config.get();
+        let mut new_config = config.clone();
+        let result;
+
+        match good {
+            Self::Good::Wrap(wrap) => {
+                result = *wrap == config.wrap.0;
+                new_config.wrap.0 = *wrap;
+            }
+            Self::Good::StarshipLog(starship_log) => {
+                result = *starship_log == config.starship_log.0;
+                new_config.starship_log.0 = *starship_log;
+            }
+        }
+
+        self.config.set(new_config);
+        result
     }
 }
 
