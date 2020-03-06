@@ -196,6 +196,12 @@ pub enum ConsumeInputError {
     /// Setting.
     #[error("{0}")]
     Setting(#[from] ConsumeSettingError),
+    /// Lsp
+    #[error("")]
+    Lsp(#[from] lsp::ConsumeInputError),
+    /// Produce
+    #[error("")]
+    Produce(#[from] lsp::ProduceProtocolError),
 }
 
 /// The interface between the application and all external components.
@@ -300,7 +306,26 @@ impl Consumer for Interface {
     type Error = ConsumeInputError;
 
     fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        if let Some(ui_input) = self.user_interface.consume() {
+        if let Some(Ok(lang_input)) = self.language_client.consume() {
+            match lang_input.reception {
+                lsp::Reception::Initialize => {
+                    if let Err(error) = self.language_client.produce(lsp::Protocol{
+                        language_id: lang_input.language_id,
+                        message: lsp::Message::Initialized,
+                    }) {
+                        return Some(Err(Self::Error::Produce(error)));
+                    }
+                }
+                lsp::Reception::Request{id} => {
+                    if let Err(error) = self.language_client.produce(lsp::Protocol{language_id: lang_input.language_id, message: lsp::Message::RegisterCapability{id}}) {
+                        return Some(Err(Self::Error::Produce(error)));
+                    }
+                }
+                lsp::Reception::Shutdown => {}
+            }
+
+            None
+        } else if let Some(ui_input) = self.user_interface.consume() {
             Some(ui_input.map(Self::Good::from).map_err(Self::Error::from))
         } else if let Some(setting) = self.setting_consumer.consume() {
             Some(setting.map(Self::Good::from).map_err(Self::Error::from))
@@ -308,6 +333,37 @@ impl Consumer for Interface {
             self.queue
                 .consume()
                 .map(|consumable| consumable.map_err(Self::Error::Consume))
+        }
+    }
+}
+
+impl Drop for Interface {
+    fn drop(&mut self) {
+        drop(&self.user_interface);
+
+        for language_id in self.language_client.language_ids() {
+            if let Err(error) = self.language_client.produce(lsp::Protocol{language_id, message: lsp::Message::Shutdown}) {
+                error!("Failed to send shutdown message to {} language server: {}", language_id, error);
+            }
+        }
+
+        loop {
+            // TODO: Need to check for reception from all servers.
+            if let Some(Ok(lang_input)) = self.language_client.consume() {
+                if let lsp::Reception::Shutdown = lang_input.reception {
+                    break;
+                }
+            }
+        }
+
+        for language_id in self.language_client.language_ids() {
+            if let Err(error) = self.language_client.produce(lsp::Protocol{language_id, message: lsp::Message::Exit}) {
+                error!("Failed to send exit message to {} language server: {}", language_id, error);
+            }
+
+            if let Err(error) = self.language_client.servers[language_id].borrow_mut().server.wait() {
+                error!("Failed to wait for {} language server process to finish: {}", language_id, error);
+            }
         }
     }
 }
@@ -628,10 +684,16 @@ impl TryFrom<Output<'_>> for lsp::Protocol {
 
     fn try_from(value: Output<'_>) -> Result<Self, Self::Error> {
         match value {
-            Output::EditDoc { url, edit } => Ok(Self {
-                url,
-                message: edit.try_into()?,
-            }),
+            Output::EditDoc { url, edit } => {
+                if let Some(language_id) = url.language_id() {
+                    Ok(Self {
+                        language_id,
+                        message: lsp::Message::Doc{url: url, message: edit.try_into()?},
+                    })
+                } else {
+                    Err(TryIntoProtocolError::InvalidOutput)
+                }
+            }
             Output::GetFile { .. }
             | Output::Wrap { .. }
             | Output::MoveSelection { .. }
@@ -689,7 +751,7 @@ pub(crate) enum DocEdit<'a> {
     Close,
 }
 
-impl TryFrom<DocEdit<'_>> for lsp::Message {
+impl TryFrom<DocEdit<'_>> for lsp::DocMessage {
     type Error = TryIntoMessageError;
 
     fn try_from(value: DocEdit<'_>) -> Result<Self, Self::Error> {

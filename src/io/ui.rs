@@ -23,7 +23,6 @@ use {
         fmt::{self, Debug},
         num,
         ops::{Bound, RangeBounds},
-        sync::atomic::{AtomicBool, Ordering},
         time::Duration,
     },
     crossterm::{
@@ -31,7 +30,7 @@ use {
         event::{self, Event},
         execute, queue,
         style::{Color, Print, ResetColor, SetBackgroundColor},
-        terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+        terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     },
     log::{error, warn},
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
@@ -128,8 +127,6 @@ pub(crate) struct Terminal {
     out: RefCell<Stdout>,
     /// The body of the screen, where all document text is displayed.
     body: RefCell<Body>,
-    /// If the terminal has been initialized.
-    is_initialized: AtomicBool,
 }
 
 #[allow(clippy::unused_self)] // For pull(), will be used when user interface becomes a trait.
@@ -139,7 +136,6 @@ impl Terminal {
         let terminal = Self {
             out: RefCell::new(io::stdout()),
             body: RefCell::new(Body::default()),
-            is_initialized: AtomicBool::new(false),
         };
 
         terminal.produce(Output::Init)?;
@@ -166,24 +162,19 @@ impl Consumer for Terminal {
     type Error = ConsumeInputError;
 
     fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        if self.is_initialized.load(Ordering::Relaxed) {
-            match event::poll(INSTANT) {
-                Ok(can_consume) => {
-                    if can_consume {
-                        Some(
-                            event::read()
-                                .map(|event| event.into())
-                                .map_err(Self::Error::Read),
-                        )
-                    } else {
-                        None
-                    }
+        match event::poll(INSTANT) {
+            Ok(can_consume) => {
+                if can_consume {
+                    Some(
+                        event::read()
+                            .map(|event| event.into())
+                            .map_err(Self::Error::Read),
+                    )
+                } else {
+                    None
                 }
-                Err(error) => Some(Err(error).map_err(Self::Error::Read)),
             }
-        } else {
-            self.is_initialized.store(true, Ordering::Relaxed);
-            Some(Ok(get_body_size().into()))
+            Err(error) => Some(Err(error).map_err(Self::Error::Read)),
         }
     }
 }
@@ -396,18 +387,6 @@ impl From<TerminalSize> for BodySize {
             columns: value.0.columns.saturating_sub(1),
         })
     }
-}
-
-/// Returns the size of the body.
-fn get_body_size() -> BodySize {
-    match terminal::size() {
-        Ok((columns, rows)) => TerminalSize::new(rows, columns),
-        Err(e) => {
-            warn!("unable to retrieve size of terminal: {}", e);
-            TerminalSize::default()
-        }
-    }
-    .into()
 }
 
 /// The [`Size`] of the terminal.

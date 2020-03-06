@@ -13,7 +13,7 @@ use {
             DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
             WillSaveTextDocument,
         },
-        request::{Initialize, Shutdown},
+        request::{RegisterCapability, Initialize, Shutdown},
         ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
         MessageType, Range, ShowMessageParams, SynchronizationCapability,
@@ -21,7 +21,7 @@ use {
         TextDocumentItem, TextDocumentSaveReason, TextDocumentSyncCapability, TextDocumentSyncKind,
         TextEdit, Url, VersionedTextDocumentIdentifier, WillSaveTextDocumentParams,
     },
-    market::Producer,
+    market::{Consumer, Producer},
     std::{
         io,
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
@@ -122,7 +122,7 @@ impl From<&str> for AccessIoError {
 #[derive(Debug)]
 pub(crate) struct LspServer {
     /// The language server process.
-    server: LangServer,
+    pub(crate) server: LangServer,
     /// Transmits messages to the language server process.
     transmitter: LspTransmitter,
     /// Processes output from the stderr of the language server.
@@ -141,7 +141,7 @@ impl LspServer {
     {
         let mut server = LangServer::new(language_id)?;
         let mut transmitter = LspTransmitter::new(server.stdin()?);
-        let receiver = LspReceiver::new(server.stdout()?, &transmitter);
+        let receiver = LspReceiver::new(server.stdout()?);
         let capabilities = ClientCapabilities {
             workspace: None,
             text_document: Some(TextDocumentClientCapabilities {
@@ -175,9 +175,10 @@ impl LspServer {
             window: None,
             experimental: None,
         };
+        let settings = LspSettings::default();
 
         #[allow(deprecated)] // root_path is a required field.
-        let settings = LspSettings::from(transmitter.request::<Initialize>(
+        transmitter.request::<Initialize>(
             InitializeParams {
                 process_id: Some(u64::from(process::id())),
                 root_path: None,
@@ -188,10 +189,7 @@ impl LspServer {
                 workspace_folders: None,
                 client_info: None,
             },
-            &receiver,
-        )?);
-
-        transmitter.notify::<Initialized>(InitializedParams {})?;
+        )?;
 
         Ok(Self {
             // error_processor must be created before server is moved.
@@ -297,24 +295,8 @@ impl LspServer {
         Ok(())
     }
 
-    /// Attempts to cleanly kill the language server process.
-    fn shutdown_and_exit(&mut self) -> Result<(), Fault> {
-        self.transmitter.request::<Shutdown>((), &self.receiver)?;
-        self.error_processor.terminate()?;
-        self.transmitter.notify::<Exit>(())?;
-        self.server.wait()
-    }
-}
-
-impl Drop for LspServer {
-    fn drop(&mut self) {
-        if let Err(e) = self.shutdown_and_exit() {
-            warn!("Unable to cleanly shutdown and exit language server: {}", e);
-
-            if let Err(kill_error) = self.server.kill() {
-                warn!("{}", kill_error);
-            }
-        }
+    pub(crate) fn register_capability(&mut self, id: u64) -> Result<(), Fault> {
+        Ok(self.transmitter.respond::<RegisterCapability>(id, ())?)
     }
 }
 
@@ -353,7 +335,7 @@ impl From<EditLanguageClientError> for ShowMessageParams {
 pub(crate) struct LanguageClient {
     /// The servers that have been created by the application.
     // Require Rc due to LspServer not impl Copy, see https://gitlab.com/KonradBorowski/enum-map/-/merge_requests/30.
-    servers: EnumMap<LanguageId, Rc<RefCell<LspServer>>>,
+    pub(crate) servers: EnumMap<LanguageId, Rc<RefCell<LspServer>>>,
 }
 
 impl LanguageClient {
@@ -367,6 +349,40 @@ impl LanguageClient {
             },
         })
     }
+
+    pub(crate) fn language_ids<'a>(&'a self) -> impl Iterator<Item=LanguageId> + 'a {
+        self.servers.iter().map(|(language_id, _)| language_id)
+    }
+}
+
+impl Consumer for LanguageClient {
+    type Good = Input;
+    type Error = ConsumeInputError;
+    
+    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
+        for (language_id, server) in &self.servers {
+            let mut server = server.borrow_mut();
+
+            match server.receiver.recv() {
+                Ok(utils::Message::Request(utils::MessageRequest{id, ..})) => {
+                    return Some(Ok(Input{language_id, reception: Reception::Request{id}}));
+                }
+                Ok(utils::Message::Response{outcome: utils::Outcome::Success(value), ..}) => {
+                    if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
+                        server.settings = LspSettings::from(result);
+                        warn!("Settings: {:?}", server.settings);
+                        return Some(Ok(Input{language_id, reception: Reception::Initialize}));
+                    } else if serde_json::from_value::<()>(value.clone()).is_ok() {
+                        warn!("Shutdown result");
+                        return Some(Ok(Input{language_id, reception: Reception::Shutdown}));
+                    }
+                }
+                Ok(_) | Err(_) => {}
+            }
+        }
+
+        None
+    }
 }
 
 impl Producer<'_> for LanguageClient {
@@ -374,28 +390,43 @@ impl Producer<'_> for LanguageClient {
     type Error = ProduceProtocolError;
 
     fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
-        if let Some(language_id) = good.url.language_id() {
-            #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
-            let mut server = self.servers[language_id].borrow_mut();
+        #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
+        let mut server = self.servers[good.language_id].borrow_mut();
 
-            match good.message {
-                Message::Open { version, text } => {
-                    server.did_open(good.url, &language_id.to_string(), version, &text)?;
+        match good.message {
+            Message::Doc{ url, message} => {
+                match message {
+                    DocMessage::Open { version, text } => {
+                        server.did_open(url, &good.language_id.to_string(), version, &text)?;
+                    }
+                    DocMessage::Save => {
+                        server.will_save(url)?;
+                    }
+                    DocMessage::Change {
+                        version,
+                        text,
+                        range,
+                        new_text,
+                    } => {
+                        server.did_change(url, version, &text, TextEdit::new(range, new_text))?;
+                    }
+                    DocMessage::Close => {
+                        server.did_close(url)?;
+                    }
                 }
-                Message::Save => {
-                    server.will_save(good.url)?;
-                }
-                Message::Change {
-                    version,
-                    text,
-                    range,
-                    new_text,
-                } => {
-                    server.did_change(good.url, version, &text, TextEdit::new(range, new_text))?;
-                }
-                Message::Close => {
-                    server.did_close(good.url)?;
-                }
+            }
+            Message::RegisterCapability{id} => {
+                server.register_capability(id)?;
+            }
+            Message::Initialized => {
+                server.transmitter.notify::<Initialized>(InitializedParams {})?;
+            }
+            Message::Shutdown => {
+                server.transmitter.request::<Shutdown>(())?;
+                server.error_processor.terminate()?;
+            }
+            Message::Exit => {
+                server.transmitter.notify::<Exit>(())?;
             }
         }
 
@@ -403,17 +434,42 @@ impl Producer<'_> for LanguageClient {
     }
 }
 
+pub(crate) struct Input {
+    pub(crate) language_id: LanguageId,
+    pub(crate) reception: Reception,
+}
+
+pub(crate) enum Reception {
+    Initialize,
+    Shutdown,
+    Request{id: u64},
+}
+
+/// An error consuming lsp input.
+#[derive(Clone, Copy, Debug, Error)]
+#[error("")]
+pub enum ConsumeInputError {
+}
+
 /// Protocol of language server.
 pub(crate) struct Protocol {
     /// The URL that generated.
-    pub(crate) url: PathUrl,
+    pub(crate) language_id: LanguageId,
     /// The message.
     pub(crate) message: Message,
 }
 
-#[allow(dead_code)] // False positive.
 /// Message to language server.
 pub(crate) enum Message {
+    Shutdown,
+    Exit,
+    Initialized,
+    Doc {url: PathUrl, message: DocMessage},
+    RegisterCapability {id: u64},
+}
+
+#[allow(dead_code)] // False positive.
+pub(crate) enum DocMessage {
     /// Open a doc.
     Open {
         /// The version.
@@ -447,6 +503,12 @@ pub enum ProduceProtocolError {
     /// An error with fault.
     #[error("")]
     Fault(#[from] Fault),
+    /// Request.
+    #[error("")]
+    Request(#[from] RequestResponseError),
+    /// Utils.
+    #[error("")]
+    Utils(#[from] utils::Fault),
 }
 
 impl From<ProduceProtocolError> for ShowMessageParams {
@@ -462,7 +524,7 @@ impl From<ProduceProtocolError> for ShowMessageParams {
 
 /// Signifies a language server process.
 #[derive(Debug)]
-struct LangServer(Child);
+pub(crate) struct LangServer(Child);
 
 impl LangServer {
     /// Creates a new [`LangServer`].
@@ -495,13 +557,8 @@ impl LangServer {
         self.0.stdout.take().ok_or_else(|| "stdout".into())
     }
 
-    /// Kills the process.
-    fn kill(&mut self) -> Result<(), Fault> {
-        self.0.kill().map_err(Fault::Kill)
-    }
-
     /// Blocks until the proccess ends.
-    fn wait(&mut self) -> Result<(), Fault> {
+    pub(crate) fn wait(&mut self) -> Result<(), Fault> {
         self.0.wait().map(|_| ()).map_err(Fault::Wait)
     }
 }

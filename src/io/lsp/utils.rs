@@ -2,7 +2,7 @@
 use {
     jsonrpc_core::{Id, Value, Version},
     log::{error, trace, warn},
-    lsp_types::{notification::Notification, request::RegisterCapability},
+    lsp_types::notification::Notification,
     serde::{
         de::DeserializeOwned,
         ser::SerializeStruct,
@@ -14,7 +14,7 @@ use {
         io::{self, BufRead, BufReader, Read, Write},
         process::{ChildStderr, ChildStdin, ChildStdout},
         sync::{
-            mpsc::{self, Receiver, RecvError, Sender},
+            mpsc::{self, Receiver, TryRecvError, Sender},
             Arc, Mutex, MutexGuard,
         },
         thread,
@@ -101,11 +101,11 @@ pub enum RequestResponseError {
     Send(#[from] SendMessageError),
     /// Failed to receive a message.
     #[error("{0}")]
-    Receive(#[from] RecvError),
+    Receive(#[from] TryRecvError),
 }
 
 /// Signifies an LSP message.
-enum Message {
+pub(crate) enum Message {
     /// A notification.
     Notification {
         /// The method of the notification.
@@ -193,7 +193,7 @@ impl Serialize for Message {
 
 /// The outcome of the response.
 #[derive(Debug)]
-enum Outcome {
+pub(crate) enum Outcome {
     /// The result was successful.
     Success(Value),
 }
@@ -207,9 +207,9 @@ impl fmt::Display for Message {
 }
 
 /// Signifies an LSP Request Message.
-struct MessageRequest {
+pub(crate) struct MessageRequest {
     /// An identifier of a request.
-    id: u64,
+    pub(crate) id: u64,
     /// The method of the request.
     method: String,
     /// The parameters of the request.
@@ -270,49 +270,25 @@ impl LspTransmitter {
             .map_err(|e| e.into())
     }
 
-    /// Sends `request` to the lsp server and waits for the response.
+    /// Sends `request` to the lsp server.
     pub(crate) fn request<T: lsp_types::request::Request>(
         &mut self,
         params: T::Params,
-        receiver: &LspReceiver,
-    ) -> Result<T::Result, RequestResponseError>
+    ) -> Result<(), RequestResponseError>
     where
         T::Params: Serialize,
-        T::Result: DeserializeOwned,
+        T::Result: DeserializeOwned + Default,
     {
         let mut transmitter = self.lock()?;
         let current_id = transmitter.id;
+        transmitter.id += 1;
 
         transmitter.send(&Message::Request(MessageRequest {
             id: current_id,
             method: T::METHOD.to_string(),
             params: serde_json::to_value(params)?,
         }))?;
-
-        let response: T::Result;
-
-        loop {
-            if let Message::Response {
-                id,
-                outcome: Outcome::Success(value),
-            } = receiver.recv()?
-            {
-                if transmitter.id == id {
-                    transmitter.id = transmitter.id.wrapping_add(1);
-                    match serde_json::from_value(value.clone()) {
-                        Ok(result) => {
-                            response = result;
-                            break;
-                        }
-                        Err(e) => {
-                            warn!("Failed to convert `{}` to result: {}", value, e);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(response)
+        Ok(())
     }
 
     /// Locks the [`AtomicTransmitter`] to prevent race conditions.
@@ -340,8 +316,6 @@ impl AtomicTransmitter {
 
 /// Processes data from the language server.
 struct LspProcessor {
-    /// Transmits data to the language server process.
-    transmitter: LspTransmitter,
     /// Reads data from the language server process.
     reader: BufReader<ChildStdout>,
     /// Sends data to the [`LspServer`].
@@ -352,12 +326,11 @@ struct LspProcessor {
 
 impl LspProcessor {
     /// Creates a new `LspProcessor`.
-    fn new(stdout: ChildStdout, response_tx: Sender<Message>, transmitter: LspTransmitter) -> Self {
+    fn new(stdout: ChildStdout, response_tx: Sender<Message>) -> Self {
         Self {
             reader: BufReader::new(stdout),
             response_tx,
             is_quitting: false,
-            transmitter,
         }
     }
 
@@ -372,8 +345,8 @@ impl LspProcessor {
                         .response_tx
                         .send(message)
                         .map_err(|_| Fault::Send("response message".to_string()))?,
-                    Message::Request(MessageRequest { id, .. }) => {
-                        self.transmitter.respond::<RegisterCapability>(id, ())?
+                    Message::Request(MessageRequest { .. }) => {
+                        self.response_tx.send(message).map_err(|_| Fault::Send("request message".to_string()))?;
                     }
                     Message::Notification { .. } => {}
                 }
@@ -489,9 +462,9 @@ pub(crate) struct LspReceiver(Receiver<Message>);
 
 impl LspReceiver {
     /// Creates a new [`LspReceiver`].
-    pub(crate) fn new(stdout: ChildStdout, transmitter: &LspTransmitter) -> Self {
+    pub(crate) fn new(stdout: ChildStdout) -> Self {
         let (tx, rx) = mpsc::channel();
-        let mut processor = LspProcessor::new(stdout, tx, transmitter.clone());
+        let mut processor = LspProcessor::new(stdout, tx);
 
         let _ = thread::spawn(move || {
             if let Err(error) = processor.process() {
@@ -503,8 +476,8 @@ impl LspReceiver {
     }
 
     /// Receives a [`Message`] from that was read by [`LspProcessor`].
-    fn recv(&self) -> Result<Message, RecvError> {
-        self.0.recv()
+    pub(crate) fn recv(&self) -> Result<Message, TryRecvError> {
+        self.0.try_recv()
     }
 }
 
