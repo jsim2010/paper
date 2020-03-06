@@ -2,9 +2,7 @@
 use {
     jsonrpc_core::{Id, Value, Version},
     log::{error, trace, warn},
-    lsp_types::notification::Notification,
     serde::{
-        de::DeserializeOwned,
         ser::SerializeStruct,
         {Serialize, Serializer},
     },
@@ -15,7 +13,6 @@ use {
         process::{ChildStderr, ChildStdin, ChildStdout},
         sync::{
             mpsc::{self, Receiver, TryRecvError, Sender},
-            Arc, Mutex, MutexGuard,
         },
         thread,
     },
@@ -211,9 +208,9 @@ pub(crate) struct MessageRequest {
     /// An identifier of a request.
     pub(crate) id: u64,
     /// The method of the request.
-    method: String,
+    pub(crate) method: String,
     /// The parameters of the request.
-    params: Value,
+    pub(crate) params: Value,
 }
 
 /// Implemented so prevent the repetition of the inner class name.
@@ -228,87 +225,21 @@ impl fmt::Debug for MessageRequest {
 }
 
 /// Sends messages to the language server process.
-#[derive(Clone, Debug)]
-pub(crate) struct LspTransmitter(Arc<Mutex<AtomicTransmitter>>);
+#[derive(Debug)]
+pub(crate) struct LspTransmitter {
+    stdin: ChildStdin,
+}
 
 impl LspTransmitter {
     /// Creates a new `LspTransmitter`.
     pub(crate) fn new(stdin: ChildStdin) -> Self {
-        Self(Arc::new(Mutex::new(AtomicTransmitter { id: 0, stdin })))
+        Self {
+            stdin,
+        }
     }
 
-    /// Sends a notification with `params`.
-    pub(crate) fn notify<T: Notification>(
-        &mut self,
-        params: T::Params,
-    ) -> Result<(), SendNotificationError>
-    where
-        T::Params: Serialize,
-    {
-        self.lock()?
-            .send(&Message::Notification {
-                method: T::METHOD,
-                params: serde_json::to_value(params)?,
-            })
-            .map_err(|e| e.into())
-    }
-
-    /// Sends a response with `id` and `result`.
-    pub(crate) fn respond<T: lsp_types::request::Request>(
-        &mut self,
-        id: u64,
-        result: T::Result,
-    ) -> Result<(), Fault>
-    where
-        T::Result: Serialize,
-    {
-        self.lock()?
-            .send(&Message::Response {
-                id,
-                outcome: Outcome::Success(serde_json::to_value(result)?),
-            })
-            .map_err(|e| e.into())
-    }
-
-    /// Sends `request` to the lsp server.
-    pub(crate) fn request<T: lsp_types::request::Request>(
-        &mut self,
-        params: T::Params,
-    ) -> Result<(), RequestResponseError>
-    where
-        T::Params: Serialize,
-        T::Result: DeserializeOwned + Default,
-    {
-        let mut transmitter = self.lock()?;
-        let current_id = transmitter.id;
-        transmitter.id += 1;
-
-        transmitter.send(&Message::Request(MessageRequest {
-            id: current_id,
-            method: T::METHOD.to_string(),
-            params: serde_json::to_value(params)?,
-        }))?;
-        Ok(())
-    }
-
-    /// Locks the [`AtomicTransmitter`] to prevent race conditions.
-    fn lock(&self) -> Result<MutexGuard<'_, AtomicTransmitter>, AcquireLockError> {
-        self.0.lock().map_err(|_| AcquireLockError())
-    }
-}
-
-/// Transmits messages to the language server process.
-#[derive(Debug)]
-struct AtomicTransmitter {
-    /// The input of the language server process.
-    stdin: ChildStdin,
-    /// Current request id.
-    id: u64,
-}
-
-impl AtomicTransmitter {
     /// Sends `message` to the language server process.
-    fn send(&mut self, message: &Message) -> Result<(), SendMessageError> {
+    pub(crate) fn send(&mut self, message: &Message) -> Result<(), SendMessageError> {
         trace!("sending: {:?}", message);
         write!(self.stdin, "{}", message.to_protocol()?).map_err(|e| e.into())
     }

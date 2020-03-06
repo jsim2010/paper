@@ -14,7 +14,7 @@ use {
     enum_map::Enum,
     log::{error, LevelFilter},
     logging::LogManager,
-    lsp::{CreateLangClientError, Fault, LanguageClient, SendNotificationError},
+    lsp::{CreateLangClientError, Fault, LanguageTool, ClientMessage, ToolMessage, SendNotificationError, ServerMessage},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     market::{Consumer, Producer, UnlimitedQueue},
     starship::{context::Context, print},
@@ -89,7 +89,7 @@ pub enum CreateInterfaceError {
     CreateLangClient(#[from] CreateLangClientError),
     /// An error with client.
     #[error("")]
-    Client(#[from] lsp::CreateLanguageClientError),
+    Client(#[from] lsp::CreateLanguageToolError),
 }
 
 /// An error while writing output.
@@ -100,7 +100,7 @@ pub enum ProduceOutputError {
     Client(#[from] lsp::ProduceProtocolError),
     /// An error with client.
     #[error("")]
-    OldClient(#[from] lsp::EditLanguageClientError),
+    OldClient(#[from] lsp::EditLanguageToolError),
     /// An error in the ui.
     #[error("{0}")]
     Ui(#[from] CommandError),
@@ -213,8 +213,8 @@ pub(crate) struct Interface {
     setting_consumer: SettingConsumer,
     /// Queues [`Input`]s.
     queue: UnlimitedQueue<Input>,
-    /// Manages the language servers of the application.
-    language_client: LanguageClient,
+    /// The interface of the application with all language servers.
+    language_tool: LanguageTool,
     /// The root directory of the application.
     root_dir: PathUrl,
     /// The configuration of the logger.
@@ -237,7 +237,7 @@ impl Interface {
             )?,
             queue: UnlimitedQueue::new(),
             user_interface: Terminal::new()?,
-            language_client: LanguageClient::new(&root_dir)?,
+            language_tool: LanguageTool::new(&root_dir)?,
             root_dir,
         };
 
@@ -306,22 +306,22 @@ impl Consumer for Interface {
     type Error = ConsumeInputError;
 
     fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        if let Some(Ok(lang_input)) = self.language_client.consume() {
-            match lang_input.reception {
-                lsp::Reception::Initialize => {
-                    if let Err(error) = self.language_client.produce(lsp::Protocol{
+        if let Some(Ok(lang_input)) = self.language_tool.consume() {
+            match lang_input.message {
+                ServerMessage::Initialize => {
+                    if let Err(error) = self.language_tool.produce(ToolMessage{
                         language_id: lang_input.language_id,
-                        message: lsp::Message::Initialized,
+                        message: ClientMessage::Initialized,
                     }) {
                         return Some(Err(Self::Error::Produce(error)));
                     }
                 }
-                lsp::Reception::Request{id} => {
-                    if let Err(error) = self.language_client.produce(lsp::Protocol{language_id: lang_input.language_id, message: lsp::Message::RegisterCapability{id}}) {
+                ServerMessage::Request{id} => {
+                    if let Err(error) = self.language_tool.produce(ToolMessage{language_id: lang_input.language_id, message: ClientMessage::RegisterCapability{id}}) {
                         return Some(Err(Self::Error::Produce(error)));
                     }
                 }
-                lsp::Reception::Shutdown => {}
+                ServerMessage::Shutdown => {}
             }
 
             None
@@ -341,27 +341,27 @@ impl Drop for Interface {
     fn drop(&mut self) {
         drop(&self.user_interface);
 
-        for language_id in self.language_client.language_ids() {
-            if let Err(error) = self.language_client.produce(lsp::Protocol{language_id, message: lsp::Message::Shutdown}) {
+        for language_id in self.language_tool.language_ids() {
+            if let Err(error) = self.language_tool.produce(ToolMessage{language_id, message: ClientMessage::Shutdown}) {
                 error!("Failed to send shutdown message to {} language server: {}", language_id, error);
             }
         }
 
         loop {
-            // TODO: Need to check for reception from all servers.
-            if let Some(Ok(lang_input)) = self.language_client.consume() {
-                if let lsp::Reception::Shutdown = lang_input.reception {
+            // TODO: Need to check for reception from all clients.
+            if let Some(Ok(lang_input)) = self.language_tool.consume() {
+                if let ServerMessage::Shutdown = lang_input.message {
                     break;
                 }
             }
         }
 
-        for language_id in self.language_client.language_ids() {
-            if let Err(error) = self.language_client.produce(lsp::Protocol{language_id, message: lsp::Message::Exit}) {
+        for language_id in self.language_tool.language_ids() {
+            if let Err(error) = self.language_tool.produce(ToolMessage{language_id, message: ClientMessage::Exit}) {
                 error!("Failed to send exit message to {} language server: {}", language_id, error);
             }
 
-            if let Err(error) = self.language_client.servers[language_id].borrow_mut().server.wait() {
+            if let Err(error) = self.language_tool.clients[language_id].borrow_mut().server.wait() {
                 error!("Failed to wait for {} language server process to finish: {}", language_id, error);
             }
         }
@@ -373,8 +373,8 @@ impl<'a> Producer<'a> for Interface {
     type Error = ProduceOutputError;
 
     fn produce(&self, output: Self::Good) -> Result<(), Self::Error> {
-        if let Ok(protocol) = lsp::Protocol::try_from(output.clone()) {
-            if let Err(error) = self.language_client.produce(protocol) {
+        if let Ok(protocol) = ToolMessage::try_from(output.clone()) {
+            if let Err(error) = self.language_tool.produce(protocol) {
                 self.user_interface.produce(ui::Output::Notify {
                     message: error.into(),
                 })?;
@@ -679,7 +679,7 @@ pub(crate) enum Output<'a> {
     },
 }
 
-impl TryFrom<Output<'_>> for lsp::Protocol {
+impl TryFrom<Output<'_>> for ToolMessage<ClientMessage> {
     type Error = TryIntoProtocolError;
 
     fn try_from(value: Output<'_>) -> Result<Self, Self::Error> {
@@ -688,7 +688,7 @@ impl TryFrom<Output<'_>> for lsp::Protocol {
                 if let Some(language_id) = url.language_id() {
                     Ok(Self {
                         language_id,
-                        message: lsp::Message::Doc{url: url, message: edit.try_into()?},
+                        message: ClientMessage::Doc{url: url, message: edit.try_into()?},
                     })
                 } else {
                     Err(TryIntoProtocolError::InvalidOutput)
@@ -726,6 +726,7 @@ pub enum TryIntoProtocolError {
 pub(crate) enum DocEdit<'a> {
     /// Opens a document.
     Open {
+        url: PathUrl,
         /// The version of the document.
         version: i64,
         /// The full text of the document
@@ -756,10 +757,11 @@ impl TryFrom<DocEdit<'_>> for lsp::DocMessage {
 
     fn try_from(value: DocEdit<'_>) -> Result<Self, Self::Error> {
         Ok(match value {
-            DocEdit::Open { version, text } => Self::Open {
+            DocEdit::Open { url, version, text } => url.language_id().map(|language_id| Self::Open {
+                language_id,
                 version,
                 text: text.to_string(),
-            },
+            }).ok_or(Self::Error::UnknownLanguage)?,
             DocEdit::Save { .. } => Self::Save,
             DocEdit::Change {
                 version,
@@ -783,4 +785,7 @@ pub enum TryIntoMessageError {
     /// Selection.
     #[error(transparent)]
     Selection(#[from] SelectionConversionError),
+    /// Unknown language.
+    #[error("")]
+    UnknownLanguage,
 }

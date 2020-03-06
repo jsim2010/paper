@@ -5,13 +5,13 @@ pub(crate) use utils::SendNotificationError;
 
 use {
     crate::io::{LanguageId, PathUrl},
-    core::cell::RefCell,
+    core::{convert::{TryFrom, TryInto}, cell::{Cell, RefCell}},
     enum_map::{enum_map, EnumMap},
     log::warn,
     lsp_types::{
         notification::{
             DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
-            WillSaveTextDocument,
+            WillSaveTextDocument, Notification,
         },
         request::{RegisterCapability, Initialize, Shutdown},
         ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
@@ -27,8 +27,10 @@ use {
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
         rc::Rc,
     },
+    serde::{de::DeserializeOwned, Serialize},
+    serde_json::error::Error as SerdeJsonError,
     thiserror::Error,
-    utils::{LspErrorProcessor, LspReceiver, LspTransmitter, RequestResponseError},
+    utils::{LspErrorProcessor, Message, LspReceiver, LspTransmitter, RequestResponseError},
 };
 
 /// An error from which the language server was unable to recover.
@@ -60,6 +62,15 @@ pub enum Fault {
     /// Failed to request response.
     #[error("{0}")]
     Request(#[from] RequestResponseError),
+    /// An error while serializing a language server message.
+    #[error("unable to serialize language server message: {0}")]
+    Serialize(#[from] SerdeJsonError),
+    /// Util
+    #[error("")]
+    Utils(#[from] utils::SendMessageError),
+    /// Conversion
+    #[error("")]
+    Conversion(#[from] TryIntoMessageError),
 }
 
 impl From<Fault> for ShowMessageParams {
@@ -118,13 +129,14 @@ impl From<&str> for AccessIoError {
     }
 }
 
-/// Represents a language server process.
+/// The client interface with a language server.
 #[derive(Debug)]
-pub(crate) struct LspServer {
+pub(crate) struct LanguageClient {
     /// The language server process.
     pub(crate) server: LangServer,
     /// Transmits messages to the language server process.
-    transmitter: LspTransmitter,
+    transmitter: RefCell<LspTransmitter>,
+    id: Cell<u64>,
     /// Processes output from the stderr of the language server.
     error_processor: LspErrorProcessor,
     /// Controls settings for the language server.
@@ -133,14 +145,14 @@ pub(crate) struct LspServer {
     receiver: LspReceiver,
 }
 
-impl LspServer {
-    /// Creates a new `LspServer` for `language_id`.
+impl LanguageClient {
+    /// Creates a new `LanguageClient` for `language_id`.
     pub(crate) fn new<U>(language_id: LanguageId, root: U) -> Result<Self, CreateLangClientError>
     where
         U: AsRef<Url>,
     {
         let mut server = LangServer::new(language_id)?;
-        let mut transmitter = LspTransmitter::new(server.stdin()?);
+        let transmitter = LspTransmitter::new(server.stdin()?);
         let receiver = LspReceiver::new(server.stdout()?);
         let capabilities = ClientCapabilities {
             workspace: None,
@@ -176,9 +188,18 @@ impl LspServer {
             experimental: None,
         };
         let settings = LspSettings::default();
+        let client = Self {
+            // error_processor must be created before server is moved.
+            error_processor: LspErrorProcessor::new(server.stderr()?),
+            server,
+            transmitter: RefCell::new(transmitter),
+            settings,
+            receiver,
+            id: Cell::new(0),
+        };
 
         #[allow(deprecated)] // root_path is a required field.
-        transmitter.request::<Initialize>(
+        client.request::<Initialize>(
             InitializeParams {
                 process_id: Some(u64::from(process::id())),
                 root_path: None,
@@ -191,45 +212,64 @@ impl LspServer {
             },
         )?;
 
-        Ok(Self {
-            // error_processor must be created before server is moved.
-            error_processor: LspErrorProcessor::new(server.stderr()?),
-            server,
-            transmitter,
-            settings,
-            receiver,
-        })
+        Ok(client)
     }
 
-    /// Sends the didOpen notification, if appropriate.
-    pub(crate) fn did_open<U>(
-        &mut self,
-        uri: U,
-        language_id: &str,
-        version: i64,
-        text: &str,
+    pub(crate) fn notify<T: Notification>(
+        &self,
+        params: T::Params,
     ) -> Result<(), SendNotificationError>
     where
-        U: AsRef<Url>,
+        T::Params: Serialize,
     {
-        if self.settings.notify_open_close {
-            self.transmitter
-                .notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
-                    text_document: TextDocumentItem::new(
-                        uri.as_ref().clone(),
-                        language_id.to_string(),
-                        version,
-                        text.to_string(),
-                    ),
-                })?;
-        }
+        self.transmitter.borrow_mut()
+            .send(&utils::Message::Notification {
+                method: T::METHOD,
+                params: serde_json::to_value(params)?,
+            })
+            .map_err(|e| e.into())
+    }
 
+    /// Sends a response with `id` and `result`.
+    pub(crate) fn respond<T: lsp_types::request::Request>(
+        &self,
+        id: u64,
+        result: T::Result,
+    ) -> Result<(), Fault>
+    where
+        T::Result: Serialize,
+    {
+        self.transmitter.borrow_mut()
+            .send(&utils::Message::Response {
+                id,
+                outcome: utils::Outcome::Success(serde_json::to_value(result)?),
+            })
+            .map_err(|e| e.into())
+    }
+
+    /// Sends `request` to the lsp server.
+    pub(crate) fn request<T: lsp_types::request::Request>(
+        &self,
+        params: T::Params,
+    ) -> Result<(), RequestResponseError>
+    where
+        T::Params: Serialize,
+        T::Result: DeserializeOwned + Default,
+    {
+        let mut id = self.id.get();
+        id += 1;
+        self.transmitter.borrow_mut().send(&utils::Message::Request(utils::MessageRequest {
+            id,
+            method: T::METHOD.to_string(),
+            params: serde_json::to_value(params)?,
+        }))?;
+        self.id.set(id);
         Ok(())
     }
 
     /// Sends the didChange notification, if appropriate.
     pub(crate) fn did_change<U>(
-        &mut self,
+        &self,
         uri: U,
         version: i64,
         text: &str,
@@ -251,7 +291,7 @@ impl LspServer {
                 text: edit.new_text,
             }]),
         } {
-            self.transmitter
+            self
                 .notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
                     text_document: VersionedTextDocumentIdentifier::new(
                         uri.as_ref().clone(),
@@ -264,29 +304,13 @@ impl LspServer {
         Ok(())
     }
 
-    /// Sends the willSave notification, if appropriate.
-    pub(crate) fn will_save<U>(&mut self, uri: U) -> Result<(), Fault>
-    where
-        U: AsRef<Url>,
-    {
-        if self.settings.notify_save {
-            self.transmitter
-                .notify::<WillSaveTextDocument>(WillSaveTextDocumentParams {
-                    text_document: TextDocumentIdentifier::new(uri.as_ref().clone()),
-                    reason: TextDocumentSaveReason::Manual,
-                })?;
-        }
-
-        Ok(())
-    }
-
     /// Sends the didClose notification, if appropriate.
-    pub(crate) fn did_close<U>(&mut self, uri: U) -> Result<(), Fault>
+    pub(crate) fn did_close<U>(&self, uri: U) -> Result<(), Fault>
     where
         U: AsRef<Url>,
     {
         if self.settings.notify_open_close {
-            self.transmitter
+            self
                 .notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
                     text_document: TextDocumentIdentifier::new(uri.as_ref().clone()),
                 })?;
@@ -295,14 +319,62 @@ impl LspServer {
         Ok(())
     }
 
-    pub(crate) fn register_capability(&mut self, id: u64) -> Result<(), Fault> {
-        Ok(self.transmitter.respond::<RegisterCapability>(id, ())?)
+    pub(crate) fn register_capability(&self, id: u64) -> Result<(), Fault> {
+        Ok(self.respond::<RegisterCapability>(id, ())?)
+    }
+}
+
+impl Producer<'_> for LanguageClient {
+    type Good = ClientMessage;
+    type Error = Fault;
+
+    fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
+        match &good {
+            ClientMessage::Doc{ url, message} => match message {
+                DocMessage::Open { .. } => {
+                    if self.settings.notify_open_close {
+                        self.transmitter.borrow_mut().send(&good.try_into()?)?;
+                    }
+                }
+                DocMessage::Save => {
+                    if self.settings.notify_save {
+                        self.transmitter.borrow_mut().send(&good.try_into()?)?;
+                    }
+                }
+                DocMessage::Change {
+                    version,
+                    text,
+                    range,
+                    new_text,
+                } => {
+                    self.did_change(url, *version, &text, TextEdit::new(*range, new_text.to_string()))?;
+                }
+                DocMessage::Close => {
+                    self.did_close(url)?;
+                }
+            }
+            ClientMessage::RegisterCapability{id} => {
+                self.register_capability(*id)?;
+            }
+            ClientMessage::Initialized => {
+                self.notify::<Initialized>(InitializedParams {})?;
+            }
+            ClientMessage::Shutdown => {
+                self.request::<Shutdown>(())?;
+                self.error_processor.terminate()?;
+            }
+            ClientMessage::Exit => {
+                self.notify::<Exit>(())?;
+            }
+        }
+
+        Ok(())
     }
 }
 
 /// An error creating client.
 #[derive(Debug, Error)]
-pub enum CreateLanguageClientError {
+pub enum CreateLanguageToolError {
     /// Server.
     #[error("")]
     Server(#[from] CreateLangClientError),
@@ -310,7 +382,7 @@ pub enum CreateLanguageClientError {
 
 /// An error editing language client.
 #[derive(Debug, Error)]
-pub enum EditLanguageClientError {
+pub enum EditLanguageToolError {
     /// An error with notification.
     #[error("")]
     Notification(#[from] SendNotificationError),
@@ -319,10 +391,10 @@ pub enum EditLanguageClientError {
     Fault(#[from] Fault),
 }
 
-impl From<EditLanguageClientError> for ShowMessageParams {
+impl From<EditLanguageToolError> for ShowMessageParams {
     #[inline]
     #[must_use]
-    fn from(value: EditLanguageClientError) -> Self {
+    fn from(value: EditLanguageToolError) -> Self {
         Self {
             typ: MessageType::Error,
             message: value.to_string(),
@@ -332,49 +404,49 @@ impl From<EditLanguageClientError> for ShowMessageParams {
 
 /// Manages the langauge servers.
 #[derive(Debug)]
-pub(crate) struct LanguageClient {
-    /// The servers that have been created by the application.
-    // Require Rc due to LspServer not impl Copy, see https://gitlab.com/KonradBorowski/enum-map/-/merge_requests/30.
-    pub(crate) servers: EnumMap<LanguageId, Rc<RefCell<LspServer>>>,
+pub(crate) struct LanguageTool {
+    /// The clients to servers that have been created by the application.
+    // Require Rc due to LanguageClient not impl Copy, see https://gitlab.com/KonradBorowski/enum-map/-/merge_requests/30.
+    pub(crate) clients: EnumMap<LanguageId, Rc<RefCell<LanguageClient>>>,
 }
 
-impl LanguageClient {
-    /// Creates a new [`LanguageClient`].
-    pub(crate) fn new(root_dir: &PathUrl) -> Result<Self, CreateLanguageClientError> {
-        let rust_server = Rc::new(RefCell::new(LspServer::new(LanguageId::Rust, &root_dir)?));
+impl LanguageTool {
+    /// Creates a new [`LanguageTool`].
+    pub(crate) fn new(root_dir: &PathUrl) -> Result<Self, CreateLanguageToolError> {
+        let rust_server = Rc::new(RefCell::new(LanguageClient::new(LanguageId::Rust, &root_dir)?));
 
         Ok(Self {
-            servers: enum_map! {
+            clients: enum_map! {
                 LanguageId::Rust => Rc::clone(&rust_server),
             },
         })
     }
 
     pub(crate) fn language_ids<'a>(&'a self) -> impl Iterator<Item=LanguageId> + 'a {
-        self.servers.iter().map(|(language_id, _)| language_id)
+        self.clients.iter().map(|(language_id, _)| language_id)
     }
 }
 
-impl Consumer for LanguageClient {
-    type Good = Input;
+impl Consumer for LanguageTool {
+    type Good = ToolMessage<ServerMessage>;
     type Error = ConsumeInputError;
     
     fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        for (language_id, server) in &self.servers {
+        for (language_id, server) in &self.clients {
             let mut server = server.borrow_mut();
 
             match server.receiver.recv() {
                 Ok(utils::Message::Request(utils::MessageRequest{id, ..})) => {
-                    return Some(Ok(Input{language_id, reception: Reception::Request{id}}));
+                    return Some(Ok(ToolMessage{language_id, message: ServerMessage::Request{id}}));
                 }
                 Ok(utils::Message::Response{outcome: utils::Outcome::Success(value), ..}) => {
                     if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
                         server.settings = LspSettings::from(result);
                         warn!("Settings: {:?}", server.settings);
-                        return Some(Ok(Input{language_id, reception: Reception::Initialize}));
+                        return Some(Ok(ToolMessage{language_id, message: ServerMessage::Initialize}));
                     } else if serde_json::from_value::<()>(value.clone()).is_ok() {
                         warn!("Shutdown result");
-                        return Some(Ok(Input{language_id, reception: Reception::Shutdown}));
+                        return Some(Ok(ToolMessage{language_id, message: ServerMessage::Shutdown}));
                     }
                 }
                 Ok(_) | Err(_) => {}
@@ -385,61 +457,18 @@ impl Consumer for LanguageClient {
     }
 }
 
-impl Producer<'_> for LanguageClient {
-    type Good = Protocol;
+impl Producer<'_> for LanguageTool {
+    type Good = ToolMessage<ClientMessage>;
     type Error = ProduceProtocolError;
 
     fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
         #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
-        let mut server = self.servers[good.language_id].borrow_mut();
-
-        match good.message {
-            Message::Doc{ url, message} => {
-                match message {
-                    DocMessage::Open { version, text } => {
-                        server.did_open(url, &good.language_id.to_string(), version, &text)?;
-                    }
-                    DocMessage::Save => {
-                        server.will_save(url)?;
-                    }
-                    DocMessage::Change {
-                        version,
-                        text,
-                        range,
-                        new_text,
-                    } => {
-                        server.did_change(url, version, &text, TextEdit::new(range, new_text))?;
-                    }
-                    DocMessage::Close => {
-                        server.did_close(url)?;
-                    }
-                }
-            }
-            Message::RegisterCapability{id} => {
-                server.register_capability(id)?;
-            }
-            Message::Initialized => {
-                server.transmitter.notify::<Initialized>(InitializedParams {})?;
-            }
-            Message::Shutdown => {
-                server.transmitter.request::<Shutdown>(())?;
-                server.error_processor.terminate()?;
-            }
-            Message::Exit => {
-                server.transmitter.notify::<Exit>(())?;
-            }
-        }
-
+        self.clients[good.language_id].borrow().produce(good.message)?;
         Ok(())
     }
 }
 
-pub(crate) struct Input {
-    pub(crate) language_id: LanguageId,
-    pub(crate) reception: Reception,
-}
-
-pub(crate) enum Reception {
+pub(crate) enum ServerMessage {
     Initialize,
     Shutdown,
     Request{id: u64},
@@ -451,16 +480,16 @@ pub(crate) enum Reception {
 pub enum ConsumeInputError {
 }
 
-/// Protocol of language server.
-pub(crate) struct Protocol {
+/// ToolMessage of language server.
+pub(crate) struct ToolMessage<T> {
     /// The URL that generated.
     pub(crate) language_id: LanguageId,
     /// The message.
-    pub(crate) message: Message,
+    pub(crate) message: T,
 }
 
-/// Message to language server.
-pub(crate) enum Message {
+/// ClientMessage to language server.
+pub(crate) enum ClientMessage {
     Shutdown,
     Exit,
     Initialized,
@@ -468,10 +497,59 @@ pub(crate) enum Message {
     RegisterCapability {id: u64},
 }
 
+impl TryFrom<ClientMessage> for Message {
+    type Error = TryIntoMessageError;
+
+    fn try_from(value: ClientMessage) -> Result<Self, Self::Error> {
+        Ok(match value {
+            ClientMessage::Doc{url, message} => match message {
+                DocMessage::Open{language_id, version, text} => {
+                    let uri: &Url = url.as_ref();
+                    Message::Notification {
+                        method: DidOpenTextDocument::METHOD,
+                        params: serde_json::to_value(DidOpenTextDocumentParams {
+                            text_document: TextDocumentItem::new(
+                                uri.clone(),
+                                language_id.to_string(),
+                                version,
+                                text.to_string(),
+                            ),
+                        })?,
+                    }
+                }
+                DocMessage::Save => {
+                    let uri: &Url = url.as_ref();
+                    Message::Notification {
+                        method: WillSaveTextDocument::METHOD,
+                        params: serde_json::to_value(WillSaveTextDocumentParams {
+                            text_document: TextDocumentIdentifier::new(uri.clone()),
+                            reason: TextDocumentSaveReason::Manual,
+                        })?,
+                    }
+                }
+                _ => Err(Self::Error::Null)?,
+            }
+            _ => Err(Self::Error::Null)?,
+        })
+    }
+}
+
+/// An error converting into message.
+#[derive(Debug, Error)]
+pub enum TryIntoMessageError {
+    /// A null error.
+    #[error("")]
+    Null,
+    /// An error serializing.
+    #[error("")]
+    Serialize(#[from] SerdeJsonError),
+}
+
 #[allow(dead_code)] // False positive.
 pub(crate) enum DocMessage {
     /// Open a doc.
     Open {
+        language_id: LanguageId,
         /// The version.
         version: i64,
         /// The text.

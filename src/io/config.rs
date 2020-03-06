@@ -2,7 +2,7 @@
 use {
     core::{cell::Cell, fmt, time::Duration},
     log::LevelFilter,
-    market::{Consumer, Filter, MpscConsumer, Strip, Stripper, Validator},
+    market::{Consumer, FilterConsumer, MpscConsumer, Strip, Stripper, Validator},
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
     std::{fs, io, path::PathBuf, sync::mpsc},
@@ -41,7 +41,7 @@ pub enum ConsumeSettingError {
     #[error("")]
     Consume(
         #[source]
-        <Filter<Setting, <MpscConsumer<DebouncedEvent> as Consumer>::Error> as Consumer>::Error,
+        <FilterConsumer<Setting, <MpscConsumer<DebouncedEvent> as Consumer>::Error> as Consumer>::Error,
     ),
 }
 
@@ -51,7 +51,7 @@ pub(crate) struct SettingConsumer {
     #[allow(dead_code)] // Must keep ownership of watcher.
     watcher: RecommendedWatcher,
     /// The consumer of settings.
-    consumer: Filter<Setting, <MpscConsumer<DebouncedEvent> as Consumer>::Error>,
+    consumer: FilterConsumer<Setting, <MpscConsumer<DebouncedEvent> as Consumer>::Error>,
 }
 
 impl SettingConsumer {
@@ -69,7 +69,7 @@ impl SettingConsumer {
 
         Ok(Self {
             watcher,
-            consumer: Filter::new(
+            consumer: FilterConsumer::new(
                 Stripper::new(MpscConsumer::from(event_rx)),
                 SettingDeduplicator::new(path),
             ),

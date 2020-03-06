@@ -186,6 +186,7 @@ impl Pane {
                 .map(|doc| Output::EditDoc {
                     url: doc.path.clone(),
                     edit: DocEdit::Open {
+                        url: doc.path.clone(),
                         version: doc.version,
                         text: &doc.text,
                     },
