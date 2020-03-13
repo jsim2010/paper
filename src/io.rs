@@ -196,9 +196,6 @@ pub enum ConsumeInputError {
     /// Setting.
     #[error("{0}")]
     Setting(#[from] ConsumeSettingError),
-    /// Lsp
-    #[error("")]
-    Lsp(#[from] lsp::ConsumeInputError),
     /// Produce
     #[error("")]
     Produce(#[from] lsp::ProduceProtocolError),
@@ -265,7 +262,7 @@ impl Interface {
     }
 
     /// Edits the doc at `url`.
-    fn edit_doc(&self, url: &PathUrl, edit: DocEdit<'_>) -> Result<(), ProduceOutputError> {
+    fn edit_doc(&self, url: &PathUrl, edit: &DocEdit<'_>) -> Result<(), ProduceOutputError> {
         match edit {
             DocEdit::Open { text, .. } => {
                 self.user_interface.produce(ui::Output::OpenDoc { text })?;
@@ -290,7 +287,7 @@ impl Interface {
                 ..
             } => {
                 self.user_interface.produce(ui::Output::Edit {
-                    new_text,
+                    new_text: new_text.to_string(),
                     selection,
                 })?;
             }
@@ -339,8 +336,6 @@ impl Consumer for Interface {
 
 impl Drop for Interface {
     fn drop(&mut self) {
-        drop(&self.user_interface);
-
         for language_id in self.language_tool.language_ids() {
             if let Err(error) = self.language_tool.produce(ToolMessage{language_id, message: ClientMessage::Shutdown}) {
                 error!("Failed to send shutdown message to {} language server: {}", language_id, error);
@@ -361,7 +356,11 @@ impl Drop for Interface {
                 error!("Failed to send exit message to {} language server: {}", language_id, error);
             }
 
-            if let Err(error) = self.language_tool.clients[language_id].borrow_mut().server.wait() {
+            // TODO: This should probably be a consume call.
+            #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
+            let server = &self.language_tool.clients[language_id];
+
+            if let Err(error) = server.borrow_mut().server.wait() {
                 error!("Failed to wait for {} language server process to finish: {}", language_id, error);
             }
         }
@@ -386,7 +385,7 @@ impl<'a> Producer<'a> for Interface {
                 self.add_file(&path)?;
             }
             Output::EditDoc { url, edit } => {
-                self.edit_doc(&url, edit)?;
+                self.edit_doc(&url, edit.as_ref())?;
             }
             Output::Wrap {
                 is_wrapped,
@@ -624,7 +623,7 @@ pub(crate) enum Output<'a> {
         /// The URL of the document.
         url: PathUrl,
         /// The edit to be performed.
-        edit: DocEdit<'a>,
+        edit: Box<DocEdit<'a>>,
     },
     /// Sets the wrapping of the text.
     Wrap {
@@ -686,9 +685,10 @@ impl TryFrom<Output<'_>> for ToolMessage<ClientMessage> {
         match value {
             Output::EditDoc { url, edit } => {
                 if let Some(language_id) = url.language_id() {
+                    let doc_edit: DocEdit<'_> = edit.as_ref().clone();
                     Ok(Self {
                         language_id,
-                        message: ClientMessage::Doc{url: url, message: edit.try_into()?},
+                        message: ClientMessage::Doc{url, message: Box::new(doc_edit.try_into()?)},
                     })
                 } else {
                     Err(TryIntoProtocolError::InvalidOutput)
@@ -726,6 +726,7 @@ pub enum TryIntoProtocolError {
 pub(crate) enum DocEdit<'a> {
     /// Opens a document.
     Open {
+        /// The URL of the document.
         url: PathUrl,
         /// The version of the document.
         version: i64,

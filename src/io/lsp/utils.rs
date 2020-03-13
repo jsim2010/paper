@@ -1,19 +1,19 @@
 //! Implements language server utilities.
 use {
     jsonrpc_core::{Id, Value, Version},
-    log::{error, trace, warn},
-    serde::{
-        ser::SerializeStruct,
-        {Serialize, Serializer},
-    },
+    log::{error, trace},
+    market::{Readable, Writable},
+    serde::{Serialize, Deserialize},
+    lsp_types::{request::Request, notification::Notification},
     serde_json::error::Error as SerdeJsonError,
     std::{
-        fmt,
-        io::{self, BufRead, BufReader, Read, Write},
-        process::{ChildStderr, ChildStdin, ChildStdout},
+        num::ParseIntError,
+        io::{self, Write, BufRead, BufReader, Read},
+        process::{ChildStderr, ChildStdout},
         sync::{
             mpsc::{self, Receiver, TryRecvError, Sender},
         },
+        str::Utf8Error,
         thread,
     },
     thiserror::Error,
@@ -21,6 +21,7 @@ use {
 
 /// The header field name that maps to the length of the content.
 static HEADER_CONTENT_LENGTH: &str = "Content-Length";
+static HEADER_END: &str = "\r\n\r\n";
 
 /// An error from which a language server utility was unable to recover.
 #[derive(Debug, Error)]
@@ -33,7 +34,7 @@ pub enum Fault {
     Send(String),
     /// An error while writing input to a language server process.
     #[error("unable to write to language server process: {0}")]
-    Input(#[source] io::Error),
+    Input(#[from] io::Error),
     /// An error while acquiring the mutex protecting the stdin of a language server process.
     #[error("unable to acquire mutex of language server stdin")]
     AcquireLock(#[from] AcquireLockError),
@@ -43,6 +44,16 @@ pub enum Fault {
     /// Failed to send message.
     #[error("{0}")]
     SendMessage(#[from] SendMessageError),
+    #[error("")]
+    ContentLengthNotFound,
+    #[error("")]
+    ContentLengthInvalid,
+    #[error("")]
+    BufferNotComplete,
+    #[error("")]
+    InvalidUtf8(#[from] Utf8Error),
+    #[error("")]
+    ContentLengthParse(#[from] ParseIntError),
 }
 
 /// Failed to send notification.
@@ -99,156 +110,184 @@ pub enum RequestResponseError {
     /// Failed to receive a message.
     #[error("{0}")]
     Receive(#[from] TryRecvError),
+    /// Write
+    #[error("")]
+    Write(#[from] io::Error),
 }
 
-/// Signifies an LSP message.
-pub(crate) enum Message {
-    /// A notification.
-    Notification {
-        /// The method of the notification.
-        method: &'static str,
-        /// The parameters of the notification.
-        params: Value,
-    },
-    /// A request for information.
-    Request(MessageRequest),
-    /// A response to a request.
-    Response {
-        /// The id that matches with the corresponding request.
-        id: u64,
-        /// The outcome of the response.
-        outcome: Outcome,
-    },
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct Message {
+    jsonrpc: Version,
+    #[serde(flatten)]
+    pub(crate) object: Object,
 }
 
 impl Message {
-    /// Returns `self` in its raw format.
-    fn to_protocol(&self) -> Result<String, SerializeMessageError> {
-        serde_json::to_string(&self)
-            .map(|content| {
-                format!(
-                    "{}: {}\r\n\r\n{}",
-                    HEADER_CONTENT_LENGTH,
-                    content.len(),
-                    content
-                )
-            })
-            .map_err(|e| e.into())
-    }
-}
-
-impl fmt::Debug for Message {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Request(request) => write!(f, "Request {{ {:?} }}", request),
-            Self::Notification { method, params } => write!(
-                f,
-                "Notification {{ method: {:?}, params: {:?} }}",
-                method, params
-            ),
-            Self::Response { id, outcome } => {
-                write!(f, "Response {{ id: {:?}, outcome: {:?} }}", id, outcome)
-            }
+    fn new(object: Object) -> Self {
+        Self {
+            jsonrpc: Version::V2,
+            object,
         }
     }
-}
 
-impl Serialize for Message {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn request<T>(params: T::Params, id: u64) -> Result<Self, SerdeJsonError>
     where
-        S: Serializer,
+        T: Request,
+        <T as Request>::Params: Serialize,
     {
-        let mut state = serializer.serialize_struct(
-            "Content",
-            match self {
-                Self::Notification { .. } | Self::Response { .. } => 3,
-                Self::Request(..) => 4,
-            },
-        )?;
+        Object::request::<T>(params, Id::Num(id)).map(|object| Self::new(object))
+    }
 
-        state.serialize_field("jsonrpc", &Some(Version::V2))?;
+    pub(crate) fn notification<T>(params: T::Params) -> Result<Self, SerdeJsonError>
+    where
+        T: Notification,
+        <T as Notification>::Params: Serialize,
+    {
+        Object::notification::<T>(params).map(|object| Self::new(object))
+    }
 
-        match self {
-            Self::Notification { method, params } => {
-                state.serialize_field("method", method)?;
-                state.serialize_field("params", params)?;
+    pub(crate) fn response<T>(result: T::Result, id: u64) -> Result<Self, SerdeJsonError>
+    where
+        T: Request,
+        <T as Request>::Result: Serialize,
+    {
+        Object::response::<T>(result, Id::Num(id)).map(|object| Self::new(object))
+    }
+}
+
+impl Readable for Message {
+    type Error = Fault;
+
+    fn from_bytes(bytes: &[u8]) -> (usize, Result<Self, Self::Error>) {
+        match std::str::from_utf8(bytes) {
+            Ok(buffer) => {
+                if let Some(header_length) = buffer.find(HEADER_END) {
+                    let mut content_length: Result<usize, Self::Error> = Err(Self::Error::ContentLengthNotFound);
+                    let header = &buffer[..header_length];
+                    let content_start = header_length + HEADER_END.len();
+
+                    for field in header.split("\r\n") {
+                        let mut items = field.split(": ");
+
+                        if items.next() == Some(HEADER_CONTENT_LENGTH) {
+                            content_length = items.next().ok_or(Self::Error::ContentLengthNotFound).and_then(|value| Ok(value.parse()?))
+                        }
+                    }
+
+                    match content_length {
+                        Err(error) => {
+                            (content_start, Err(error))
+                        }
+                        Ok(content_length) => {
+                            let total_len = content_start + content_length;
+
+                            if bytes.len() < total_len {
+                                (0, Err(Self::Error::BufferNotComplete))
+                            } else {
+                                if let Some(content) = buffer.get(content_start..total_len) {
+                                    (total_len, serde_json::from_str(content).map_err(Self::Error::Serialize))
+                                } else {
+                                    // Length of content was not valid. Skip over current header to restart checking for next header.
+                                    (content_start, Err(Self::Error::ContentLengthInvalid))
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    (0, Err(Self::Error::BufferNotComplete))
+                }
             }
-            Self::Request(MessageRequest { id, method, params }) => {
-                state.serialize_field("id", &Id::Num(*id))?;
-                state.serialize_field("method", method)?;
-                state.serialize_field("params", params)?;
-            }
-            Self::Response { id, .. } => {
-                state.serialize_field("id", &Id::Num(*id))?;
-                state.serialize_field("result", &Value::Null)?;
-            }
+            Err(error) => (0, Err(Self::Error::InvalidUtf8(error))),
         }
+    }
+}
 
-        state.end()
+impl Writable for Message {
+    type Error = Fault;
+
+    fn write_to<W: Write>(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let content = serde_json::to_string(&self)?;
+        trace!("write content: {}", content);
+        Ok(write!(writer, "{}: {}\r\n\r\n{}", HEADER_CONTENT_LENGTH, content.len(), content)?)
+    }
+
+    fn to_bytes(&self) -> Result<Vec<u8>, Self::Error> {
+        let content = serde_json::to_string(&self)?;
+
+        trace!("write content: {}", content);
+        Ok(format!("{}: {}\r\n\r\n{}", HEADER_CONTENT_LENGTH, content.len(), content).into_bytes())
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+#[allow(dead_code)] // False positive.
+pub(crate) enum Object {
+    Request {
+        // TODO: Convert this to &str.
+        method: String,
+        params: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<Id>,
+    },
+    Response {
+        #[serde(flatten)]
+        outcome: Outcome,
+        id: Id,
+    },
+}
+
+impl Object {
+    fn request<T>(params: T::Params, id: Id) -> Result<Self, SerdeJsonError>
+    where
+        T: Request,
+        <T as Request>::Params: Serialize,
+    {
+        Ok(Self::Request {
+            method: T::METHOD.to_string(),
+            params: serde_json::to_value(params)?,
+            id: Some(id),
+        })
+    }
+
+    fn notification<T>(params: T::Params) -> Result<Self, SerdeJsonError>
+    where
+        T: Notification,
+        <T as Notification>::Params: Serialize,
+    {
+        Ok(Self::Request {
+            method: T::METHOD.to_string(),
+            params: serde_json::to_value(params)?,
+            id: None,
+        })
+    }
+
+    fn response<T>(result: T::Result, id: Id) -> Result<Self, SerdeJsonError>
+    where
+        T: Request,
+        <T as Request>::Result: Serialize,
+    {
+        Ok(Self::Response {
+            outcome: Outcome::Result(serde_json::to_value(result)?),
+            id,
+        })
     }
 }
 
 /// The outcome of the response.
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Outcome {
     /// The result was successful.
-    Success(Value),
-}
-
-impl fmt::Display for Message {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let content = serde_json::to_string(&self).map_err(|_| fmt::Error)?;
-
-        write!(f, "Content-Length: {}\r\n\r\n{}", content.len(), content)
-    }
-}
-
-/// Signifies an LSP Request Message.
-pub(crate) struct MessageRequest {
-    /// An identifier of a request.
-    pub(crate) id: u64,
-    /// The method of the request.
-    pub(crate) method: String,
-    /// The parameters of the request.
-    pub(crate) params: Value,
-}
-
-/// Implemented so prevent the repetition of the inner class name.
-impl fmt::Debug for MessageRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "id: {:?}, method: {:?}, params: {:?}",
-            self.id, self.method, self.params
-        )
-    }
-}
-
-/// Sends messages to the language server process.
-#[derive(Debug)]
-pub(crate) struct LspTransmitter {
-    stdin: ChildStdin,
-}
-
-impl LspTransmitter {
-    /// Creates a new `LspTransmitter`.
-    pub(crate) fn new(stdin: ChildStdin) -> Self {
-        Self {
-            stdin,
-        }
-    }
-
-    /// Sends `message` to the language server process.
-    pub(crate) fn send(&mut self, message: &Message) -> Result<(), SendMessageError> {
-        trace!("sending: {:?}", message);
-        write!(self.stdin, "{}", message.to_protocol()?).map_err(|e| e.into())
-    }
+    Result(Value),
 }
 
 /// Processes data from the language server.
 struct LspProcessor {
     /// Reads data from the language server process.
-    reader: BufReader<ChildStdout>,
+    reader: ChildStdout,
+    buffer: Vec<u8>,
+    read_buffer: [u8; 1000],
     /// Sends data to the [`LspServer`].
     response_tx: Sender<Message>,
     /// Signifies if the thread is quitting.
@@ -259,7 +298,9 @@ impl LspProcessor {
     /// Creates a new `LspProcessor`.
     fn new(stdout: ChildStdout, response_tx: Sender<Message>) -> Self {
         Self {
-            reader: BufReader::new(stdout),
+            reader: stdout,
+            buffer: Vec::with_capacity(1000),
+            read_buffer: [0; 1000],
             response_tx,
             is_quitting: false,
         }
@@ -268,116 +309,24 @@ impl LspProcessor {
     /// Processes data from the language server.
     fn process(&mut self) -> Result<(), Fault> {
         while !self.is_quitting {
-            if let Some(message) = self.read_message() {
+            while !self.is_quitting {
+                if let Ok(size) = self.reader.read(&mut self.read_buffer) {
+                    self.buffer.extend_from_slice(&mut self.read_buffer[..size]);
+                    break;
+                }
+            }
+
+            let (len, result) = Message::from_bytes(&self.buffer);
+            let _ = self.buffer.drain(..len);
+
+            if let Ok(message) = result {
                 trace!("received: {:?}", message);
 
-                match message {
-                    Message::Response { .. } => self
-                        .response_tx
-                        .send(message)
-                        .map_err(|_| Fault::Send("response message".to_string()))?,
-                    Message::Request(MessageRequest { .. }) => {
-                        self.response_tx.send(message).map_err(|_| Fault::Send("request message".to_string()))?;
-                    }
-                    Message::Notification { .. } => {}
-                }
+                self.response_tx.send(message).map_err(|_| Fault::Send("reception".to_string()))?;
             }
         }
 
         Ok(())
-    }
-
-    /// Reads a message.
-    fn read_message(&mut self) -> Option<Message> {
-        let length = self.read_header();
-
-        if let Some(content) = self.read_content(length) {
-            match serde_json::from_str::<Value>(&content) {
-                Ok(value) => {
-                    if let Some(id) = value
-                        .get("id")
-                        .and_then(|id_value| serde_json::from_value(id_value.to_owned()).ok())
-                    {
-                        if let Some(result) = value.get("result") {
-                            // Success response
-                            Some(Message::Response {
-                                id,
-                                outcome: Outcome::Success(result.to_owned()),
-                            })
-                        } else if value.get("error").is_some() {
-                            // Error response
-                            None
-                        } else if let Some(method) = value.get("method").and_then(|method_value| {
-                            serde_json::from_value(method_value.to_owned()).ok()
-                        }) {
-                            if let Some(params) = value.get("params").and_then(|params_value| {
-                                serde_json::from_value(params_value.to_owned()).ok()
-                            }) {
-                                // Request
-                                Some(Message::Request(MessageRequest { id, method, params }))
-                            } else {
-                                // Invalid
-                                None
-                            }
-                        } else {
-                            // Invalid
-                            None
-                        }
-                    } else {
-                        // Notification
-                        None
-                    }
-                }
-                Err(e) => {
-                    warn!("failed to convert `{}` to json value: {}", content, e);
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Finds the first valid message header and returns the length of the content.
-    fn read_header(&mut self) -> usize {
-        let mut length = None;
-
-        loop {
-            let mut line = String::new();
-
-            if let Err(e) = self.reader.read_line(&mut line) {
-                warn!("failed to read line from language server process: {}", e);
-            }
-
-            if line == "\r\n" {
-                if let Some(len) = length {
-                    return len;
-                }
-            } else {
-                let mut split = line.trim().split(": ");
-
-                if split.next() == Some(HEADER_CONTENT_LENGTH) {
-                    length = split.next().and_then(|s| s.parse().ok());
-                }
-            }
-        }
-    }
-
-    /// Reads the content of a message with known `length`.
-    fn read_content(&mut self, length: usize) -> Option<String> {
-        let mut content = vec![0; length];
-
-        if let Err(e) = self.reader.read_exact(&mut content) {
-            warn!("failed to read message content: {}", e);
-        }
-
-        match String::from_utf8(content) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                warn!("received message that is not valid UTF8: {}", e);
-                None
-            }
-        }
     }
 }
 

@@ -37,7 +37,6 @@
     unused_lifetimes,
     unused_qualifications,
     unused_results,
-    variant_size_differences,
     clippy::cargo,
     clippy::nursery,
     clippy::pedantic,
@@ -48,7 +47,6 @@
     clippy::suspicious_arithmetic_impl, // Not always valid; issues should be detected by tests or other lints.
     clippy::suspicious_op_assign_impl, // Not always valid; issues should be detected by tests or other lints.
     box_pointers, // Generally okay.
-    variant_size_differences, // Generally okay.
 )]
 // Temporary allows.
 #![allow(

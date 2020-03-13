@@ -185,11 +185,11 @@ impl Pane {
                 .as_ref()
                 .map(|doc| Output::EditDoc {
                     url: doc.path.clone(),
-                    edit: DocEdit::Open {
+                    edit: Box::new(DocEdit::Open {
                         url: doc.path.clone(),
                         version: doc.version,
                         text: &doc.text,
-                    },
+                    }),
                 })
                 .expect("retrieving `Document` in `Pane`"),
         );
@@ -252,7 +252,7 @@ impl Document {
     fn save(&self) -> Output<'_> {
         Output::EditDoc {
             url: self.path.clone(),
-            edit: DocEdit::Save { text: &self.text },
+            edit: Box::new(DocEdit::Save { text: &self.text }),
         }
     }
 
@@ -278,12 +278,12 @@ impl Document {
         self.version = self.version.wrapping_add(1);
         Output::EditDoc {
             url: self.path.clone(),
-            edit: DocEdit::Change {
+            edit: Box::new(DocEdit::Change {
                 new_text: String::new(),
                 selection: &self.selection,
                 version: self.version,
                 text: &self.text,
-            },
+            }),
         }
     }
 
@@ -316,7 +316,7 @@ impl Document {
     fn close(self) -> Output<'static> {
         Output::EditDoc {
             url: self.path,
-            edit: DocEdit::Close,
+            edit: Box::new(DocEdit::Close),
         }
     }
 }
