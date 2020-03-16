@@ -146,7 +146,7 @@ pub(crate) struct LanguageClient {
     /// The language server process.
     pub(crate) server: LangServer,
     /// Transmits messages to the language server process.
-    writer: Writer<Message>,
+    writer: Writer<Message, ChildStdin>,
     /// The current request id.
     id: Cell<u64>,
     /// Processes output from the stderr of the language server.

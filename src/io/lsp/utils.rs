@@ -210,13 +210,6 @@ impl Writable for Message {
         trace!("write content: {}", content);
         Ok(write!(writer, "{}: {}\r\n\r\n{}", HEADER_CONTENT_LENGTH, content.len(), content)?)
     }
-
-    fn to_bytes(&self) -> Result<Vec<u8>, Self::Error> {
-        let content = serde_json::to_string(&self)?;
-
-        trace!("write content: {}", content);
-        Ok(format!("{}: {}\r\n\r\n{}", HEADER_CONTENT_LENGTH, content.len(), content).into_bytes())
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
