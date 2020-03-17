@@ -8,10 +8,10 @@ use {
     serde_json::error::Error as SerdeJsonError,
     std::{
         num::ParseIntError,
-        io::{self, Write, BufRead, BufReader, Read},
-        process::{ChildStderr, ChildStdout},
+        io::{self, Write, BufRead, BufReader},
+        process::ChildStderr,
         sync::{
-            mpsc::{self, Receiver, TryRecvError, Sender},
+            mpsc::{self, TryRecvError, Sender},
         },
         str::Utf8Error,
         thread,
@@ -116,7 +116,7 @@ pub enum RequestResponseError {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct Message {
+pub struct Message {
     jsonrpc: Version,
     #[serde(flatten)]
     pub(crate) object: Object,
@@ -273,85 +273,6 @@ impl Object {
 pub(crate) enum Outcome {
     /// The result was successful.
     Result(Value),
-}
-
-/// Processes data from the language server.
-struct LspProcessor {
-    /// Reads data from the language server process.
-    reader: ChildStdout,
-    buffer: Vec<u8>,
-    read_buffer: [u8; 1000],
-    /// Sends data to the [`LspServer`].
-    response_tx: Sender<Message>,
-    /// Signifies if the thread is quitting.
-    is_quitting: bool,
-}
-
-impl LspProcessor {
-    /// Creates a new `LspProcessor`.
-    fn new(stdout: ChildStdout, response_tx: Sender<Message>) -> Self {
-        Self {
-            reader: stdout,
-            buffer: Vec::with_capacity(1000),
-            read_buffer: [0; 1000],
-            response_tx,
-            is_quitting: false,
-        }
-    }
-
-    /// Processes data from the language server.
-    fn process(&mut self) -> Result<(), Fault> {
-        while !self.is_quitting {
-            while !self.is_quitting {
-                if let Ok(size) = self.reader.read(&mut self.read_buffer) {
-                    self.buffer.extend_from_slice(&mut self.read_buffer[..size]);
-                    break;
-                }
-            }
-
-            let (len, result) = Message::from_bytes(&self.buffer);
-            let _ = self.buffer.drain(..len);
-
-            if let Ok(message) = result {
-                trace!("received: {:?}", message);
-
-                self.response_tx.send(message).map_err(|_| Fault::Send("reception".to_string()))?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl Drop for LspProcessor {
-    fn drop(&mut self) {
-        self.is_quitting = true;
-    }
-}
-
-/// Signifies the receiver of LSP messages.
-#[derive(Debug)]
-pub(crate) struct LspReceiver(Receiver<Message>);
-
-impl LspReceiver {
-    /// Creates a new [`LspReceiver`].
-    pub(crate) fn new(stdout: ChildStdout) -> Self {
-        let (tx, rx) = mpsc::channel();
-        let mut processor = LspProcessor::new(stdout, tx);
-
-        let _ = thread::spawn(move || {
-            if let Err(error) = processor.process() {
-                error!("processing language server output: {}", error);
-            }
-        });
-
-        Self(rx)
-    }
-
-    /// Receives a [`Message`] from that was read by [`LspProcessor`].
-    pub(crate) fn recv(&self) -> Result<Message, TryRecvError> {
-        self.0.try_recv()
-    }
 }
 
 /// Processes output from stderr.

@@ -16,7 +16,7 @@ use {
     logging::LogManager,
     lsp::{CreateLangClientError, Fault, LanguageTool, ClientMessage, ToolMessage, SendNotificationError, ServerMessage},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
-    market::{Consumer, Producer, UnlimitedQueue},
+    market::{ReadGoodError, Consumer, Producer, UnlimitedQueue},
     starship::{context::Context, print},
     std::{
         env,
@@ -199,6 +199,10 @@ pub enum ConsumeInputError {
     /// Produce
     #[error("")]
     Produce(#[from] lsp::ProduceProtocolError),
+    #[error("")]
+    Io(#[from] io::Error),
+    #[error("")]
+    Read(#[from] ReadGoodError<lsp::utils::Message>),
 }
 
 /// The interface between the application and all external components.
@@ -302,34 +306,29 @@ impl Consumer for Interface {
     type Good = Input;
     type Error = ConsumeInputError;
 
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        if let Some(Ok(lang_input)) = self.language_tool.consume() {
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+        if let Some(lang_input) = self.language_tool.consume()? {
             match lang_input.message {
                 ServerMessage::Initialize => {
-                    if let Err(error) = self.language_tool.produce(ToolMessage{
+                    self.language_tool.produce(ToolMessage{
                         language_id: lang_input.language_id,
                         message: ClientMessage::Initialized,
-                    }) {
-                        return Some(Err(Self::Error::Produce(error)));
-                    }
+                    })?;
                 }
                 ServerMessage::Request{id} => {
-                    if let Err(error) = self.language_tool.produce(ToolMessage{language_id: lang_input.language_id, message: ClientMessage::RegisterCapability{id}}) {
-                        return Some(Err(Self::Error::Produce(error)));
-                    }
+                    self.language_tool.produce(ToolMessage{language_id: lang_input.language_id, message: ClientMessage::RegisterCapability{id}})?;
                 }
                 ServerMessage::Shutdown => {}
             }
 
-            None
-        } else if let Some(ui_input) = self.user_interface.consume() {
-            Some(ui_input.map(Self::Good::from).map_err(Self::Error::from))
-        } else if let Some(setting) = self.setting_consumer.consume() {
-            Some(setting.map(Self::Good::from).map_err(Self::Error::from))
+            Ok(None)
+        } else if let Some(ui_input) = self.user_interface.consume()? {
+            Ok(Some(Self::Good::from(ui_input)))
+        } else if let Some(setting) = self.setting_consumer.consume()? {
+            Ok(Some(Self::Good::from(setting)))
         } else {
             self.queue
-                .consume()
-                .map(|consumable| consumable.map_err(Self::Error::Consume))
+                .consume().map_err(Self::Error::Consume)
         }
     }
 }
@@ -342,12 +341,10 @@ impl Drop for Interface {
             }
         }
 
-        loop {
-            // TODO: Need to check for reception from all clients.
-            if let Some(Ok(lang_input)) = self.language_tool.consume() {
-                if let ServerMessage::Shutdown = lang_input.message {
-                    break;
-                }
+        // TODO: Need to check for reception from all clients.
+        while let Some(lang_input) = self.language_tool.consume().expect("waiting for shutdown") {
+            if let ServerMessage::Shutdown = lang_input.message {
+                break;
             }
         }
 

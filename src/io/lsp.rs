@@ -1,5 +1,5 @@
 //! Implements management and use of language servers.
-mod utils;
+pub(crate) mod utils;
 
 pub(crate) use utils::SendNotificationError;
 
@@ -22,17 +22,16 @@ use {
         TextDocumentItem, TextDocumentSaveReason, TextDocumentSyncCapability, TextDocumentSyncKind,
         Url, VersionedTextDocumentIdentifier, WillSaveTextDocumentParams,
     },
-    market::{Consumer, Writer, Producer},
+    market::{ReadGoodError, Consumer, Writer, Producer, Reader},
     std::{
-        io,
+        io::{self, BufReader},
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
         rc::Rc,
-        sync::mpsc::TryRecvError,
     },
     serde::{de::DeserializeOwned, Serialize},
     serde_json::error::Error as SerdeJsonError,
     thiserror::Error,
-    utils::{LspErrorProcessor, Message, LspReceiver, RequestResponseError},
+    utils::{LspErrorProcessor, Message, RequestResponseError},
 };
 
 /// An error from which the language server was unable to recover.
@@ -153,8 +152,7 @@ pub(crate) struct LanguageClient {
     error_processor: LspErrorProcessor,
     /// Controls settings for the language server.
     settings: Cell<LspSettings>,
-    /// Receives messages from the language server.
-    receiver: LspReceiver,
+    reader: Reader<Message, BufReader<ChildStdout>>,
 }
 
 impl LanguageClient {
@@ -165,7 +163,7 @@ impl LanguageClient {
     {
         let mut server = LangServer::new(language_id)?;
         let writer = Writer::new(server.stdin()?);
-        let receiver = LspReceiver::new(server.stdout()?);
+        let reader = Reader::new(BufReader::new(server.stdout()?));
         let capabilities = ClientCapabilities {
             workspace: None,
             text_document: Some(TextDocumentClientCapabilities {
@@ -220,8 +218,8 @@ impl LanguageClient {
             error_processor: LspErrorProcessor::new(server.stderr()?),
             server,
             writer,
+            reader,
             settings,
-            receiver,
             id: Cell::new(1),
         };
 
@@ -248,32 +246,31 @@ impl LanguageClient {
 
 impl Consumer for LanguageClient {
     type Good = ServerMessage;
-    type Error = TryRecvError;
+    type Error = ReadGoodError<Message>;
 
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        match self.receiver.recv() {
-            Ok(Message{object: utils::Object::Request{id: Some(Id::Num(id_num)), ..}, ..}) => {
-                return Some(Ok(ServerMessage::Request{id: id_num}));
-            }
-            Ok(Message{object: utils::Object::Response{outcome: utils::Outcome::Result(value), ..}, ..}) => {
-                if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
-                    self.settings.set(LspSettings::from(result));
-                    warn!("Settings: {:?}", self.settings);
-                    return Some(Ok(ServerMessage::Initialize));
-                } else if serde_json::from_value::<()>(value.clone()).is_ok() {
-                    warn!("Shutdown result");
-                    return Some(Ok(ServerMessage::Shutdown));
-                } else {
-                    warn!("Received unknown message from language client");
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+        if let Some(message) = self.reader.consume()? {
+            match message {
+                Message{object: utils::Object::Request{id: Some(Id::Num(id_num)), ..}, ..} => {
+                    return Ok(Some(ServerMessage::Request{id: id_num}));
                 }
+                Message{object: utils::Object::Response{outcome: utils::Outcome::Result(value), ..}, ..} => {
+                    if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
+                        self.settings.set(LspSettings::from(result));
+                        warn!("Settings: {:?}", self.settings);
+                        return Ok(Some(ServerMessage::Initialize));
+                    } else if serde_json::from_value::<()>(value.clone()).is_ok() {
+                        warn!("Shutdown result");
+                        return Ok(Some(ServerMessage::Shutdown));
+                    } else {
+                        warn!("Received unknown message from language client");
+                    }
+                }
+                _ => {}
             }
-            Err(error) => {
-                return Some(Err(error));
-            }
-            Ok(_) => {}
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -406,16 +403,16 @@ impl LanguageTool {
 
 impl Consumer for LanguageTool {
     type Good = ToolMessage<ServerMessage>;
-    type Error = TryRecvError;
+    type Error = ReadGoodError<Message>;
     
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
         for (language_id, client) in &self.clients {
-            if let Some(consumable) = client.borrow().consume() {
-                return Some(consumable.map(|message| ToolMessage{language_id, message}));
+            if let Some(message) = client.borrow().consume()? {
+                return Ok(Some(ToolMessage{language_id, message}));
             }
         }
 
-        None
+        Ok(None)
     }
 }
 

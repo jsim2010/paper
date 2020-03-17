@@ -88,10 +88,9 @@ impl Consumer for SettingConsumer {
     type Good = Setting;
     type Error = ConsumeSettingError;
 
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
         self.consumer
-            .consume()
-            .map(|c| c.map_err(Self::Error::Consume))
+            .consume().map_err(Self::Error::Consume)
     }
 }
 

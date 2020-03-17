@@ -161,20 +161,13 @@ impl Consumer for Terminal {
     type Good = Input;
     type Error = ConsumeInputError;
 
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        match event::poll(INSTANT) {
-            Ok(can_consume) => {
-                if can_consume {
-                    Some(
-                        event::read()
-                            .map(|event| event.into())
-                            .map_err(Self::Error::Read),
-                    )
-                } else {
-                    None
-                }
-            }
-            Err(error) => Some(Err(error).map_err(Self::Error::Read)),
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+        if event::poll(INSTANT)? {
+            event::read()
+                .map(|event| Some(event.into()))
+                .map_err(Self::Error::Read)
+        } else {
+            Ok(None)
         }
     }
 }
