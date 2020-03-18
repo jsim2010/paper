@@ -34,7 +34,7 @@ use {
     },
     log::{error, warn},
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
-    market::{Consumer, Producer, UnlimitedQueue},
+    market::{Consumer, Producer},
     std::{
         collections::VecDeque,
         io::{self, Stdout, Write},
@@ -47,9 +47,6 @@ use {
 /// [`Terminal`]: struct.Terminal.html
 #[derive(Debug, Error)]
 pub enum CreateTerminalError {
-    /// An error producing the size of the body.
-    #[error("producing body size: {0}")]
-    ProduceSize(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
     /// An error initializing the terminal output.
     #[error("initializing output: {0}")]
     Init(#[from] ProduceTerminalOutputError),
@@ -138,7 +135,7 @@ impl Terminal {
             body: RefCell::new(Body::default()),
         };
 
-        terminal.produce(Output::Init)?;
+        terminal.force(Output::Init)?;
         Ok(terminal)
     }
 }
@@ -162,7 +159,7 @@ impl Consumer for Terminal {
     type Error = ConsumeInputError;
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        if event::poll(INSTANT)? {
+        if event::poll(INSTANT).map_err(Self::Error::Read)? {
             event::read()
                 .map(|event| Some(event.into()))
                 .map_err(Self::Error::Read)
@@ -176,7 +173,7 @@ impl<'a> Producer<'a> for Terminal {
     type Good = Output<'a>;
     type Error = ProduceTerminalOutputError;
 
-    fn produce(&'a self, good: Self::Good) -> Result<(), Self::Error> {
+    fn force(&'a self, good: Self::Good) -> Result<(), Self::Error> {
         match good {
             Output::Init => execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
                 .map_err(Self::Error::Init),

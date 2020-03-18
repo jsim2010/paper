@@ -16,7 +16,7 @@ use {
     logging::LogManager,
     lsp::{CreateLangClientError, Fault, LanguageTool, ClientMessage, ToolMessage, SendNotificationError, ServerMessage},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
-    market::{ReadGoodError, Consumer, Producer, UnlimitedQueue},
+    market::{ClosedMarketError, ReadGoodError, NeverErr, Consumer, Producer, UnlimitedQueue},
     starship::{context::Context, print},
     std::{
         env,
@@ -192,7 +192,7 @@ pub enum ConsumeInputError {
     Change(#[source] <UnlimitedQueue<Setting> as Consumer>::Error),
     /// Consume.
     #[error("")]
-    Consume(#[source] <UnlimitedQueue<Input> as Consumer>::Error),
+    Consume(#[from] NeverErr),
     /// Setting.
     #[error("{0}")]
     Setting(#[from] ConsumeSettingError),
@@ -203,6 +203,8 @@ pub enum ConsumeInputError {
     Io(#[from] io::Error),
     #[error("")]
     Read(#[from] ReadGoodError<lsp::utils::Message>),
+    #[error("")]
+    Closed(#[from] ClosedMarketError),
 }
 
 /// The interface between the application and all external components.
@@ -254,7 +256,7 @@ impl Interface {
         let url = self.root_dir.join(path)?;
 
         self.queue
-            .produce(Input::File {
+            .force(Input::File {
                 text: fs::read_to_string(&url).map_err(|error| ReadFileError {
                     file: url.to_string(),
                     error: error.kind(),
@@ -269,10 +271,10 @@ impl Interface {
     fn edit_doc(&self, url: &PathUrl, edit: &DocEdit<'_>) -> Result<(), ProduceOutputError> {
         match edit {
             DocEdit::Open { text, .. } => {
-                self.user_interface.produce(ui::Output::OpenDoc { text })?;
+                self.user_interface.force(ui::Output::OpenDoc { text })?;
             }
             DocEdit::Save { text } => {
-                self.user_interface.produce(ui::Output::Notify {
+                self.user_interface.force(ui::Output::Notify {
                     message: match fs::write(&url, text) {
                         Ok(..) => ShowMessageParams {
                             typ: MessageType::Info,
@@ -290,7 +292,7 @@ impl Interface {
                 selection,
                 ..
             } => {
-                self.user_interface.produce(ui::Output::Edit {
+                self.user_interface.force(ui::Output::Edit {
                     new_text: new_text.to_string(),
                     selection,
                 })?;
@@ -310,13 +312,13 @@ impl Consumer for Interface {
         if let Some(lang_input) = self.language_tool.consume()? {
             match lang_input.message {
                 ServerMessage::Initialize => {
-                    self.language_tool.produce(ToolMessage{
+                    self.language_tool.force(ToolMessage{
                         language_id: lang_input.language_id,
                         message: ClientMessage::Initialized,
                     })?;
                 }
                 ServerMessage::Request{id} => {
-                    self.language_tool.produce(ToolMessage{language_id: lang_input.language_id, message: ClientMessage::RegisterCapability{id}})?;
+                    self.language_tool.force(ToolMessage{language_id: lang_input.language_id, message: ClientMessage::RegisterCapability{id}})?;
                 }
                 ServerMessage::Shutdown => {}
             }
@@ -327,8 +329,8 @@ impl Consumer for Interface {
         } else if let Some(setting) = self.setting_consumer.consume()? {
             Ok(Some(Self::Good::from(setting)))
         } else {
-            self.queue
-                .consume().map_err(Self::Error::Consume)
+            Ok(self.queue
+                .consume()?)
         }
     }
 }
@@ -336,7 +338,7 @@ impl Consumer for Interface {
 impl Drop for Interface {
     fn drop(&mut self) {
         for language_id in self.language_tool.language_ids() {
-            if let Err(error) = self.language_tool.produce(ToolMessage{language_id, message: ClientMessage::Shutdown}) {
+            if let Err(error) = self.language_tool.force(ToolMessage{language_id, message: ClientMessage::Shutdown}) {
                 error!("Failed to send shutdown message to {} language server: {}", language_id, error);
             }
         }
@@ -349,7 +351,7 @@ impl Drop for Interface {
         }
 
         for language_id in self.language_tool.language_ids() {
-            if let Err(error) = self.language_tool.produce(ToolMessage{language_id, message: ClientMessage::Exit}) {
+            if let Err(error) = self.language_tool.force(ToolMessage{language_id, message: ClientMessage::Exit}) {
                 error!("Failed to send exit message to {} language server: {}", language_id, error);
             }
 
@@ -368,10 +370,10 @@ impl<'a> Producer<'a> for Interface {
     type Good = Output<'a>;
     type Error = ProduceOutputError;
 
-    fn produce(&self, output: Self::Good) -> Result<(), Self::Error> {
+    fn force(&self, output: Self::Good) -> Result<(), Self::Error> {
         if let Ok(protocol) = ToolMessage::try_from(output.clone()) {
-            if let Err(error) = self.language_tool.produce(protocol) {
-                self.user_interface.produce(ui::Output::Notify {
+            if let Err(error) = self.language_tool.force(protocol) {
+                self.user_interface.force(ui::Output::Notify {
                     message: error.into(),
                 })?;
             }
@@ -388,14 +390,14 @@ impl<'a> Producer<'a> for Interface {
                 is_wrapped,
                 selection,
             } => {
-                self.user_interface.produce(ui::Output::Wrap {
+                self.user_interface.force(ui::Output::Wrap {
                     is_wrapped,
                     selection,
                 })?;
             }
             Output::MoveSelection { selection } => {
                 self.user_interface
-                    .produce(ui::Output::MoveSelection { selection })?;
+                    .force(ui::Output::MoveSelection { selection })?;
             }
             Output::UpdateHeader => {
                 let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
@@ -416,35 +418,35 @@ impl<'a> Producer<'a> for Interface {
 
                     context.config.config = Some(config);
                 }
-                self.user_interface.produce(ui::Output::SetHeader {
+                self.user_interface.force(ui::Output::SetHeader {
                     header: print::get_prompt(context),
                 })?;
             }
             Output::Notify { message } => {
                 self.user_interface
-                    .produce(ui::Output::Notify { message })?;
+                    .force(ui::Output::Notify { message })?;
             }
             Output::Question { request } => {
                 self.user_interface
-                    .produce(ui::Output::Question { request })?;
+                    .force(ui::Output::Question { request })?;
             }
             Output::StartIntake { title } => {
                 self.user_interface
-                    .produce(ui::Output::StartIntake { title })?;
+                    .force(ui::Output::StartIntake { title })?;
             }
             Output::Reset { selection } => {
                 self.user_interface
-                    .produce(ui::Output::Reset { selection })?;
+                    .force(ui::Output::Reset { selection })?;
             }
             Output::Resize { size } => {
-                self.user_interface.produce(ui::Output::Resize { size })?;
+                self.user_interface.force(ui::Output::Resize { size })?;
             }
             Output::Write { ch } => {
-                self.user_interface.produce(ui::Output::Write { ch })?;
+                self.user_interface.force(ui::Output::Write { ch })?;
             }
             Output::Log { starship_level } => {
                 self.log_manager
-                    .produce(logging::Output::StarshipLevel(starship_level))?;
+                    .force(logging::Output::StarshipLevel(starship_level))?;
             }
             Output::Quit => {
                 self.queue.close();

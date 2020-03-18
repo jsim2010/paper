@@ -117,7 +117,7 @@ impl Paper {
     pub fn run(&mut self) -> Result<(), RunPaperError> {
         for input in self.io.goods() {
             for output in self.processor.process(input) {
-                self.io.produce(output)?;
+                self.io.force(output)?;
             }
         }
 

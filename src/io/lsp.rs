@@ -200,7 +200,7 @@ impl LanguageClient {
         let settings = Cell::new(LspSettings::default());
 
         #[allow(deprecated)] // root_path is a required field.
-        writer.produce(Message::request::<Initialize>(
+        writer.force(Message::request::<Initialize>(
                 InitializeParams {
                     process_id: Some(u64::from(process::id())),
                     root_path: None,
@@ -278,19 +278,19 @@ impl Producer<'_> for LanguageClient {
     type Good = ClientMessage;
     type Error = Fault;
 
-    fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
+    fn force(&self, good: Self::Good) -> Result<(), Self::Error> {
         if let Some(message) = match &good {
             ClientMessage::Doc{ url, message} => match message.as_ref() {
                 DocMessage::Open { .. } | DocMessage::Close => {
                     if self.settings.get().notify_open_close {
-                        Some(good.try_into()?)
+                        Some(good.try_into().map_err(Self::Error::from)?)
                     } else {
                         None
                     }
                 }
                 DocMessage::Save => {
                     if self.settings.get().notify_save {
-                        Some(good.try_into()?)
+                        Some(good.try_into().map_err(Self::Error::from)?)
                     } else {
                         None
                     }
@@ -331,14 +331,14 @@ impl Producer<'_> for LanguageClient {
                 }
             }
             ClientMessage::RegisterCapability{..} | ClientMessage::Initialized | ClientMessage::Exit => {
-                Some(good.try_into()?)
+                Some(good.try_into().map_err(Self::Error::from)?)
             }
             ClientMessage::Shutdown => {
-                self.error_processor.terminate()?;
-                Some(self.request::<Shutdown>(())?)
+                self.error_processor.terminate().map_err(Self::Error::from)?;
+                Some(self.request::<Shutdown>(()).map_err(Self::Error::from)?)
             }
         } {
-            Ok(self.writer.produce(message)?)
+            Ok(self.writer.force(message)?)
         } else {
             Ok(())
         }
@@ -420,9 +420,9 @@ impl Producer<'_> for LanguageTool {
     type Good = ToolMessage<ClientMessage>;
     type Error = ProduceProtocolError;
 
-    fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
+    fn force(&self, good: Self::Good) -> Result<(), Self::Error> {
         #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
-        self.clients[good.language_id].borrow().produce(good.message)?;
+        self.clients[good.language_id].borrow().force(good.message)?;
         Ok(())
     }
 }

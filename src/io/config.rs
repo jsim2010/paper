@@ -2,7 +2,7 @@
 use {
     core::{cell::Cell, fmt, time::Duration},
     log::LevelFilter,
-    market::{Consumer, FilterConsumer, MpscConsumer, Strip, Stripper, Validator},
+    market::{Consumer, ClosedMarketError, FilterConsumer, channel::MpscConsumer, Strip, Stripper, Validator},
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
     std::{fs, io, path::PathBuf, sync::mpsc},
@@ -35,7 +35,7 @@ pub enum CreateConfigurationError {
 }
 
 /// An error consuming [`Setting`]s.
-#[derive(Clone, Copy, Debug, Error)]
+#[derive(Copy, Clone, Debug, Error)]
 pub enum ConsumeSettingError {
     /// Consume.
     #[error("")]
@@ -86,11 +86,11 @@ impl fmt::Debug for SettingConsumer {
 
 impl Consumer for SettingConsumer {
     type Good = Setting;
-    type Error = ConsumeSettingError;
+    type Error = ClosedMarketError;
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
         self.consumer
-            .consume().map_err(Self::Error::Consume)
+            .consume()
     }
 }
 
