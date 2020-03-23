@@ -82,14 +82,14 @@ use {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct Paper {
+pub struct Paper<'a> {
     /// The interface of the application.
-    io: Interface,
+    io: Interface<'a>,
     /// The processor of the application.
     processor: Processor,
 }
 
-impl Paper {
+impl<'a> Paper<'a> {
     /// Creates a new instance of `paper`.
     ///
     /// # Errors
@@ -114,7 +114,7 @@ impl Paper {
     ///
     /// [`RunPaperError`]: enum.RunPaperError.html
     #[inline]
-    pub fn run(&mut self) -> Result<(), RunPaperError> {
+    pub fn run(&'a mut self) -> Result<(), RunPaperError> {
         for input in self.io.goods() {
             for output in self.processor.process(input) {
                 self.io.force(output)?;

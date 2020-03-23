@@ -173,15 +173,19 @@ impl<'a> Producer<'a> for Terminal {
     type Good = Output<'a>;
     type Error = ProduceTerminalOutputError;
 
-    fn force(&'a self, good: Self::Good) -> Result<(), Self::Error> {
+    fn produce(&'a self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         match good {
-            Output::Init => execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
-                .map_err(Self::Error::Init),
-            Output::OpenDoc { text } => self
+            Output::Init => {
+                execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
+                .map_err(Self::Error::Init)?;
+            }
+            Output::OpenDoc { text } => {
+                self
                 .body
                 .borrow_mut()
                 .open(text)
-                .map_err(Self::Error::OpenDoc),
+                .map_err(Self::Error::OpenDoc)?;
+            }
             Output::Wrap {
                 is_wrapped,
                 selection,
@@ -190,7 +194,7 @@ impl<'a> Producer<'a> for Terminal {
                 self.body
                     .borrow_mut()
                     .refresh(selection)
-                    .map_err(Self::Error::Wrap)
+                    .map_err(Self::Error::Wrap)?;
             }
             Output::Edit {
                 new_text,
@@ -200,51 +204,62 @@ impl<'a> Producer<'a> for Terminal {
                 self.body
                     .borrow_mut()
                     .refresh(selection)
-                    .map_err(Self::Error::Edit)
+                    .map_err(Self::Error::Edit)?;
             }
-            Output::MoveSelection { selection } => self
+            Output::MoveSelection { selection } => {
+                self
                 .body
                 .borrow_mut()
                 .refresh(selection)
-                .map_err(Self::Error::MoveSelection),
-            Output::SetHeader { header } => execute!(
-                self.out.borrow_mut(),
-                SavePosition,
-                MoveTo(0, 0),
-                Print(header),
-                RestorePosition
-            )
-            .map_err(Self::Error::SetHeader),
+                .map_err(Self::Error::MoveSelection)?;
+            }
+            Output::SetHeader { header } => {
+                execute!(
+                    self.out.borrow_mut(),
+                    SavePosition,
+                    MoveTo(0, 0),
+                    Print(header),
+                    RestorePosition
+                )
+                .map_err(Self::Error::SetHeader)?;
+            }
             Output::Resize { size } => {
                 self.body.borrow_mut().size = size.0;
-                Ok(())
             }
-            Output::Notify { message } => self
+            Output::Notify { message } => {
+                self
                 .body
                 .borrow_mut()
                 .add_alert(&message.message, message.typ)
-                .map_err(Self::Error::Notify),
+                .map_err(Self::Error::Notify)?;
+            }
             Output::Question { request } => {
                 // TODO: Add implementation to use actions.
                 self.body
                     .borrow_mut()
                     .add_alert(&request.message, request.typ)
-                    .map_err(Self::Error::Question)
+                    .map_err(Self::Error::Question)?;
             }
-            Output::StartIntake { title } => self
+            Output::StartIntake { title } => {
+                self
                 .body
                 .borrow_mut()
                 .add_intake(title)
-                .map_err(Self::Error::StartIntake),
-            Output::Reset { selection } => self
+                .map_err(Self::Error::StartIntake)?;
+            }
+            Output::Reset { selection } => {
+                self
                 .body
                 .borrow_mut()
                 .reset(selection)
-                .map_err(Self::Error::Reset),
+                .map_err(Self::Error::Reset)?;
+            }
             Output::Write { ch } => {
-                execute!(self.out.borrow_mut(), Print(ch)).map_err(Self::Error::Write)
+                execute!(self.out.borrow_mut(), Print(ch)).map_err(Self::Error::Write)?;
             }
         }
+
+        Ok(None)
     }
 }
 

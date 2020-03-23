@@ -50,7 +50,7 @@ impl Producer<'_> for LogManager {
     type Good = Output;
     type Error = Fault;
 
-    fn force(&self, good: Self::Good) -> Result<(), Self::Error> {
+    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         match good {
             Output::StarshipLevel(level) => {
                 if let Ok(mut config) = self.config.write() {
@@ -59,7 +59,7 @@ impl Producer<'_> for LogManager {
             }
         }
 
-        Ok(())
+        Ok(None)
     }
 }
 

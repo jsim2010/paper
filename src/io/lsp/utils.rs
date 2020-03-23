@@ -2,18 +2,16 @@
 use {
     jsonrpc_core::{Id, Value, Version},
     log::{error, trace},
-    market::{Readable, Writable},
-    serde::{Serialize, Deserialize},
-    lsp_types::{request::Request, notification::Notification},
+    lsp_types::{notification::Notification, request::Request},
+    market::{StripFrom, ComposeFrom},
+    serde::{Deserialize, Serialize},
     serde_json::error::Error as SerdeJsonError,
     std::{
+        io::{self, BufRead, BufReader, Write},
         num::ParseIntError,
-        io::{self, Write, BufRead, BufReader},
         process::ChildStderr,
-        sync::{
-            mpsc::{self, TryRecvError, Sender},
-        },
         str::Utf8Error,
+        sync::mpsc::{self, Sender, TryRecvError},
         thread,
     },
     thiserror::Error,
@@ -135,7 +133,7 @@ impl Message {
         T: Request,
         <T as Request>::Params: Serialize,
     {
-        Object::request::<T>(params, Id::Num(id)).map(|object| Self::new(object))
+        Object::request::<T>(params, Id::Num(id)).map(Self::new)
     }
 
     pub(crate) fn notification<T>(params: T::Params) -> Result<Self, SerdeJsonError>
@@ -143,7 +141,7 @@ impl Message {
         T: Notification,
         <T as Notification>::Params: Serialize,
     {
-        Object::notification::<T>(params).map(|object| Self::new(object))
+        Object::notification::<T>(params).map(Self::new)
     }
 
     pub(crate) fn response<T>(result: T::Result, id: u64) -> Result<Self, SerdeJsonError>
@@ -151,86 +149,108 @@ impl Message {
         T: Request,
         <T as Request>::Result: Serialize,
     {
-        Object::response::<T>(result, Id::Num(id)).map(|object| Self::new(object))
+        Object::response::<T>(result, Id::Num(id)).map(Self::new)
     }
 }
 
-impl Readable for Message {
-    type Error = Fault;
+impl ComposeFrom<u8> for Message {
+    fn compose_from(parts: &mut Vec<u8>) -> Option<Self> {
+        let mut length = 0;
 
-    fn from_bytes(bytes: &[u8]) -> (usize, Result<Self, Self::Error>) {
-        match std::str::from_utf8(bytes) {
-            Ok(buffer) => {
-                if let Some(header_length) = buffer.find(HEADER_END) {
-                    let mut content_length: Result<usize, Self::Error> = Err(Self::Error::ContentLengthNotFound);
-                    let header = &buffer[..header_length];
-                    let content_start = header_length + HEADER_END.len();
+        let message = std::str::from_utf8(parts).ok().and_then(|mut buffer| {
+            buffer.find(HEADER_END).and_then(|header_length| {
+                let mut content_length: Option<usize> = None;
+                #[allow(clippy::indexing_slicing)] // The range is determined by the previous `find()`.
+                let header = &buffer[..header_length];
+                #[allow(clippy::integer_arithmetic)] // This returns the end of the previous `find()`.
+                let content_start = header_length + HEADER_END.len();
 
-                    for field in header.split("\r\n") {
-                        let mut items = field.split(": ");
+                for field in header.split("\r\n") {
+                    let mut items = field.split(": ");
 
-                        if items.next() == Some(HEADER_CONTENT_LENGTH) {
-                            content_length = items.next().ok_or(Self::Error::ContentLengthNotFound).and_then(|value| Ok(value.parse()?))
-                        }
-                    }
-
-                    match content_length {
-                        Err(error) => {
-                            (content_start, Err(error))
-                        }
-                        Ok(content_length) => {
-                            let total_len = content_start + content_length;
-
-                            if bytes.len() < total_len {
-                                (0, Err(Self::Error::BufferNotComplete))
-                            } else {
-                                if let Some(content) = buffer.get(content_start..total_len) {
-                                    (total_len, serde_json::from_str(content).map_err(Self::Error::Serialize))
-                                } else {
-                                    // Length of content was not valid. Skip over current header to restart checking for next header.
-                                    (content_start, Err(Self::Error::ContentLengthInvalid))
-                                }
+                    if items.next() == Some(HEADER_CONTENT_LENGTH) {
+                        if let Some(content_length_str) = items.next() {
+                            if let Ok(value) = content_length_str.parse() {
+                                content_length = Some(value);
                             }
                         }
+
+                        break;
                     }
-                } else {
-                    (0, Err(Self::Error::BufferNotComplete))
                 }
-            }
-            Err(error) => (0, Err(Self::Error::InvalidUtf8(error))),
-        }
+
+                match content_length {
+                    None => {
+                        length = header_length;
+                        None
+                    }
+                    Some(content_length) => {
+                        if let Some(total_len) = content_start.checked_add(content_length) {
+                            if parts.len() < total_len {
+                                None
+                            } else if let Some(content) = buffer.get(content_start..total_len) {
+                                length = total_len;
+                                serde_json::from_str(content).ok()
+                            } else {
+                                length = content_start;
+                                None
+                            }
+                        } else {
+                            length = content_start;
+                            None
+                        }
+                    }
+                }
+            })
+        });
+
+        parts.drain(..length);
+        message
     }
 }
 
-impl Writable for Message {
-    type Error = Fault;
-
-    fn write_to<W: Write>(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let content = serde_json::to_string(&self)?;
-        trace!("write content: {}", content);
-        Ok(write!(writer, "{}: {}\r\n\r\n{}", HEADER_CONTENT_LENGTH, content.len(), content)?)
+impl StripFrom<Message> for u8 {
+    fn strip_from(good: &Message) -> Vec<Self> {
+        serde_json::to_string(good).ok().map(|content| {
+            trace!("write content: {}", content);
+            format!(
+                "{}: {}\r\n\r\n{}",
+                HEADER_CONTENT_LENGTH,
+                content.len(),
+                content
+            ).as_bytes()
+        })
     }
 }
 
+/// A json-rpc object.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 #[allow(dead_code)] // False positive.
 pub(crate) enum Object {
+    /// A request json-rpc object.
     Request {
+        /// The method identifier.
         // TODO: Convert this to &str.
         method: String,
+        /// The parameters.
         params: Value,
+        /// The id.
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<Id>,
     },
+    /// A response json-rpc object.
     Response {
+        /// The outcome.
         #[serde(flatten)]
         outcome: Outcome,
+        /// The id.
         id: Id,
     },
 }
 
 impl Object {
+    /// Creates a request of type `T` with `id`.
     fn request<T>(params: T::Params, id: Id) -> Result<Self, SerdeJsonError>
     where
         T: Request,
@@ -243,6 +263,7 @@ impl Object {
         })
     }
 
+    /// Creates a notification of type `T`.
     fn notification<T>(params: T::Params) -> Result<Self, SerdeJsonError>
     where
         T: Notification,
@@ -255,6 +276,7 @@ impl Object {
         })
     }
 
+    /// Creates a response to a request of type `T` with `id`.
     fn response<T>(result: T::Result, id: Id) -> Result<Self, SerdeJsonError>
     where
         T: Request,

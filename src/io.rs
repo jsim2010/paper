@@ -12,11 +12,14 @@ use {
         fmt::{self, Display},
     },
     enum_map::Enum,
-    log::{error, LevelFilter},
+    log::{trace, error, LevelFilter},
     logging::LogManager,
-    lsp::{CreateLangClientError, Fault, LanguageTool, ClientMessage, ToolMessage, SendNotificationError, ServerMessage},
+    lsp::{
+        ClientMessage, CreateLangClientError, Fault, LanguageTool, SendNotificationError,
+        ServerMessage, ToolMessage,
+    },
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
-    market::{ClosedMarketError, ReadGoodError, NeverErr, Consumer, Producer, UnlimitedQueue},
+    market::{ClosedMarketError, Consumer, Producer, UnlimitedQueue},
     starship::{context::Context, print},
     std::{
         env,
@@ -61,6 +64,15 @@ impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
 /// [`Interface`]: struct.Interface.html
 #[derive(Debug, Error)]
 pub enum CreateInterfaceError {
+    /// An error while creating the logging configuration.
+    #[error("{0}")]
+    CreateLogConfig(#[from] logging::Fault),
+    /// An error determing the root directory.
+    #[error("current working directory is invalid: {0}")]
+    RootDir(#[from] io::Error),
+    /// An error while working with a Url.
+    #[error("{0}")]
+    Url(#[from] UrlError),
     /// An error creating a [`Terminal`].
     ///
     /// [`Terminal`]: ui/struct.Terminal.html
@@ -69,18 +81,9 @@ pub enum CreateInterfaceError {
     /// An error determining the home directory of the current user.
     #[error("home directory of current user is unknown")]
     HomeDir,
-    /// An error determing the root directory.
-    #[error("current working directory is invalid: {0}")]
-    RootDir(#[from] io::Error),
-    /// An error while working with a Url.
-    #[error("{0}")]
-    Url(#[from] UrlError),
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),
-    /// An error while creating the logging configuration.
-    #[error("{0}")]
-    CreateLogConfig(#[from] logging::Fault),
     /// An error creating the setting consumer.
     #[error("")]
     CreateConfig(#[from] CreateSettingConsumerError),
@@ -178,38 +181,26 @@ pub enum Glitch {
 /// An error consuming input.
 #[derive(Debug, Error)]
 pub enum ConsumeInputError {
-    /// Quit.
+    /// An error reading a message from the language tool.
     #[error("")]
-    Quit,
-    /// Ui.
-    #[error("")]
-    Ui(#[from] ui::ConsumeInputError),
-    /// Add to queue.
-    #[error("{0}")]
-    Queue(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
-    /// Change
-    #[error("")]
-    Change(#[source] <UnlimitedQueue<Setting> as Consumer>::Error),
-    /// Consume.
-    #[error("")]
-    Consume(#[from] NeverErr),
-    /// Setting.
-    #[error("{0}")]
-    Setting(#[from] ConsumeSettingError),
-    /// Produce
+    Read(#[from] io::Error),
+    /// An error producing a language tool protocol.
     #[error("")]
     Produce(#[from] lsp::ProduceProtocolError),
+    /// An error consuming a user input.
     #[error("")]
-    Io(#[from] io::Error),
-    #[error("")]
-    Read(#[from] ReadGoodError<lsp::utils::Message>),
+    Ui(#[from] ui::ConsumeInputError),
+    /// An error consuming a setting.
+    #[error("{0}")]
+    Setting(#[from] ConsumeSettingError),
+    /// The queue is closed.
     #[error("")]
     Closed(#[from] ClosedMarketError),
 }
 
 /// The interface between the application and all external components.
 #[derive(Debug)]
-pub(crate) struct Interface {
+pub(crate) struct Interface<'a> {
     /// Manages the user interface.
     user_interface: Terminal,
     /// Notifies `self` of any events to the config file.
@@ -217,19 +208,19 @@ pub(crate) struct Interface {
     /// Queues [`Input`]s.
     queue: UnlimitedQueue<Input>,
     /// The interface of the application with all language servers.
-    language_tool: LanguageTool,
+    language_tool: LanguageTool<'a>,
     /// The root directory of the application.
     root_dir: PathUrl,
     /// The configuration of the logger.
     log_manager: LogManager,
 }
 
-impl Interface {
+impl Interface<'_> {
     /// Creates a new interface.
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         // Create log_manager first as this is where the logger is initialized.
         let log_manager = LogManager::new()?;
-        let root_dir = PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?;
+        let root_dir = PathUrl::try_from(env::current_dir()?)?;
 
         let interface = Self {
             log_manager,
@@ -304,21 +295,25 @@ impl Interface {
     }
 }
 
-impl Consumer for Interface {
+impl Consumer for Interface<'_> {
     type Good = Input;
     type Error = ConsumeInputError;
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        if let Some(lang_input) = self.language_tool.consume()? {
+        let a = self.language_tool.consume();
+        if let Some(lang_input) = a? {
             match lang_input.message {
                 ServerMessage::Initialize => {
-                    self.language_tool.force(ToolMessage{
+                    self.language_tool.force(ToolMessage {
                         language_id: lang_input.language_id,
                         message: ClientMessage::Initialized,
                     })?;
                 }
-                ServerMessage::Request{id} => {
-                    self.language_tool.force(ToolMessage{language_id: lang_input.language_id, message: ClientMessage::RegisterCapability{id}})?;
+                ServerMessage::Request { id } => {
+                    self.language_tool.force(ToolMessage {
+                        language_id: lang_input.language_id,
+                        message: ClientMessage::RegisterCapability { id },
+                    })?;
                 }
                 ServerMessage::Shutdown => {}
             }
@@ -329,30 +324,50 @@ impl Consumer for Interface {
         } else if let Some(setting) = self.setting_consumer.consume()? {
             Ok(Some(Self::Good::from(setting)))
         } else {
-            Ok(self.queue
-                .consume()?)
+            let result = Ok(self.queue.consume()?);
+            result
         }
     }
 }
 
-impl Drop for Interface {
+impl<'a> Drop for Interface<'a> {
     fn drop(&mut self) {
         for language_id in self.language_tool.language_ids() {
-            if let Err(error) = self.language_tool.force(ToolMessage{language_id, message: ClientMessage::Shutdown}) {
-                error!("Failed to send shutdown message to {} language server: {}", language_id, error);
+            if let Err(error) = self.language_tool.force(ToolMessage {
+                language_id,
+                message: ClientMessage::Shutdown,
+            }) {
+                error!(
+                    "Failed to send shutdown message to {} language server: {}",
+                    language_id, error
+                );
             }
         }
 
-        // TODO: Need to check for reception from all clients.
-        while let Some(lang_input) = self.language_tool.consume().expect("waiting for shutdown") {
-            if let ServerMessage::Shutdown = lang_input.message {
-                break;
+        loop {
+            // TODO: Need to check for reception from all clients.
+            match self.language_tool.consume() {
+                Ok(lang_input) => {
+                    if let Some(ToolMessage { message: ServerMessage::Shutdown, .. }) = lang_input {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    error!("Error while waiting for shutdown: {}", error);
+                    break;
+                }
             }
         }
 
         for language_id in self.language_tool.language_ids() {
-            if let Err(error) = self.language_tool.force(ToolMessage{language_id, message: ClientMessage::Exit}) {
-                error!("Failed to send exit message to {} language server: {}", language_id, error);
+            if let Err(error) = self.language_tool.force(ToolMessage {
+                language_id,
+                message: ClientMessage::Exit,
+            }) {
+                error!(
+                    "Failed to send exit message to {} language server: {}",
+                    language_id, error
+                );
             }
 
             // TODO: This should probably be a consume call.
@@ -360,19 +375,22 @@ impl Drop for Interface {
             let server = &self.language_tool.clients[language_id];
 
             if let Err(error) = server.borrow_mut().server.wait() {
-                error!("Failed to wait for {} language server process to finish: {}", language_id, error);
+                error!(
+                    "Failed to wait for {} language server process to finish: {}",
+                    language_id, error
+                );
             }
         }
     }
 }
 
-impl<'a> Producer<'a> for Interface {
+impl<'a> Producer<'a> for Interface<'a> {
     type Good = Output<'a>;
     type Error = ProduceOutputError;
 
-    fn force(&self, output: Self::Good) -> Result<(), Self::Error> {
+    fn produce(&self, output: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         if let Ok(protocol) = ToolMessage::try_from(output.clone()) {
-            if let Err(error) = self.language_tool.force(protocol) {
+            if let Err(error) = self.language_tool.produce(protocol) {
                 self.user_interface.force(ui::Output::Notify {
                     message: error.into(),
                 })?;
@@ -390,14 +408,14 @@ impl<'a> Producer<'a> for Interface {
                 is_wrapped,
                 selection,
             } => {
-                self.user_interface.force(ui::Output::Wrap {
+                self.user_interface.produce(ui::Output::Wrap {
                     is_wrapped,
                     selection,
                 })?;
             }
             Output::MoveSelection { selection } => {
                 self.user_interface
-                    .force(ui::Output::MoveSelection { selection })?;
+                    .produce(ui::Output::MoveSelection { selection })?;
             }
             Output::UpdateHeader => {
                 let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
@@ -418,42 +436,40 @@ impl<'a> Producer<'a> for Interface {
 
                     context.config.config = Some(config);
                 }
-                self.user_interface.force(ui::Output::SetHeader {
+                self.user_interface.produce(ui::Output::SetHeader {
                     header: print::get_prompt(context),
                 })?;
             }
             Output::Notify { message } => {
-                self.user_interface
-                    .force(ui::Output::Notify { message })?;
+                self.user_interface.produce(ui::Output::Notify { message })?;
             }
             Output::Question { request } => {
                 self.user_interface
-                    .force(ui::Output::Question { request })?;
+                    .produce(ui::Output::Question { request })?;
             }
             Output::StartIntake { title } => {
                 self.user_interface
-                    .force(ui::Output::StartIntake { title })?;
+                    .produce(ui::Output::StartIntake { title })?;
             }
             Output::Reset { selection } => {
-                self.user_interface
-                    .force(ui::Output::Reset { selection })?;
+                self.user_interface.produce(ui::Output::Reset { selection })?;
             }
             Output::Resize { size } => {
-                self.user_interface.force(ui::Output::Resize { size })?;
+                self.user_interface.produce(ui::Output::Resize { size })?;
             }
             Output::Write { ch } => {
-                self.user_interface.force(ui::Output::Write { ch })?;
+                self.user_interface.produce(ui::Output::Write { ch })?;
             }
             Output::Log { starship_level } => {
                 self.log_manager
-                    .force(logging::Output::StarshipLevel(starship_level))?;
+                    .produce(logging::Output::StarshipLevel(starship_level))?;
             }
             Output::Quit => {
                 self.queue.close();
             }
         }
 
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -687,7 +703,10 @@ impl TryFrom<Output<'_>> for ToolMessage<ClientMessage> {
                     let doc_edit: DocEdit<'_> = edit.as_ref().clone();
                     Ok(Self {
                         language_id,
-                        message: ClientMessage::Doc{url, message: Box::new(doc_edit.try_into()?)},
+                        message: ClientMessage::Doc {
+                            url,
+                            message: Box::new(doc_edit.try_into()?),
+                        },
                     })
                 } else {
                     Err(TryIntoProtocolError::InvalidOutput)
@@ -757,11 +776,14 @@ impl TryFrom<DocEdit<'_>> for lsp::DocMessage {
 
     fn try_from(value: DocEdit<'_>) -> Result<Self, Self::Error> {
         Ok(match value {
-            DocEdit::Open { url, version, text } => url.language_id().map(|language_id| Self::Open {
-                language_id,
-                version,
-                text: text.to_string(),
-            }).ok_or(Self::Error::UnknownLanguage)?,
+            DocEdit::Open { url, version, text } => url
+                .language_id()
+                .map(|language_id| Self::Open {
+                    language_id,
+                    version,
+                    text: text.to_string(),
+                })
+                .ok_or(Self::Error::UnknownLanguage)?,
             DocEdit::Save { .. } => Self::Save,
             DocEdit::Change {
                 version,

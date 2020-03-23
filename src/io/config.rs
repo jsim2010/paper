@@ -2,7 +2,10 @@
 use {
     core::{cell::Cell, fmt, time::Duration},
     log::LevelFilter,
-    market::{Consumer, ClosedMarketError, FilterConsumer, channel::MpscConsumer, Strip, Stripper, Validator},
+    market::{
+        channel::MpscConsumer, ClosedMarketError, Consumer, VigilantConsumer, StripFrom, StrippingConsumer,
+        Inspector,
+    },
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
     std::{fs, io, path::PathBuf, sync::mpsc},
@@ -41,7 +44,7 @@ pub enum ConsumeSettingError {
     #[error("")]
     Consume(
         #[source]
-        <FilterConsumer<Setting, <MpscConsumer<DebouncedEvent> as Consumer>::Error> as Consumer>::Error,
+        <VigilantConsumer<StrippingConsumer<MpscConsumer<DebouncedEvent>, Setting>, SettingDeduplicator> as Consumer>::Error,
     ),
 }
 
@@ -51,7 +54,7 @@ pub(crate) struct SettingConsumer {
     #[allow(dead_code)] // Must keep ownership of watcher.
     watcher: RecommendedWatcher,
     /// The consumer of settings.
-    consumer: FilterConsumer<Setting, <MpscConsumer<DebouncedEvent> as Consumer>::Error>,
+    consumer: VigilantConsumer<StrippingConsumer<MpscConsumer<DebouncedEvent>, Setting>, SettingDeduplicator>,
 }
 
 impl SettingConsumer {
@@ -69,8 +72,8 @@ impl SettingConsumer {
 
         Ok(Self {
             watcher,
-            consumer: FilterConsumer::new(
-                Stripper::new(MpscConsumer::from(event_rx)),
+            consumer: VigilantConsumer::new(
+                StrippingConsumer::new(MpscConsumer::from(event_rx)),
                 SettingDeduplicator::new(path),
             ),
         })
@@ -89,17 +92,16 @@ impl Consumer for SettingConsumer {
     type Error = ClosedMarketError;
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        self.consumer
-            .consume()
+        self.consumer.consume()
     }
 }
 
-impl Strip<DebouncedEvent> for Setting {
+impl StripFrom<DebouncedEvent> for Setting {
     #[inline]
-    fn strip(intermediate_good: DebouncedEvent) -> Vec<Self> {
+    fn strip_from(good: &DebouncedEvent) -> Vec<Self> {
         let mut finished_goods = Vec::new();
 
-        if let DebouncedEvent::Write(file) = intermediate_good {
+        if let DebouncedEvent::Write(file) = good {
             if let Ok(config) = Configuration::new(&file) {
                 finished_goods.push(Self::Wrap(config.wrap.0));
                 finished_goods.push(Self::StarshipLog(config.starship_log.0));
@@ -125,10 +127,10 @@ impl SettingDeduplicator {
     }
 }
 
-impl Validator for SettingDeduplicator {
+impl Inspector for SettingDeduplicator {
     type Good = Setting;
 
-    fn is_valid(&self, good: &Self::Good) -> bool {
+    fn allows(&self, good: &Self::Good) -> bool {
         let config = self.config.get();
         let mut new_config = config;
         let result;
