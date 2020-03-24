@@ -169,22 +169,21 @@ impl Consumer for Terminal {
     }
 }
 
-impl<'a> Producer<'a> for Terminal {
-    type Good = Output<'a>;
+impl Producer for Terminal {
+    type Good = Output;
     type Error = ProduceTerminalOutputError;
 
-    fn produce(&'a self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         match good {
             Output::Init => {
                 execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
-                .map_err(Self::Error::Init)?;
+                    .map_err(Self::Error::Init)?;
             }
             Output::OpenDoc { text } => {
-                self
-                .body
-                .borrow_mut()
-                .open(text)
-                .map_err(Self::Error::OpenDoc)?;
+                self.body
+                    .borrow_mut()
+                    .open(&text)
+                    .map_err(Self::Error::OpenDoc)?;
             }
             Output::Wrap {
                 is_wrapped,
@@ -193,25 +192,24 @@ impl<'a> Producer<'a> for Terminal {
                 self.body.borrow_mut().is_wrapped = is_wrapped;
                 self.body
                     .borrow_mut()
-                    .refresh(selection)
+                    .refresh(&selection)
                     .map_err(Self::Error::Wrap)?;
             }
             Output::Edit {
                 new_text,
                 selection,
             } => {
-                self.body.borrow_mut().edit(&new_text, *selection);
+                self.body.borrow_mut().edit(&new_text, selection);
                 self.body
                     .borrow_mut()
-                    .refresh(selection)
+                    .refresh(&selection)
                     .map_err(Self::Error::Edit)?;
             }
             Output::MoveSelection { selection } => {
-                self
-                .body
-                .borrow_mut()
-                .refresh(selection)
-                .map_err(Self::Error::MoveSelection)?;
+                self.body
+                    .borrow_mut()
+                    .refresh(&selection)
+                    .map_err(Self::Error::MoveSelection)?;
             }
             Output::SetHeader { header } => {
                 execute!(
@@ -227,11 +225,10 @@ impl<'a> Producer<'a> for Terminal {
                 self.body.borrow_mut().size = size.0;
             }
             Output::Notify { message } => {
-                self
-                .body
-                .borrow_mut()
-                .add_alert(&message.message, message.typ)
-                .map_err(Self::Error::Notify)?;
+                self.body
+                    .borrow_mut()
+                    .add_alert(&message.message, message.typ)
+                    .map_err(Self::Error::Notify)?;
             }
             Output::Question { request } => {
                 // TODO: Add implementation to use actions.
@@ -241,18 +238,16 @@ impl<'a> Producer<'a> for Terminal {
                     .map_err(Self::Error::Question)?;
             }
             Output::StartIntake { title } => {
-                self
-                .body
-                .borrow_mut()
-                .add_intake(title)
-                .map_err(Self::Error::StartIntake)?;
+                self.body
+                    .borrow_mut()
+                    .add_intake(title)
+                    .map_err(Self::Error::StartIntake)?;
             }
             Output::Reset { selection } => {
-                self
-                .body
-                .borrow_mut()
-                .reset(selection)
-                .map_err(Self::Error::Reset)?;
+                self.body
+                    .borrow_mut()
+                    .reset(&selection)
+                    .map_err(Self::Error::Reset)?;
             }
             Output::Write { ch } => {
                 execute!(self.out.borrow_mut(), Print(ch)).map_err(Self::Error::Write)?;
@@ -305,32 +300,32 @@ impl From<BodySize> for Input {
 }
 
 /// An output.
-pub(crate) enum Output<'a> {
+pub(crate) enum Output {
     /// Initializes the terminal.
     Init,
     /// Opens a doc.
     OpenDoc {
         /// The text.
-        text: &'a str,
+        text: String,
     },
     /// Sets the wrapped configuration.
     Wrap {
         /// If the text is wrapped.
         is_wrapped: bool,
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Sets the text covered by `selection` to `new_text`.
     Edit {
         /// The new text.
         new_text: String,
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Sets the selection.
     MoveSelection {
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Sets the header to `header`.
     SetHeader {
@@ -360,7 +355,7 @@ pub(crate) enum Output<'a> {
     /// Resets `self` with `selection`.
     Reset {
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Writes `ch`.
     Write {

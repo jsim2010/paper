@@ -12,7 +12,7 @@ use {
         fmt::{self, Display},
     },
     enum_map::Enum,
-    log::{trace, error, LevelFilter},
+    log::{error, LevelFilter},
     logging::LogManager,
     lsp::{
         ClientMessage, CreateLangClientError, Fault, LanguageTool, SendNotificationError,
@@ -200,7 +200,7 @@ pub enum ConsumeInputError {
 
 /// The interface between the application and all external components.
 #[derive(Debug)]
-pub(crate) struct Interface<'a> {
+pub(crate) struct Interface {
     /// Manages the user interface.
     user_interface: Terminal,
     /// Notifies `self` of any events to the config file.
@@ -208,14 +208,14 @@ pub(crate) struct Interface<'a> {
     /// Queues [`Input`]s.
     queue: UnlimitedQueue<Input>,
     /// The interface of the application with all language servers.
-    language_tool: LanguageTool<'a>,
+    language_tool: LanguageTool,
     /// The root directory of the application.
     root_dir: PathUrl,
     /// The configuration of the logger.
     log_manager: LogManager,
 }
 
-impl Interface<'_> {
+impl Interface {
     /// Creates a new interface.
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         // Create log_manager first as this is where the logger is initialized.
@@ -259,10 +259,12 @@ impl Interface<'_> {
     }
 
     /// Edits the doc at `url`.
-    fn edit_doc(&self, url: &PathUrl, edit: &DocEdit<'_>) -> Result<(), ProduceOutputError> {
+    fn edit_doc(&self, url: &PathUrl, edit: &DocEdit) -> Result<(), ProduceOutputError> {
         match edit {
             DocEdit::Open { text, .. } => {
-                self.user_interface.force(ui::Output::OpenDoc { text })?;
+                self.user_interface.force(ui::Output::OpenDoc {
+                    text: text.to_string(),
+                })?;
             }
             DocEdit::Save { text } => {
                 self.user_interface.force(ui::Output::Notify {
@@ -285,7 +287,7 @@ impl Interface<'_> {
             } => {
                 self.user_interface.force(ui::Output::Edit {
                     new_text: new_text.to_string(),
-                    selection,
+                    selection: *selection,
                 })?;
             }
             DocEdit::Close => {}
@@ -295,7 +297,7 @@ impl Interface<'_> {
     }
 }
 
-impl Consumer for Interface<'_> {
+impl Consumer for Interface {
     type Good = Input;
     type Error = ConsumeInputError;
 
@@ -324,13 +326,12 @@ impl Consumer for Interface<'_> {
         } else if let Some(setting) = self.setting_consumer.consume()? {
             Ok(Some(Self::Good::from(setting)))
         } else {
-            let result = Ok(self.queue.consume()?);
-            result
+            Ok(self.queue.consume()?)
         }
     }
 }
 
-impl<'a> Drop for Interface<'a> {
+impl Drop for Interface {
     fn drop(&mut self) {
         for language_id in self.language_tool.language_ids() {
             if let Err(error) = self.language_tool.force(ToolMessage {
@@ -348,7 +349,11 @@ impl<'a> Drop for Interface<'a> {
             // TODO: Need to check for reception from all clients.
             match self.language_tool.consume() {
                 Ok(lang_input) => {
-                    if let Some(ToolMessage { message: ServerMessage::Shutdown, .. }) = lang_input {
+                    if let Some(ToolMessage {
+                        message: ServerMessage::Shutdown,
+                        ..
+                    }) = lang_input
+                    {
                         break;
                     }
                 }
@@ -384,8 +389,8 @@ impl<'a> Drop for Interface<'a> {
     }
 }
 
-impl<'a> Producer<'a> for Interface<'a> {
-    type Good = Output<'a>;
+impl Producer for Interface {
+    type Good = Output;
     type Error = ProduceOutputError;
 
     fn produce(&self, output: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
@@ -397,26 +402,25 @@ impl<'a> Producer<'a> for Interface<'a> {
             }
         }
 
-        match output {
+        let result = match output.clone() {
             Output::GetFile { path } => {
                 self.add_file(&path)?;
+                None
             }
             Output::EditDoc { url, edit } => {
                 self.edit_doc(&url, edit.as_ref())?;
+                None
             }
             Output::Wrap {
                 is_wrapped,
                 selection,
-            } => {
-                self.user_interface.produce(ui::Output::Wrap {
-                    is_wrapped,
-                    selection,
-                })?;
-            }
-            Output::MoveSelection { selection } => {
-                self.user_interface
-                    .produce(ui::Output::MoveSelection { selection })?;
-            }
+            } => self.user_interface.produce(ui::Output::Wrap {
+                is_wrapped,
+                selection,
+            })?,
+            Output::MoveSelection { selection } => self
+                .user_interface
+                .produce(ui::Output::MoveSelection { selection })?,
             Output::UpdateHeader => {
                 let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
 
@@ -438,38 +442,39 @@ impl<'a> Producer<'a> for Interface<'a> {
                 }
                 self.user_interface.produce(ui::Output::SetHeader {
                     header: print::get_prompt(context),
-                })?;
+                })?
             }
-            Output::Notify { message } => {
-                self.user_interface.produce(ui::Output::Notify { message })?;
-            }
-            Output::Question { request } => {
-                self.user_interface
-                    .produce(ui::Output::Question { request })?;
-            }
-            Output::StartIntake { title } => {
-                self.user_interface
-                    .produce(ui::Output::StartIntake { title })?;
-            }
-            Output::Reset { selection } => {
-                self.user_interface.produce(ui::Output::Reset { selection })?;
-            }
-            Output::Resize { size } => {
-                self.user_interface.produce(ui::Output::Resize { size })?;
-            }
-            Output::Write { ch } => {
-                self.user_interface.produce(ui::Output::Write { ch })?;
-            }
+            Output::Notify { message } => self
+                .user_interface
+                .produce(ui::Output::Notify { message })?,
+            Output::Question { request } => self
+                .user_interface
+                .produce(ui::Output::Question { request })?,
+            Output::StartIntake { title } => self
+                .user_interface
+                .produce(ui::Output::StartIntake { title })?,
+            Output::Reset { selection } => self
+                .user_interface
+                .produce(ui::Output::Reset { selection })?,
+            Output::Resize { size } => self.user_interface.produce(ui::Output::Resize { size })?,
+            Output::Write { ch } => self.user_interface.produce(ui::Output::Write { ch })?,
             Output::Log { starship_level } => {
-                self.log_manager
-                    .produce(logging::Output::StarshipLevel(starship_level))?;
+                // TODO: Make sure to handle a failure here.
+                #[allow(unused_results)]
+                {
+                    // For now assume produce() never fails.
+                    self.log_manager
+                        .produce(logging::Output::StarshipLevel(starship_level))?;
+                }
+                None
             }
             Output::Quit => {
                 self.queue.close();
+                None
             }
-        }
+        };
 
-        Ok(None)
+        Ok(result.map(|_| output))
     }
 }
 
@@ -627,7 +632,7 @@ impl From<Setting> for Input {
 
 /// An output.
 #[derive(Clone, Debug)]
-pub(crate) enum Output<'a> {
+pub(crate) enum Output {
     /// Retrieves the URL and text of a file.
     GetFile {
         /// The relative path of the file.
@@ -638,19 +643,19 @@ pub(crate) enum Output<'a> {
         /// The URL of the document.
         url: PathUrl,
         /// The edit to be performed.
-        edit: Box<DocEdit<'a>>,
+        edit: Box<DocEdit>,
     },
     /// Sets the wrapping of the text.
     Wrap {
         /// If the text shall be wrapped.
         is_wrapped: bool,
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Moves the selection.
     MoveSelection {
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Sets the header of the application.
     UpdateHeader,
@@ -672,7 +677,7 @@ pub(crate) enum Output<'a> {
     /// Resets the output of the application.
     Reset {
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Resizes the application display.
     Resize {
@@ -693,14 +698,14 @@ pub(crate) enum Output<'a> {
     },
 }
 
-impl TryFrom<Output<'_>> for ToolMessage<ClientMessage> {
+impl TryFrom<Output> for ToolMessage<ClientMessage> {
     type Error = TryIntoProtocolError;
 
-    fn try_from(value: Output<'_>) -> Result<Self, Self::Error> {
+    fn try_from(value: Output) -> Result<Self, Self::Error> {
         match value {
             Output::EditDoc { url, edit } => {
                 if let Some(language_id) = url.language_id() {
-                    let doc_edit: DocEdit<'_> = edit.as_ref().clone();
+                    let doc_edit: DocEdit = edit.as_ref().clone();
                     Ok(Self {
                         language_id,
                         message: ClientMessage::Doc {
@@ -741,7 +746,7 @@ pub enum TryIntoProtocolError {
 
 /// Edits a document.
 #[derive(Clone, Debug)]
-pub(crate) enum DocEdit<'a> {
+pub(crate) enum DocEdit {
     /// Opens a document.
     Open {
         /// The URL of the document.
@@ -749,32 +754,32 @@ pub(crate) enum DocEdit<'a> {
         /// The version of the document.
         version: i64,
         /// The full text of the document
-        text: &'a str,
+        text: String,
     },
     /// Saves the document.
     Save {
         /// The text of the document.
-        text: &'a str,
+        text: String,
     },
     /// Edits the document.
     Change {
         /// The new text.
         new_text: String,
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
         /// The version.
         version: i64,
         /// The full text of the document.
-        text: &'a str,
+        text: String,
     },
     /// Closes the document.
     Close,
 }
 
-impl TryFrom<DocEdit<'_>> for lsp::DocMessage {
+impl TryFrom<DocEdit> for lsp::DocMessage {
     type Error = TryIntoMessageError;
 
-    fn try_from(value: DocEdit<'_>) -> Result<Self, Self::Error> {
+    fn try_from(value: DocEdit) -> Result<Self, Self::Error> {
         Ok(match value {
             DocEdit::Open { url, version, text } => url
                 .language_id()
@@ -792,7 +797,7 @@ impl TryFrom<DocEdit<'_>> for lsp::DocMessage {
                 new_text,
             } => Self::Change {
                 version,
-                text: text.to_string(),
+                text,
                 range: selection.range()?,
                 new_text,
             },

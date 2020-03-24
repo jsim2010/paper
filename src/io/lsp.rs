@@ -25,7 +25,7 @@ use {
         TextDocumentItem, TextDocumentSaveReason, TextDocumentSyncCapability, TextDocumentSyncKind,
         Url, VersionedTextDocumentIdentifier, WillSaveTextDocumentParams,
     },
-    market::{Consumer, StrippingProducer, Producer, Reader, ByteWriter},
+    market::{ByteWriter, Consumer, Producer, Reader, StripError, StrippingProducer},
     serde::{de::DeserializeOwned, Serialize},
     serde_json::error::Error as SerdeJsonError,
     std::{
@@ -75,6 +75,9 @@ pub enum Fault {
     /// Conversion
     #[error("")]
     Conversion(#[from] TryIntoMessageError),
+    /// Write.
+    #[error("")]
+    Write(#[from] StripError<io::Error>),
 }
 
 impl From<Fault> for ShowMessageParams {
@@ -106,6 +109,9 @@ pub enum CreateLangClientError {
     /// An error while serializing a language server message.
     #[error("unable to serialize language server message: {0}")]
     Serialize(#[from] SerdeJsonError),
+    /// Write.
+    #[error("")]
+    Write(#[from] StripError<io::Error>),
 }
 
 /// An error while spawning the language server process.
@@ -138,11 +144,11 @@ impl From<&str> for AccessIoError {
 
 /// The client interface with a language server.
 #[derive(Debug)]
-pub(crate) struct LanguageClient<'a> {
+pub(crate) struct LanguageClient {
     /// The language server process.
     pub(crate) server: LangServer,
     /// Transmits messages to the language server process.
-    writer: StrippingProducer<'a, Message, ByteWriter<ChildStdin>>,
+    writer: StrippingProducer<Message, ByteWriter<ChildStdin>>,
     /// The current request id.
     id: Cell<u64>,
     /// Processes output from the stderr of the language server.
@@ -153,14 +159,14 @@ pub(crate) struct LanguageClient<'a> {
     reader: Reader<Message, BufReader<ChildStdout>>,
 }
 
-impl LanguageClient<'_> {
+impl LanguageClient {
     /// Creates a new `LanguageClient` for `language_id`.
     pub(crate) fn new<U>(language_id: LanguageId, root: U) -> Result<Self, CreateLangClientError>
     where
         U: AsRef<Url>,
     {
         let mut server = LangServer::new(language_id)?;
-        let writer = ByteWriter::new(server.stdin()?);
+        let writer = StrippingProducer::new(ByteWriter::new(server.stdin()?));
         let reader = Reader::new(BufReader::new(server.stdout()?));
         let capabilities = ClientCapabilities {
             workspace: None,
@@ -236,7 +242,7 @@ impl LanguageClient<'_> {
     }
 }
 
-impl Consumer for LanguageClient<'_> {
+impl Consumer for LanguageClient {
     type Good = ServerMessage;
     type Error = io::Error;
 
@@ -280,7 +286,7 @@ impl Consumer for LanguageClient<'_> {
     }
 }
 
-impl Producer<'_> for LanguageClient<'_> {
+impl Producer for LanguageClient {
     type Good = ClientMessage;
     type Error = Fault;
 
@@ -289,14 +295,14 @@ impl Producer<'_> for LanguageClient<'_> {
             ClientMessage::Doc { url, message } => match message.as_ref() {
                 DocMessage::Open { .. } | DocMessage::Close => {
                     if self.settings.get().notify_open_close {
-                        Some(good.try_into().map_err(Self::Error::from)?)
+                        Some(good.clone().try_into().map_err(Self::Error::from)?)
                     } else {
                         None
                     }
                 }
                 DocMessage::Save => {
                     if self.settings.get().notify_save {
-                        Some(good.try_into().map_err(Self::Error::from)?)
+                        Some(good.clone().try_into().map_err(Self::Error::from)?)
                     } else {
                         None
                     }
@@ -340,7 +346,7 @@ impl Producer<'_> for LanguageClient<'_> {
             },
             ClientMessage::RegisterCapability { .. }
             | ClientMessage::Initialized
-            | ClientMessage::Exit => Some(good.try_into().map_err(Self::Error::from)?),
+            | ClientMessage::Exit => Some(good.clone().try_into().map_err(Self::Error::from)?),
             ClientMessage::Shutdown => {
                 self.error_processor
                     .terminate()
@@ -348,9 +354,9 @@ impl Producer<'_> for LanguageClient<'_> {
                 Some(self.request::<Shutdown>(()).map_err(Self::Error::from)?)
             }
         } {
-            Ok(self.writer.force(message)?)
+            Ok(self.writer.produce(message)?.map(|_| good))
         } else {
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -387,13 +393,13 @@ impl From<EditLanguageToolError> for ShowMessageParams {
 
 /// Manages the langauge servers.
 #[derive(Debug)]
-pub(crate) struct LanguageTool<'a> {
+pub(crate) struct LanguageTool {
     /// The clients to servers that have been created by the application.
     // Require Rc due to LanguageClient not impl Copy, see https://gitlab.com/KonradBorowski/enum-map/-/merge_requests/30.
-    pub(crate) clients: EnumMap<LanguageId, Rc<RefCell<LanguageClient<'a>>>>,
+    pub(crate) clients: EnumMap<LanguageId, Rc<RefCell<LanguageClient>>>,
 }
 
-impl<'a> LanguageTool<'a> {
+impl LanguageTool {
     /// Creates a new [`LanguageTool`].
     pub(crate) fn new(root_dir: &PathUrl) -> Result<Self, CreateLanguageToolError> {
         let rust_server = Rc::new(RefCell::new(LanguageClient::new(
@@ -409,12 +415,12 @@ impl<'a> LanguageTool<'a> {
     }
 
     /// Returns the langauge identifiers supported by `self`.
-    pub(crate) fn language_ids(&'a self) -> impl Iterator<Item = LanguageId> + 'a {
+    pub(crate) fn language_ids<'a>(&'a self) -> impl Iterator<Item = LanguageId> + 'a {
         self.clients.iter().map(|(language_id, _)| language_id)
     }
 }
 
-impl Consumer for LanguageTool<'_> {
+impl Consumer for LanguageTool {
     type Good = ToolMessage<ServerMessage>;
     type Error = io::Error;
 
@@ -432,16 +438,18 @@ impl Consumer for LanguageTool<'_> {
     }
 }
 
-impl Producer<'_> for LanguageTool<'_> {
+impl Producer for LanguageTool {
     type Good = ToolMessage<ClientMessage>;
     type Error = ProduceProtocolError;
 
     fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+        let g = good.clone();
+
         #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
-        self.clients[good.language_id]
+        Ok(self.clients[g.language_id]
             .borrow()
-            .produce(good.message)?;
-        Ok(())
+            .produce(g.message)?
+            .map(|_| good))
     }
 }
 
@@ -460,7 +468,7 @@ pub(crate) enum ServerMessage {
 }
 
 /// Tool message of language server.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ToolMessage<T> {
     /// The URL that generated.
     pub(crate) language_id: LanguageId,
@@ -469,6 +477,7 @@ pub(crate) struct ToolMessage<T> {
 }
 
 /// Client message to language server.
+#[derive(Clone)]
 pub(crate) enum ClientMessage {
     /// Shuts down language server.
     Shutdown,
@@ -553,6 +562,7 @@ pub enum TryIntoMessageError {
 
 /// A message for interacting with a document.
 #[allow(dead_code)] // False positive.
+#[derive(Clone)]
 pub(crate) enum DocMessage {
     /// Open a doc.
     Open {

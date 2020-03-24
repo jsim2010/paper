@@ -46,7 +46,7 @@ impl LogManager {
     }
 }
 
-impl Producer<'_> for LogManager {
+impl Producer for LogManager {
     type Good = Output;
     type Error = Fault;
 
@@ -106,20 +106,28 @@ impl Log for Logger {
     fn log(&self, record: &Record<'_>) {
         if self.enabled(record.metadata()) {
             if let Ok(mut file) = self.file.write() {
-                let _ = writeln!(
-                    file,
-                    "{} [{}]: {}",
-                    OffsetDateTime::now_local().format("%F %T"),
-                    record.level(),
-                    record.args()
-                );
+                #[allow(unused_must_use)]
+                {
+                    // log() definition does not allow propagating error.
+                    writeln!(
+                        file,
+                        "{} [{}]: {}",
+                        OffsetDateTime::now_local().format("%F %T"),
+                        record.level(),
+                        record.args()
+                    );
+                }
             }
         }
     }
 
     fn flush(&self) {
         if let Ok(mut file) = self.file.write() {
-            let _ = file.flush();
+            #[allow(unused_must_use)]
+            {
+                // flush() definition does not allow propagating error.
+                file.flush();
+            }
         }
     }
 }

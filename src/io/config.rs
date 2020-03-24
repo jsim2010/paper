@@ -3,8 +3,8 @@ use {
     core::{cell::Cell, fmt, time::Duration},
     log::LevelFilter,
     market::{
-        channel::MpscConsumer, ClosedMarketError, Consumer, VigilantConsumer, StripFrom, StrippingConsumer,
-        Inspector,
+        channel::MpscConsumer, ClosedMarketError, Consumer, Inspector, StripFrom,
+        StrippingConsumer, VigilantConsumer,
     },
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
     serde::Deserialize,
@@ -44,7 +44,10 @@ pub enum ConsumeSettingError {
     #[error("")]
     Consume(
         #[source]
-        <VigilantConsumer<StrippingConsumer<MpscConsumer<DebouncedEvent>, Setting>, SettingDeduplicator> as Consumer>::Error,
+        <VigilantConsumer<
+            StrippingConsumer<MpscConsumer<DebouncedEvent>, Setting>,
+            SettingDeduplicator,
+        > as Consumer>::Error,
     ),
 }
 
@@ -54,7 +57,10 @@ pub(crate) struct SettingConsumer {
     #[allow(dead_code)] // Must keep ownership of watcher.
     watcher: RecommendedWatcher,
     /// The consumer of settings.
-    consumer: VigilantConsumer<StrippingConsumer<MpscConsumer<DebouncedEvent>, Setting>, SettingDeduplicator>,
+    consumer: VigilantConsumer<
+        StrippingConsumer<MpscConsumer<DebouncedEvent>, Setting>,
+        SettingDeduplicator,
+    >,
 }
 
 impl SettingConsumer {
@@ -102,7 +108,7 @@ impl StripFrom<DebouncedEvent> for Setting {
         let mut finished_goods = Vec::new();
 
         if let DebouncedEvent::Write(file) = good {
-            if let Ok(config) = Configuration::new(&file) {
+            if let Ok(config) = Configuration::new(file) {
                 finished_goods.push(Self::Wrap(config.wrap.0));
                 finished_goods.push(Self::StarshipLog(config.starship_log.0));
             }
@@ -113,7 +119,8 @@ impl StripFrom<DebouncedEvent> for Setting {
 }
 
 /// Filters settings that already match the current configuration.
-struct SettingDeduplicator {
+#[derive(Debug)]
+pub struct SettingDeduplicator {
     /// The current configuration.
     config: Cell<Configuration>,
 }
@@ -130,6 +137,7 @@ impl SettingDeduplicator {
 impl Inspector for SettingDeduplicator {
     type Good = Setting;
 
+    #[inline]
     fn allows(&self, good: &Self::Good) -> bool {
         let config = self.config.get();
         let mut new_config = config;

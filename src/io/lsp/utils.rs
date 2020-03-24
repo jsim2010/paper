@@ -3,11 +3,11 @@ use {
     jsonrpc_core::{Id, Value, Version},
     log::{error, trace},
     lsp_types::{notification::Notification, request::Request},
-    market::{StripFrom, ComposeFrom},
+    market::{ComposeFrom, StripFrom},
     serde::{Deserialize, Serialize},
     serde_json::error::Error as SerdeJsonError,
     std::{
-        io::{self, BufRead, BufReader, Write},
+        io::{self, BufRead, BufReader},
         num::ParseIntError,
         process::ChildStderr,
         str::Utf8Error,
@@ -19,6 +19,7 @@ use {
 
 /// The header field name that maps to the length of the content.
 static HEADER_CONTENT_LENGTH: &str = "Content-Length";
+/// Indicates the end of the header
 static HEADER_END: &str = "\r\n\r\n";
 
 /// An error from which a language server utility was unable to recover.
@@ -42,14 +43,19 @@ pub enum Fault {
     /// Failed to send message.
     #[error("{0}")]
     SendMessage(#[from] SendMessageError),
+    /// Length of content not found.
     #[error("")]
     ContentLengthNotFound,
+    /// Length of content is invalid.
     #[error("")]
     ContentLengthInvalid,
+    /// Buffer is not complete
     #[error("")]
     BufferNotComplete,
+    /// Invalid utf8.
     #[error("")]
     InvalidUtf8(#[from] Utf8Error),
+    /// Content length was not parsed.
     #[error("")]
     ContentLengthParse(#[from] ParseIntError),
 }
@@ -113,21 +119,26 @@ pub enum RequestResponseError {
     Write(#[from] io::Error),
 }
 
+/// The content of an LSP message.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Message {
+    /// The JSON version.
     jsonrpc: Version,
+    /// The items included in the content.
     #[serde(flatten)]
     pub(crate) object: Object,
 }
 
 impl Message {
-    fn new(object: Object) -> Self {
+    /// Creates a new [`Message`].
+    const fn new(object: Object) -> Self {
         Self {
             jsonrpc: Version::V2,
             object,
         }
     }
 
+    /// Creates a request [`Message`].
     pub(crate) fn request<T>(params: T::Params, id: u64) -> Result<Self, SerdeJsonError>
     where
         T: Request,
@@ -136,6 +147,7 @@ impl Message {
         Object::request::<T>(params, Id::Num(id)).map(Self::new)
     }
 
+    /// Creates a notification [`Message`].
     pub(crate) fn notification<T>(params: T::Params) -> Result<Self, SerdeJsonError>
     where
         T: Notification,
@@ -144,6 +156,7 @@ impl Message {
         Object::notification::<T>(params).map(Self::new)
     }
 
+    /// Creates a response [`Message`].
     pub(crate) fn response<T>(result: T::Result, id: u64) -> Result<Self, SerdeJsonError>
     where
         T: Request,
@@ -157,12 +170,14 @@ impl ComposeFrom<u8> for Message {
     fn compose_from(parts: &mut Vec<u8>) -> Option<Self> {
         let mut length = 0;
 
-        let message = std::str::from_utf8(parts).ok().and_then(|mut buffer| {
+        let message = std::str::from_utf8(parts).ok().and_then(|buffer| {
             buffer.find(HEADER_END).and_then(|header_length| {
                 let mut content_length: Option<usize> = None;
-                #[allow(clippy::indexing_slicing)] // The range is determined by the previous `find()`.
+                #[allow(clippy::indexing_slicing)]
+                // The range is determined by the previous `find()`.
                 let header = &buffer[..header_length];
-                #[allow(clippy::integer_arithmetic)] // This returns the end of the previous `find()`.
+                #[allow(clippy::integer_arithmetic)]
+                // This returns the end of the previous `find()`.
                 let content_start = header_length + HEADER_END.len();
 
                 for field in header.split("\r\n") {
@@ -204,21 +219,29 @@ impl ComposeFrom<u8> for Message {
             })
         });
 
-        parts.drain(..length);
+        #[allow(unused_results)]
+        {
+            // Intended to not use drained elements.
+            parts.drain(..length);
+        }
+
         message
     }
 }
 
 impl StripFrom<Message> for u8 {
+    #[inline]
     fn strip_from(good: &Message) -> Vec<Self> {
-        serde_json::to_string(good).ok().map(|content| {
+        serde_json::to_string(good).map_or(Vec::new(), |content| {
             trace!("write content: {}", content);
             format!(
                 "{}: {}\r\n\r\n{}",
                 HEADER_CONTENT_LENGTH,
                 content.len(),
                 content
-            ).as_bytes()
+            )
+            .as_bytes()
+            .to_vec()
         })
     }
 }

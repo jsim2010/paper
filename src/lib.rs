@@ -53,7 +53,7 @@
     clippy::multiple_crate_versions, // Requires redox_users update to avoid multiple versions of rand_core.
     // See <https://gitlab.redox-os.org/redox-os/users/merge_requests/30>
     clippy::unreachable, // unreachable added by derive(Enum).
-    clippy::use_debug, // Flags debug formatting in Debug trait.
+    clippy::use_self, // Flags format macro.
     single_use_lifetimes, // Flags PartialEq derive.
 )]
 
@@ -82,14 +82,14 @@ use {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct Paper<'a> {
+pub struct Paper {
     /// The interface of the application.
-    io: Interface<'a>,
+    io: Interface,
     /// The processor of the application.
     processor: Processor,
 }
 
-impl<'a> Paper<'a> {
+impl Paper {
     /// Creates a new instance of `paper`.
     ///
     /// # Errors
@@ -114,7 +114,7 @@ impl<'a> Paper<'a> {
     ///
     /// [`RunPaperError`]: enum.RunPaperError.html
     #[inline]
-    pub fn run(&'a mut self) -> Result<(), RunPaperError> {
+    pub fn run(&mut self) -> Result<(), RunPaperError> {
         for input in self.io.goods() {
             for output in self.processor.process(input) {
                 self.io.force(output)?;
