@@ -1,10 +1,11 @@
 //! Implements the logging functionality of `paper`.
 use {
     log::{trace, LevelFilter, Log, Metadata, Record, SetLoggerError},
+    market::Producer,
     std::{
         fs::File,
         io::{self, Write},
-        sync::{Arc, RwLock, RwLockWriteGuard},
+        sync::{Arc, RwLock},
     },
     thiserror::Error,
     time::OffsetDateTime,
@@ -26,92 +27,74 @@ pub enum Fault {
 
 /// Configures logging for `paper` during runtime.
 #[derive(Clone, Debug)]
-pub struct LogConfig {
+pub(crate) struct LogManager {
     /// Implements the logging for `paper`.
-    writer: Arc<RwLock<Writer>>,
+    config: Arc<RwLock<Config>>,
 }
 
-impl LogConfig {
-    /// Creates a new [`LogConfig`].
+impl LogManager {
+    /// Creates a new [`LogManager`].
     pub(crate) fn new() -> Result<Self, Fault> {
         let logger = Logger::new()?;
-        let writer = Arc::clone(logger.writer());
+        let config = Arc::clone(logger.config());
 
         log::set_boxed_logger(Box::new(logger))?;
         log::set_max_level(LevelFilter::Trace);
         trace!("Logger initialized");
 
-        Ok(Self { writer })
-    }
-
-    /// Returns the writer.
-    pub(crate) fn writer(&self) -> Result<RwLockWriteGuard<'_, Writer>, Fault> {
-        self.writer.write().map_err(|_| Fault::Lock)
+        Ok(Self { config })
     }
 }
 
-/// Implements writing logs to a file.
-#[derive(Debug)]
-pub(crate) struct Writer {
-    /// Defines the file that stores logs.
-    file: File,
-    /// Defines the level at which logs from starship are allowed.
-    pub(crate) starship_level: LevelFilter,
-}
+impl Producer for LogManager {
+    type Good = Output;
+    type Error = Fault;
 
-impl Writer {
-    /// Creates a new [`Writer`].
-    fn new() -> Result<Self, Fault> {
-        let log_filename = "paper.log".to_string();
+    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+        match good {
+            Output::StarshipLevel(level) => {
+                if let Ok(mut config) = self.config.write() {
+                    config.starship_level = level;
+                }
+            }
+        }
 
-        Ok(Self {
-            file: File::create(&log_filename).map_err(|e| Fault::CreateFile(log_filename, e))?,
-            starship_level: LevelFilter::Off,
-        })
-    }
-
-    /// Writes `record` to the file of `self`.
-    fn write(&mut self, record: &Record<'_>) {
-        let _ = writeln!(
-            self.file,
-            "{} [{}]: {}",
-            OffsetDateTime::now_local().format("%F %T"),
-            record.level(),
-            record.args()
-        );
-    }
-
-    /// Flushes the buffer of the writer.
-    fn flush(&mut self) {
-        let _ = self.file.flush();
+        Ok(None)
     }
 }
 
 /// Implements the logger of the application.
-pub(crate) struct Logger {
-    /// The [`Writer`] of the logger.
-    writer: Arc<RwLock<Writer>>,
+struct Logger {
+    /// Defines the file that stores logs.
+    file: Arc<RwLock<File>>,
+    /// The [`Config`] of the logger.
+    config: Arc<RwLock<Config>>,
 }
 
 impl Logger {
     /// Creates a new [`Logger`].
-    pub(crate) fn new() -> Result<Self, Fault> {
+    fn new() -> Result<Self, Fault> {
+        let log_filename = "paper.log".to_string();
+
         Ok(Self {
-            writer: Arc::new(RwLock::new(Writer::new()?)),
+            file: Arc::new(RwLock::new(
+                File::create(&log_filename).map_err(|e| Fault::CreateFile(log_filename, e))?,
+            )),
+            config: Arc::new(RwLock::new(Config::new())),
         })
     }
 
-    /// Returns the writer.
-    pub(crate) const fn writer(&self) -> &Arc<RwLock<Writer>> {
-        &self.writer
+    /// Returns the config.
+    const fn config(&self) -> &Arc<RwLock<Config>> {
+        &self.config
     }
 }
 
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        if let Ok(writer) = self.writer.read() {
+        if let Ok(config) = self.config.read() {
             if metadata.target().starts_with("starship") {
-                metadata.level() <= writer.starship_level
+                metadata.level() <= config.starship_level
             } else {
                 true
             }
@@ -122,15 +105,51 @@ impl Log for Logger {
 
     fn log(&self, record: &Record<'_>) {
         if self.enabled(record.metadata()) {
-            if let Ok(mut writer) = self.writer.write() {
-                writer.write(record);
+            if let Ok(mut file) = self.file.write() {
+                #[allow(unused_must_use)]
+                {
+                    // log() definition does not allow propagating error.
+                    writeln!(
+                        file,
+                        "{} [{}]: {}",
+                        OffsetDateTime::now_local().format("%F %T"),
+                        record.level(),
+                        record.args()
+                    );
+                }
             }
         }
     }
 
     fn flush(&self) {
-        if let Ok(mut writer) = self.writer.write() {
-            writer.flush();
+        if let Ok(mut file) = self.file.write() {
+            #[allow(unused_must_use)]
+            {
+                // flush() definition does not allow propagating error.
+                file.flush();
+            }
         }
     }
+}
+
+/// Implements writing logs to a file.
+#[derive(Debug)]
+struct Config {
+    /// Defines the level at which logs from starship are allowed.
+    starship_level: LevelFilter,
+}
+
+impl Config {
+    /// Creates a new [`Config`].
+    const fn new() -> Self {
+        Self {
+            starship_level: LevelFilter::Off,
+        }
+    }
+}
+
+/// A logging output.
+pub(crate) enum Output {
+    /// The level of the starship module.
+    StarshipLevel(LevelFilter),
 }

@@ -37,7 +37,7 @@ impl Processor {
     }
 
     /// Processes `input` and generates [`Output`].
-    pub(crate) fn process(&mut self, input: Input) -> Vec<Output<'_>> {
+    pub(crate) fn process(&mut self, input: Input) -> Vec<Output> {
         if let Some(operation) = self.interpreter.translate(input) {
             self.operate(operation)
         } else {
@@ -46,7 +46,7 @@ impl Processor {
     }
 
     /// Performs `operation` and returns the appropriate [`Display`]s.
-    pub(crate) fn operate(&mut self, operation: Operation) -> Vec<Output<'_>> {
+    pub(crate) fn operate(&mut self, operation: Operation) -> Vec<Output> {
         let mut outputs = Vec::new();
         // Retrieve here to avoid error. This will not work once changes start modifying the working dir.
         match operation {
@@ -69,7 +69,7 @@ impl Processor {
                         .pane
                         .doc
                         .as_ref()
-                        .map_or(&EMPTY_SELECTION, |doc| &doc.selection),
+                        .map_or(EMPTY_SELECTION, |doc| doc.selection),
                 });
             }
             Operation::Alert(message) => {
@@ -115,7 +115,7 @@ impl Processor {
     }
 
     /// Updates `self` based on `setting`.
-    fn update_setting(&mut self, setting: Setting) -> Vec<Output<'_>> {
+    fn update_setting(&mut self, setting: Setting) -> Vec<Output> {
         let mut outputs = Vec::new();
 
         match setting {
@@ -127,7 +127,7 @@ impl Processor {
                         .pane
                         .doc
                         .as_ref()
-                        .map_or(&EMPTY_SELECTION, |doc| &doc.selection),
+                        .map_or(EMPTY_SELECTION, |doc| doc.selection),
                 });
             }
             Setting::StarshipLog(starship_level) => {
@@ -151,7 +151,7 @@ struct Pane {
 
 impl Pane {
     /// Performs `operation` on `self`.
-    fn operate(&mut self, operation: DocOp) -> Output<'_> {
+    fn operate(&mut self, operation: DocOp) -> Output {
         if let Some(doc) = &mut self.doc {
             match operation {
                 DocOp::Move(vector) => doc.move_selection(&vector),
@@ -172,7 +172,7 @@ impl Pane {
     }
 
     /// Opens a document at `path`.
-    fn open_doc(&mut self, url: PathUrl, text: String) -> Vec<Output<'_>> {
+    fn open_doc(&mut self, url: PathUrl, text: String) -> Vec<Output> {
         let mut outputs = Vec::new();
         let doc = self.create_doc(url, text);
         if let Some(old_doc) = self.doc.replace(doc) {
@@ -185,10 +185,11 @@ impl Pane {
                 .as_ref()
                 .map(|doc| Output::EditDoc {
                     url: doc.path.clone(),
-                    edit: DocEdit::Open {
+                    edit: Box::new(DocEdit::Open {
+                        url: doc.path.clone(),
                         version: doc.version,
-                        text: &doc.text,
-                    },
+                        text: doc.text.clone(),
+                    }),
                 })
                 .expect("retrieving `Document` in `Pane`"),
         );
@@ -201,7 +202,7 @@ impl Pane {
     }
 
     /// Updates the size of `self` to match `size`;
-    fn update_size(&mut self, size: BodySize) -> Output<'_> {
+    fn update_size(&mut self, size: BodySize) -> Output {
         self.scroll_amount
             .borrow_mut()
             .set(usize::from(size.0.rows.wrapping_div(3)));
@@ -209,7 +210,7 @@ impl Pane {
     }
 
     /// Returns the [`Output`] to close the [`Document`] of `self`.
-    fn close_doc(&mut self) -> Option<Output<'_>> {
+    fn close_doc(&mut self) -> Option<Output> {
         self.doc.take().map(Document::close)
     }
 }
@@ -248,15 +249,17 @@ impl Document {
     }
 
     /// Saves the document.
-    fn save(&self) -> Output<'_> {
+    fn save(&self) -> Output {
         Output::EditDoc {
             url: self.path.clone(),
-            edit: DocEdit::Save { text: &self.text },
+            edit: Box::new(DocEdit::Save {
+                text: self.text.clone(),
+            }),
         }
     }
 
     /// Deletes the text of the [`Selection`].
-    fn delete_selection(&mut self) -> Output<'_> {
+    fn delete_selection(&mut self) -> Output {
         let mut newline_indices = self.text.match_indices('\n');
         let start_line = self.selection.start_line();
         if let Some(start_index) = if start_line == 0 {
@@ -277,12 +280,12 @@ impl Document {
         self.version = self.version.wrapping_add(1);
         Output::EditDoc {
             url: self.path.clone(),
-            edit: DocEdit::Change {
+            edit: Box::new(DocEdit::Change {
                 new_text: String::new(),
-                selection: &self.selection,
+                selection: self.selection,
                 version: self.version,
-                text: &self.text,
-            },
+                text: self.text.clone(),
+            }),
         }
     }
 
@@ -292,7 +295,7 @@ impl Document {
     }
 
     /// Moves the [`Selection`] as described by [`Vector`].
-    fn move_selection(&mut self, vector: &Vector) -> Output<'_> {
+    fn move_selection(&mut self, vector: &Vector) -> Output {
         let amount = match vector.magnitude() {
             Magnitude::Single => 1,
             Magnitude::Half => self.scroll_amount.borrow().value(),
@@ -307,15 +310,15 @@ impl Document {
         }
 
         Output::MoveSelection {
-            selection: &self.selection,
+            selection: self.selection,
         }
     }
 
     /// Returns the output to close `self`.
-    fn close(self) -> Output<'static> {
+    fn close(self) -> Output {
         Output::EditDoc {
             url: self.path,
-            edit: DocEdit::Close,
+            edit: Box::new(DocEdit::Close),
         }
     }
 }

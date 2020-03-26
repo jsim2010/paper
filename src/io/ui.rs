@@ -30,11 +30,11 @@ use {
         event::{self, Event},
         execute, queue,
         style::{Color, Print, ResetColor, SetBackgroundColor},
-        terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+        terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     },
     log::{error, warn},
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
-    market::{Consumer, Producer, UnlimitedQueue},
+    market::{Consumer, Producer},
     std::{
         collections::VecDeque,
         io::{self, Stdout, Write},
@@ -47,9 +47,6 @@ use {
 /// [`Terminal`]: struct.Terminal.html
 #[derive(Debug, Error)]
 pub enum CreateTerminalError {
-    /// An error producing the size of the body.
-    #[error("producing body size: {0}")]
-    ProduceSize(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
     /// An error initializing the terminal output.
     #[error("initializing output: {0}")]
     Init(#[from] ProduceTerminalOutputError),
@@ -119,9 +116,6 @@ pub enum ConsumeInputError {
     /// Read.
     #[error("")]
     Read(#[from] ErrorKind),
-    /// Consume queue.
-    #[error("")]
-    ConsumeQueue(#[source] <UnlimitedQueue<Input> as Consumer>::Error),
 }
 
 /// A user interface provided by a terminal.
@@ -130,27 +124,18 @@ pub(crate) struct Terminal {
     out: RefCell<Stdout>,
     /// The body of the screen, where all document text is displayed.
     body: RefCell<Body>,
-    /// A queue of [`Input`]s.
-    queue: UnlimitedQueue<Input>,
 }
 
 #[allow(clippy::unused_self)] // For pull(), will be used when user interface becomes a trait.
 impl Terminal {
     /// Creates a new [`Terminal`].
     pub(crate) fn new() -> Result<Self, CreateTerminalError> {
-        let queue = UnlimitedQueue::new();
-
-        queue
-            .produce(get_body_size().into())
-            .map_err(CreateTerminalError::ProduceSize)?;
-
         let terminal = Self {
             out: RefCell::new(io::stdout()),
             body: RefCell::new(Body::default()),
-            queue,
         };
 
-        terminal.produce(Output::Init)?;
+        terminal.force(Output::Init)?;
         Ok(terminal)
     }
 }
@@ -173,36 +158,33 @@ impl Consumer for Terminal {
     type Good = Input;
     type Error = ConsumeInputError;
 
-    fn can_consume(&self) -> bool {
-        self.queue.can_consume()
-            || match event::poll(INSTANT) {
-                Ok(has_event) => has_event,
-                Err(_) => true,
-            }
-    }
-
-    fn consume(&self) -> Result<Self::Good, Self::Error> {
-        if self.queue.can_consume() {
-            self.queue.consume().map_err(Self::Error::ConsumeQueue)
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+        if event::poll(INSTANT).map_err(Self::Error::Read)? {
+            event::read()
+                .map(|event| Some(event.into()))
+                .map_err(Self::Error::Read)
         } else {
-            Ok(event::read().map(|event| event.into())?)
+            Ok(None)
         }
     }
 }
 
-impl<'a> Producer<'a> for Terminal {
-    type Good = Output<'a>;
+impl Producer for Terminal {
+    type Good = Output;
     type Error = ProduceTerminalOutputError;
 
-    fn produce(&'a self, good: Self::Good) -> Result<(), Self::Error> {
+    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         match good {
-            Output::Init => execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
-                .map_err(Self::Error::Init),
-            Output::OpenDoc { text } => self
-                .body
-                .borrow_mut()
-                .open(text)
-                .map_err(Self::Error::OpenDoc),
+            Output::Init => {
+                execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
+                    .map_err(Self::Error::Init)?;
+            }
+            Output::OpenDoc { text } => {
+                self.body
+                    .borrow_mut()
+                    .open(&text)
+                    .map_err(Self::Error::OpenDoc)?;
+            }
             Output::Wrap {
                 is_wrapped,
                 selection,
@@ -210,62 +192,69 @@ impl<'a> Producer<'a> for Terminal {
                 self.body.borrow_mut().is_wrapped = is_wrapped;
                 self.body
                     .borrow_mut()
-                    .refresh(selection)
-                    .map_err(Self::Error::Wrap)
+                    .refresh(&selection)
+                    .map_err(Self::Error::Wrap)?;
             }
             Output::Edit {
                 new_text,
                 selection,
             } => {
-                self.body.borrow_mut().edit(&new_text, *selection);
+                self.body.borrow_mut().edit(&new_text, selection);
                 self.body
                     .borrow_mut()
-                    .refresh(selection)
-                    .map_err(Self::Error::Edit)
+                    .refresh(&selection)
+                    .map_err(Self::Error::Edit)?;
             }
-            Output::MoveSelection { selection } => self
-                .body
-                .borrow_mut()
-                .refresh(selection)
-                .map_err(Self::Error::MoveSelection),
-            Output::SetHeader { header } => execute!(
-                self.out.borrow_mut(),
-                SavePosition,
-                MoveTo(0, 0),
-                Print(header),
-                RestorePosition
-            )
-            .map_err(Self::Error::SetHeader),
+            Output::MoveSelection { selection } => {
+                self.body
+                    .borrow_mut()
+                    .refresh(&selection)
+                    .map_err(Self::Error::MoveSelection)?;
+            }
+            Output::SetHeader { header } => {
+                execute!(
+                    self.out.borrow_mut(),
+                    SavePosition,
+                    MoveTo(0, 0),
+                    Print(header),
+                    RestorePosition
+                )
+                .map_err(Self::Error::SetHeader)?;
+            }
             Output::Resize { size } => {
                 self.body.borrow_mut().size = size.0;
-                Ok(())
             }
-            Output::Notify { message } => self
-                .body
-                .borrow_mut()
-                .add_alert(&message.message, message.typ)
-                .map_err(Self::Error::Notify),
+            Output::Notify { message } => {
+                self.body
+                    .borrow_mut()
+                    .add_alert(&message.message, message.typ)
+                    .map_err(Self::Error::Notify)?;
+            }
             Output::Question { request } => {
                 // TODO: Add implementation to use actions.
                 self.body
                     .borrow_mut()
                     .add_alert(&request.message, request.typ)
-                    .map_err(Self::Error::Question)
+                    .map_err(Self::Error::Question)?;
             }
-            Output::StartIntake { title } => self
-                .body
-                .borrow_mut()
-                .add_intake(title)
-                .map_err(Self::Error::StartIntake),
-            Output::Reset { selection } => self
-                .body
-                .borrow_mut()
-                .reset(selection)
-                .map_err(Self::Error::Reset),
+            Output::StartIntake { title } => {
+                self.body
+                    .borrow_mut()
+                    .add_intake(title)
+                    .map_err(Self::Error::StartIntake)?;
+            }
+            Output::Reset { selection } => {
+                self.body
+                    .borrow_mut()
+                    .reset(&selection)
+                    .map_err(Self::Error::Reset)?;
+            }
             Output::Write { ch } => {
-                execute!(self.out.borrow_mut(), Print(ch)).map_err(Self::Error::Write)
+                execute!(self.out.borrow_mut(), Print(ch)).map_err(Self::Error::Write)?;
             }
         }
+
+        Ok(None)
     }
 }
 
@@ -311,32 +300,33 @@ impl From<BodySize> for Input {
 }
 
 /// An output.
-pub(crate) enum Output<'a> {
+#[derive(Debug)]
+pub(crate) enum Output {
     /// Initializes the terminal.
     Init,
     /// Opens a doc.
     OpenDoc {
         /// The text.
-        text: &'a str,
+        text: String,
     },
     /// Sets the wrapped configuration.
     Wrap {
         /// If the text is wrapped.
         is_wrapped: bool,
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Sets the text covered by `selection` to `new_text`.
     Edit {
         /// The new text.
         new_text: String,
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Sets the selection.
     MoveSelection {
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Sets the header to `header`.
     SetHeader {
@@ -366,7 +356,7 @@ pub(crate) enum Output<'a> {
     /// Resets `self` with `selection`.
     Reset {
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Writes `ch`.
     Write {
@@ -398,18 +388,6 @@ impl From<TerminalSize> for BodySize {
             columns: value.0.columns.saturating_sub(1),
         })
     }
-}
-
-/// Returns the size of the body.
-fn get_body_size() -> BodySize {
-    match terminal::size() {
-        Ok((columns, rows)) => TerminalSize::new(rows, columns),
-        Err(e) => {
-            warn!("unable to retrieve size of terminal: {}", e);
-            TerminalSize::default()
-        }
-    }
-    .into()
 }
 
 /// The [`Size`] of the terminal.

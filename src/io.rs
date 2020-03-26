@@ -6,27 +6,27 @@ pub mod ui;
 
 use {
     clap::ArgMatches,
-    config::{ChangeFilter, ConsumeChangeError},
+    config::{ConsumeSettingError, CreateSettingConsumerError, Setting, SettingConsumer},
     core::{
-        cell::RefCell,
         convert::{TryFrom, TryInto},
-        fmt,
+        fmt::{self, Display},
     },
+    enum_map::Enum,
     log::{error, LevelFilter},
-    logging::LogConfig,
-    lsp::{CreateLangClientError, Fault, LspServer, SendNotificationError},
-    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams, TextEdit},
-    market::{Consumer, Producer, UnlimitedQueue},
-    serde::Deserialize,
+    logging::LogManager,
+    lsp::{
+        ClientMessage, CreateLangClientError, Fault, LanguageTool, SendNotificationError,
+        ServerMessage, ToolMessage,
+    },
+    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
+    market::{ClosedMarketError, Consumer, Producer, UnlimitedQueue},
     starship::{context::Context, print},
     std::{
-        collections::{hash_map::Entry, HashMap},
         env,
         ffi::OsStr,
         fs,
         io::{self, ErrorKind},
         path::{Path, PathBuf},
-        rc::Rc,
     },
     thiserror::Error,
     toml::{value::Table, Value},
@@ -64,6 +64,15 @@ impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
 /// [`Interface`]: struct.Interface.html
 #[derive(Debug, Error)]
 pub enum CreateInterfaceError {
+    /// An error while creating the logging configuration.
+    #[error("{0}")]
+    CreateLogConfig(#[from] logging::Fault),
+    /// An error determing the root directory.
+    #[error("current working directory is invalid: {0}")]
+    RootDir(#[from] io::Error),
+    /// An error while working with a Url.
+    #[error("{0}")]
+    Url(#[from] UrlError),
     /// An error creating a [`Terminal`].
     ///
     /// [`Terminal`]: ui/struct.Terminal.html
@@ -72,23 +81,29 @@ pub enum CreateInterfaceError {
     /// An error determining the home directory of the current user.
     #[error("home directory of current user is unknown")]
     HomeDir,
-    /// An error determing the root directory.
-    #[error("current working directory is invalid: {0}")]
-    RootDir(#[from] io::Error),
-    /// An error while working with a Url.
-    #[error("{0}")]
-    Url(#[from] UrlError),
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),
-    /// An error while creating the logging configuration.
+    /// An error creating the setting consumer.
+    #[error("")]
+    CreateConfig(#[from] CreateSettingConsumerError),
+    /// Failed to create language client.
     #[error("{0}")]
-    CreateLogConfig(#[from] logging::Fault),
+    CreateLangClient(#[from] CreateLangClientError),
+    /// An error with client.
+    #[error("")]
+    Client(#[from] lsp::CreateLanguageToolError),
 }
 
 /// An error while writing output.
 #[derive(Debug, Error)]
 pub enum ProduceOutputError {
+    /// An error with client.
+    #[error("")]
+    Client(#[from] lsp::ProduceProtocolError),
+    /// An error with client.
+    #[error("")]
+    OldClient(#[from] lsp::EditLanguageToolError),
     /// An error in the ui.
     #[error("{0}")]
     Ui(#[from] CommandError),
@@ -113,9 +128,6 @@ pub enum ProduceOutputError {
     /// Produce error from ui.
     #[error("{0}")]
     UiProduce(#[from] ProduceTerminalOutputError),
-    /// Add to queue.
-    #[error("{0}")]
-    Queue(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
 }
 
 /// An error while pulling input.
@@ -169,55 +181,58 @@ pub enum Glitch {
 /// An error consuming input.
 #[derive(Debug, Error)]
 pub enum ConsumeInputError {
-    /// Quit.
+    /// An error reading a message from the language tool.
     #[error("")]
-    Quit,
-    /// Ui.
+    Read(#[from] io::Error),
+    /// An error producing a language tool protocol.
+    #[error("")]
+    Produce(#[from] lsp::ProduceProtocolError),
+    /// An error consuming a user input.
     #[error("")]
     Ui(#[from] ui::ConsumeInputError),
-    /// Add to queue.
+    /// An error consuming a setting.
     #[error("{0}")]
-    Queue(#[source] <UnlimitedQueue<Input> as Producer<'static>>::Error),
-    /// Change
+    Setting(#[from] ConsumeSettingError),
+    /// The queue is closed.
     #[error("")]
-    Change(#[from] ConsumeChangeError),
-    /// Consume.
-    #[error("")]
-    Consume(#[source] <UnlimitedQueue<Input> as Consumer>::Error),
+    Closed(#[from] ClosedMarketError),
 }
 
 /// The interface between the application and all external components.
 #[derive(Debug)]
 pub(crate) struct Interface {
-    /// Notifies `self` of any events to the config file.
-    config_drain: ChangeFilter,
-    /// Queues [`Input`]s.
-    queue: UnlimitedQueue<Input>,
     /// Manages the user interface.
     user_interface: Terminal,
-    /// The [`LspServer`]s managed by the application.
-    lsp_servers: Rc<RefCell<HashMap<String, Option<LspServer>>>>,
+    /// Notifies `self` of any events to the config file.
+    setting_consumer: SettingConsumer,
+    /// Queues [`Input`]s.
+    queue: UnlimitedQueue<Input>,
+    /// The interface of the application with all language servers.
+    language_tool: LanguageTool,
     /// The root directory of the application.
     root_dir: PathUrl,
     /// The configuration of the logger.
-    log_config: LogConfig,
+    log_manager: LogManager,
 }
 
 impl Interface {
     /// Creates a new interface.
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
+        // Create log_manager first as this is where the logger is initialized.
+        let log_manager = LogManager::new()?;
+        let root_dir = PathUrl::try_from(env::current_dir()?)?;
+
         let interface = Self {
-            // Create log_config first as this is where the logger is initialized.
-            log_config: LogConfig::new()?,
-            config_drain: ChangeFilter::new(
+            log_manager,
+            setting_consumer: SettingConsumer::new(
                 &dirs::home_dir()
                     .ok_or(CreateInterfaceError::HomeDir)?
                     .join(".config/paper.toml"),
-            ),
+            )?,
             queue: UnlimitedQueue::new(),
             user_interface: Terminal::new()?,
-            lsp_servers: Rc::new(RefCell::new(HashMap::default())),
-            root_dir: PathUrl::try_from(env::current_dir().map_err(CreateInterfaceError::from)?)?,
+            language_tool: LanguageTool::new(&root_dir)?,
+            root_dir,
         };
 
         if let Some(file) = arguments.file {
@@ -232,7 +247,7 @@ impl Interface {
         let url = self.root_dir.join(path)?;
 
         self.queue
-            .produce(Input::File {
+            .force(Input::File {
                 text: fs::read_to_string(&url).map_err(|error| ReadFileError {
                     file: url.to_string(),
                     error: error.kind(),
@@ -244,38 +259,15 @@ impl Interface {
     }
 
     /// Edits the doc at `url`.
-    fn edit_doc(&self, url: PathUrl, edit: DocEdit<'_>) -> Result<(), ProduceOutputError> {
-        let language_id = url.language_id();
-        let mut lsp_servers = self.lsp_servers.borrow_mut();
-
-        if let DocEdit::Open { .. } = edit {
-            if let Entry::Vacant(entry) = lsp_servers.entry(language_id.to_string()) {
-                let _ = entry.insert(LspServer::new(language_id, &self.root_dir)?);
-            }
-        }
-
+    fn edit_doc(&self, url: &PathUrl, edit: &DocEdit) -> Result<(), ProduceOutputError> {
         match edit {
-            DocEdit::Open { text, version } => {
-                if let Some(Some(lsp_server)) = lsp_servers.get_mut(language_id) {
-                    lsp_server.did_open(&url, language_id, version, text)?;
-                }
-
-                self.user_interface.produce(ui::Output::OpenDoc { text })?;
+            DocEdit::Open { text, .. } => {
+                self.user_interface.force(ui::Output::OpenDoc {
+                    text: text.to_string(),
+                })?;
             }
             DocEdit::Save { text } => {
-                if let Some(lsp_server) = lsp_servers
-                    .get_mut(url.language_id())
-                    .map(Option::as_mut)
-                    .flatten()
-                {
-                    if let Err(error) = lsp_server.will_save(&url) {
-                        self.user_interface.produce(ui::Output::Notify {
-                            message: error.into(),
-                        })?;
-                    }
-                }
-
-                self.user_interface.produce(ui::Output::Notify {
+                self.user_interface.force(ui::Output::Notify {
                     message: match fs::write(&url, text) {
                         Ok(..) => ShowMessageParams {
                             typ: MessageType::Info,
@@ -291,37 +283,14 @@ impl Interface {
             DocEdit::Change {
                 new_text,
                 selection,
-                version,
-                text,
+                ..
             } => {
-                self.user_interface.produce(ui::Output::Edit {
-                    new_text: new_text.clone(),
-                    selection,
+                self.user_interface.force(ui::Output::Edit {
+                    new_text: new_text.to_string(),
+                    selection: *selection,
                 })?;
-
-                if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id()) {
-                    if let Err(error) = lsp_server.did_change(
-                        url,
-                        version,
-                        text,
-                        TextEdit::new(selection.range()?, new_text),
-                    ) {
-                        self.user_interface.produce(ui::Output::Notify {
-                            message: error.into(),
-                        })?;
-                    }
-                }
             }
-            DocEdit::Close => {
-                if let Some(Some(lsp_server)) = lsp_servers.get_mut(url.language_id()) {
-                    if let Err(error) = lsp_server.did_close(url) {
-                        error!(
-                            "failed to inform language server process about closing: {}",
-                            error,
-                        );
-                    }
-                }
-            }
+            DocEdit::Close => {}
         }
 
         Ok(())
@@ -332,62 +301,125 @@ impl Consumer for Interface {
     type Good = Input;
     type Error = ConsumeInputError;
 
-    fn can_consume(&self) -> bool {
-        self.queue.can_consume()
-            || self.user_interface.can_consume()
-            || self.config_drain.can_consume()
-    }
-
-    fn consume(&self) -> Result<Self::Good, Self::Error> {
-        while !self.queue.can_consume() {
-            if let Some(ui_input) = self.user_interface.optional_consume() {
-                self.queue
-                    .produce(ui_input?.into())
-                    .map_err(Self::Error::Queue)?;
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+        if let Some(ui_input) = self.user_interface.consume()? {
+            Ok(Some(Self::Good::from(ui_input)))
+        } else if let Some(lang_input) = self.language_tool.consume()? {
+            match lang_input.message {
+                ServerMessage::Initialize => {
+                    self.language_tool.force(ToolMessage {
+                        language_id: lang_input.language_id,
+                        message: ClientMessage::Initialized,
+                    })?;
+                }
+                ServerMessage::Request { id } => {
+                    self.language_tool.force(ToolMessage {
+                        language_id: lang_input.language_id,
+                        message: ClientMessage::RegisterCapability { id },
+                    })?;
+                }
+                ServerMessage::Shutdown => {}
             }
 
-            if let Some(config_input) = self.config_drain.optional_consume() {
-                self.queue
-                    .produce(config_input?)
-                    .map_err(Self::Error::Queue)?;
-            }
+            Ok(None)
+        } else if let Some(setting) = self.setting_consumer.consume()? {
+            Ok(Some(Self::Good::from(setting)))
+        } else {
+            Ok(self.queue.consume()?)
         }
-
-        let mut good = Ok(self.queue.consume().map_err(Self::Error::Consume)?);
-
-        if let Ok(Input::Quit) = good {
-            good = Err(Self::Error::Quit);
-        }
-
-        good
     }
 }
 
-impl<'a> Producer<'a> for Interface {
-    type Good = Output<'a>;
+impl Drop for Interface {
+    fn drop(&mut self) {
+        for language_id in self.language_tool.language_ids() {
+            if let Err(error) = self.language_tool.force(ToolMessage {
+                language_id,
+                message: ClientMessage::Shutdown,
+            }) {
+                error!(
+                    "Failed to send shutdown message to {} language server: {}",
+                    language_id, error
+                );
+            }
+        }
+
+        loop {
+            // TODO: Need to check for reception from all clients.
+            match self.language_tool.consume() {
+                Ok(lang_input) => {
+                    if let Some(ToolMessage {
+                        message: ServerMessage::Shutdown,
+                        ..
+                    }) = lang_input
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    error!("Error while waiting for shutdown: {}", error);
+                    break;
+                }
+            }
+        }
+
+        for language_id in self.language_tool.language_ids() {
+            if let Err(error) = self.language_tool.force(ToolMessage {
+                language_id,
+                message: ClientMessage::Exit,
+            }) {
+                error!(
+                    "Failed to send exit message to {} language server: {}",
+                    language_id, error
+                );
+            }
+
+            // TODO: This should probably be a consume call.
+            #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
+            let server = &self.language_tool.clients[language_id];
+
+            if let Err(error) = server.borrow_mut().server.wait() {
+                error!(
+                    "Failed to wait for {} language server process to finish: {}",
+                    language_id, error
+                );
+            }
+        }
+    }
+}
+
+impl Producer for Interface {
+    type Good = Output;
     type Error = ProduceOutputError;
 
-    fn produce(&self, output: Self::Good) -> Result<(), Self::Error> {
-        match output {
+    fn produce(&self, output: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+        if let Ok(protocol) = ToolMessage::try_from(output.clone()) {
+            if let Err(error) = self.language_tool.produce(protocol) {
+                self.user_interface.force(ui::Output::Notify {
+                    message: error.into(),
+                })?;
+            }
+        }
+
+        let result = match output.clone() {
             Output::GetFile { path } => {
                 self.add_file(&path)?;
+                None
             }
             Output::EditDoc { url, edit } => {
-                self.edit_doc(url, edit)?;
+                self.edit_doc(&url, edit.as_ref())?;
+                None
             }
             Output::Wrap {
                 is_wrapped,
                 selection,
-            } => {
-                self.user_interface.produce(ui::Output::Wrap {
-                    is_wrapped,
-                    selection,
-                })?;
-            }
-            Output::MoveSelection { selection } => {
-                self.user_interface
-                    .produce(ui::Output::MoveSelection { selection })?;
-            }
+            } => self.user_interface.produce(ui::Output::Wrap {
+                is_wrapped,
+                selection,
+            })?,
+            Output::MoveSelection { selection } => self
+                .user_interface
+                .produce(ui::Output::MoveSelection { selection })?,
             Output::UpdateHeader => {
                 let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
 
@@ -409,41 +441,40 @@ impl<'a> Producer<'a> for Interface {
                 }
                 self.user_interface.produce(ui::Output::SetHeader {
                     header: print::get_prompt(context),
-                })?;
+                })?
             }
-            Output::Notify { message } => {
-                self.user_interface
-                    .produce(ui::Output::Notify { message })?;
-            }
-            Output::Question { request } => {
-                self.user_interface
-                    .produce(ui::Output::Question { request })?;
-            }
-            Output::StartIntake { title } => {
-                self.user_interface
-                    .produce(ui::Output::StartIntake { title })?;
-            }
-            Output::Reset { selection } => {
-                self.user_interface
-                    .produce(ui::Output::Reset { selection })?;
-            }
-            Output::Resize { size } => {
-                self.user_interface.produce(ui::Output::Resize { size })?;
-            }
-            Output::Write { ch } => {
-                self.user_interface.produce(ui::Output::Write { ch })?;
-            }
+            Output::Notify { message } => self
+                .user_interface
+                .produce(ui::Output::Notify { message })?,
+            Output::Question { request } => self
+                .user_interface
+                .produce(ui::Output::Question { request })?,
+            Output::StartIntake { title } => self
+                .user_interface
+                .produce(ui::Output::StartIntake { title })?,
+            Output::Reset { selection } => self
+                .user_interface
+                .produce(ui::Output::Reset { selection })?,
+            Output::Resize { size } => self.user_interface.produce(ui::Output::Resize { size })?,
+            Output::Write { ch } => self.user_interface.produce(ui::Output::Write { ch })?,
             Output::Log { starship_level } => {
-                self.log_config.writer()?.starship_level = starship_level;
+                // TODO: Make sure to handle a failure here.
+                #[allow(unused_results)]
+                {
+                    // For now assume produce() never fails.
+                    self.log_manager
+                        .produce(logging::Output::StarshipLevel(starship_level))?;
+                }
+                None
             }
             Output::Quit => {
-                self.queue
-                    .produce(Input::Quit)
-                    .map_err(Self::Error::Queue)?;
+                self.queue.close();
+                None
             }
-        }
+        };
 
-        Ok(())
+        error!("io: {:?} -> {:?}", output, result);
+        Ok(result.map(|_| output))
     }
 }
 
@@ -451,6 +482,35 @@ impl<'a> Producer<'a> for Interface {
 #[derive(Debug, Error)]
 #[error("while converting `{0}` to a URL")]
 pub struct UrlError(String);
+
+/// The language ids supported by `paper`.
+#[derive(Clone, Copy, Debug, Enum, Eq, Hash, PartialEq)]
+pub(crate) enum LanguageId {
+    /// The rust language.
+    Rust,
+}
+
+impl LanguageId {
+    /// Returns the server cmd for `self`.
+    #[allow(clippy::missing_const_for_fn)] // For stable rust, match is not allowed in const fn.
+    fn server_cmd(&self) -> &str {
+        match self {
+            Self::Rust => "rls",
+        }
+    }
+}
+
+impl Display for LanguageId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Rust => "rust",
+            }
+        )
+    }
+}
 
 /// A URL that is a valid path.
 ///
@@ -473,13 +533,13 @@ impl PathUrl {
     }
 
     /// Returns the language identification of the path.
-    pub(crate) fn language_id(&self) -> &str {
+    pub(crate) fn language_id(&self) -> Option<LanguageId> {
         self.path
             .extension()
             .and_then(OsStr::to_str)
-            .map_or("", |ext| match ext {
-                "rs" => "rust",
-                x => x,
+            .and_then(|ext| match ext {
+                "rs" => Some(LanguageId::Rust),
+                _ => None,
             })
     }
 }
@@ -518,7 +578,7 @@ impl Default for PathUrl {
     }
 }
 
-impl fmt::Display for PathUrl {
+impl Display for PathUrl {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.url)
@@ -538,41 +598,6 @@ impl TryFrom<PathBuf> for PathUrl {
     }
 }
 
-/// Signifies any configurable parameter of the application.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct Config {
-    /// If the application wraps long lines.
-    wrap: Wrap,
-    /// The [`LevelFilter`] of the starship library.
-    starship_log: StarshipLog,
-}
-
-macro_rules! def_config {
-    ($name:ident: $ty:ty = $default:expr) => {
-        #[derive(Debug, Deserialize, PartialEq)]
-        struct $name($ty);
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self($default)
-            }
-        }
-    };
-}
-
-def_config!(Wrap: bool = false);
-def_config!(StarshipLog: LevelFilter = LevelFilter::Off);
-
-/// Signifies a configuration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Setting {
-    /// If the document shall wrap long text.
-    Wrap(bool),
-    /// The level at which starship records shall be logged.
-    StarshipLog(LevelFilter),
-}
-
 /// An input.
 #[derive(Debug)]
 pub enum Input {
@@ -586,11 +611,9 @@ pub enum Input {
     /// An input from the user.
     User(ui::Input),
     /// A configuration.
-    Config(config::Setting),
+    Setting(Setting),
     /// A glitch.
     Glitch(Glitch),
-    /// Quit.
-    Quit,
 }
 
 impl From<ui::Input> for Input {
@@ -600,9 +623,16 @@ impl From<ui::Input> for Input {
     }
 }
 
+impl From<Setting> for Input {
+    #[inline]
+    fn from(value: Setting) -> Self {
+        Self::Setting(value)
+    }
+}
+
 /// An output.
-#[derive(Debug)]
-pub(crate) enum Output<'a> {
+#[derive(Clone, Debug)]
+pub(crate) enum Output {
     /// Retrieves the URL and text of a file.
     GetFile {
         /// The relative path of the file.
@@ -613,19 +643,19 @@ pub(crate) enum Output<'a> {
         /// The URL of the document.
         url: PathUrl,
         /// The edit to be performed.
-        edit: DocEdit<'a>,
+        edit: Box<DocEdit>,
     },
     /// Sets the wrapping of the text.
     Wrap {
         /// If the text shall be wrapped.
         is_wrapped: bool,
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Moves the selection.
     MoveSelection {
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Sets the header of the application.
     UpdateHeader,
@@ -647,7 +677,7 @@ pub(crate) enum Output<'a> {
     /// Resets the output of the application.
     Reset {
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
     },
     /// Resizes the application display.
     Resize {
@@ -668,32 +698,121 @@ pub(crate) enum Output<'a> {
     },
 }
 
+impl TryFrom<Output> for ToolMessage<ClientMessage> {
+    type Error = TryIntoProtocolError;
+
+    fn try_from(value: Output) -> Result<Self, Self::Error> {
+        match value {
+            Output::EditDoc { url, edit } => {
+                if let Some(language_id) = url.language_id() {
+                    let doc_edit: DocEdit = edit.as_ref().clone();
+                    Ok(Self {
+                        language_id,
+                        message: ClientMessage::Doc {
+                            url,
+                            message: Box::new(doc_edit.try_into()?),
+                        },
+                    })
+                } else {
+                    Err(TryIntoProtocolError::InvalidOutput)
+                }
+            }
+            Output::GetFile { .. }
+            | Output::Wrap { .. }
+            | Output::MoveSelection { .. }
+            | Output::UpdateHeader
+            | Output::Notify { .. }
+            | Output::Question { .. }
+            | Output::StartIntake { .. }
+            | Output::Reset { .. }
+            | Output::Resize { .. }
+            | Output::Write { .. }
+            | Output::Quit
+            | Output::Log { .. } => Err(TryIntoProtocolError::InvalidOutput),
+        }
+    }
+}
+
+/// An error converting [`Output`] into a [`Protocol`].
+#[derive(Clone, Copy, Debug, Error)]
+pub enum TryIntoProtocolError {
+    /// Invalid [`Output`].
+    #[error("")]
+    InvalidOutput,
+    /// Invalid edit doc.
+    #[error("")]
+    InvalidEditDoc(#[from] TryIntoMessageError),
+}
+
 /// Edits a document.
-#[derive(Debug)]
-pub(crate) enum DocEdit<'a> {
+#[derive(Clone, Debug)]
+pub(crate) enum DocEdit {
     /// Opens a document.
     Open {
+        /// The URL of the document.
+        url: PathUrl,
         /// The version of the document.
         version: i64,
         /// The full text of the document
-        text: &'a str,
+        text: String,
     },
     /// Saves the document.
     Save {
         /// The text of the document.
-        text: &'a str,
+        text: String,
     },
     /// Edits the document.
     Change {
         /// The new text.
         new_text: String,
         /// The selection.
-        selection: &'a Selection,
+        selection: Selection,
         /// The version.
         version: i64,
         /// The full text of the document.
-        text: &'a str,
+        text: String,
     },
     /// Closes the document.
     Close,
+}
+
+impl TryFrom<DocEdit> for lsp::DocMessage {
+    type Error = TryIntoMessageError;
+
+    fn try_from(value: DocEdit) -> Result<Self, Self::Error> {
+        Ok(match value {
+            DocEdit::Open { url, version, text } => url
+                .language_id()
+                .map(|language_id| Self::Open {
+                    language_id,
+                    version,
+                    text: text.to_string(),
+                })
+                .ok_or(Self::Error::UnknownLanguage)?,
+            DocEdit::Save { .. } => Self::Save,
+            DocEdit::Change {
+                version,
+                text,
+                selection,
+                new_text,
+            } => Self::Change {
+                version,
+                text,
+                range: selection.range()?,
+                new_text,
+            },
+            DocEdit::Close => Self::Close,
+        })
+    }
+}
+
+/// An error converting [`DocEdit`] into [`Message`].
+#[derive(Clone, Copy, Debug, Error)]
+pub enum TryIntoMessageError {
+    /// Selection.
+    #[error(transparent)]
+    Selection(#[from] SelectionConversionError),
+    /// Unknown language.
+    #[error("")]
+    UnknownLanguage,
 }

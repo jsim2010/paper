@@ -1,22 +1,17 @@
 //! Implements language server utilities.
 use {
     jsonrpc_core::{Id, Value, Version},
-    log::{error, trace, warn},
-    lsp_types::{notification::Notification, request::RegisterCapability},
-    serde::{
-        de::DeserializeOwned,
-        ser::SerializeStruct,
-        {Serialize, Serializer},
-    },
+    log::{error, trace},
+    lsp_types::{notification::Notification, request::Request},
+    market::{ComposeFrom, StripFrom},
+    serde::{Deserialize, Serialize},
     serde_json::error::Error as SerdeJsonError,
     std::{
-        fmt,
-        io::{self, BufRead, BufReader, Read, Write},
-        process::{ChildStderr, ChildStdin, ChildStdout},
-        sync::{
-            mpsc::{self, Receiver, RecvError, Sender},
-            Arc, Mutex, MutexGuard,
-        },
+        io::{self, BufRead, BufReader},
+        num::ParseIntError,
+        process::ChildStderr,
+        str::Utf8Error,
+        sync::mpsc::{self, Sender, TryRecvError},
         thread,
     },
     thiserror::Error,
@@ -24,6 +19,8 @@ use {
 
 /// The header field name that maps to the length of the content.
 static HEADER_CONTENT_LENGTH: &str = "Content-Length";
+/// Indicates the end of the header
+static HEADER_END: &str = "\r\n\r\n";
 
 /// An error from which a language server utility was unable to recover.
 #[derive(Debug, Error)]
@@ -36,7 +33,7 @@ pub enum Fault {
     Send(String),
     /// An error while writing input to a language server process.
     #[error("unable to write to language server process: {0}")]
-    Input(#[source] io::Error),
+    Input(#[from] io::Error),
     /// An error while acquiring the mutex protecting the stdin of a language server process.
     #[error("unable to acquire mutex of language server stdin")]
     AcquireLock(#[from] AcquireLockError),
@@ -46,6 +43,21 @@ pub enum Fault {
     /// Failed to send message.
     #[error("{0}")]
     SendMessage(#[from] SendMessageError),
+    /// Length of content not found.
+    #[error("")]
+    ContentLengthNotFound,
+    /// Length of content is invalid.
+    #[error("")]
+    ContentLengthInvalid,
+    /// Buffer is not complete
+    #[error("")]
+    BufferNotComplete,
+    /// Invalid utf8.
+    #[error("")]
+    InvalidUtf8(#[from] Utf8Error),
+    /// Content length was not parsed.
+    #[error("")]
+    ContentLengthParse(#[from] ParseIntError),
 }
 
 /// Failed to send notification.
@@ -101,411 +113,211 @@ pub enum RequestResponseError {
     Send(#[from] SendMessageError),
     /// Failed to receive a message.
     #[error("{0}")]
-    Receive(#[from] RecvError),
+    Receive(#[from] TryRecvError),
+    /// Write
+    #[error("")]
+    Write(#[from] io::Error),
 }
 
-/// Signifies an LSP message.
-enum Message {
-    /// A notification.
-    Notification {
-        /// The method of the notification.
-        method: &'static str,
-        /// The parameters of the notification.
-        params: Value,
-    },
-    /// A request for information.
-    Request(MessageRequest),
-    /// A response to a request.
-    Response {
-        /// The id that matches with the corresponding request.
-        id: u64,
-        /// The outcome of the response.
-        outcome: Outcome,
-    },
+/// The content of an LSP message.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Message {
+    /// The JSON version.
+    jsonrpc: Version,
+    /// The items included in the content.
+    #[serde(flatten)]
+    pub(crate) object: Object,
 }
 
 impl Message {
-    /// Returns `self` in its raw format.
-    fn to_protocol(&self) -> Result<String, SerializeMessageError> {
-        serde_json::to_string(&self)
-            .map(|content| {
-                format!(
-                    "{}: {}\r\n\r\n{}",
-                    HEADER_CONTENT_LENGTH,
-                    content.len(),
-                    content
-                )
-            })
-            .map_err(|e| e.into())
-    }
-}
-
-impl fmt::Debug for Message {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Request(request) => write!(f, "Request {{ {:?} }}", request),
-            Self::Notification { method, params } => write!(
-                f,
-                "Notification {{ method: {:?}, params: {:?} }}",
-                method, params
-            ),
-            Self::Response { id, outcome } => {
-                write!(f, "Response {{ id: {:?}, outcome: {:?} }}", id, outcome)
-            }
+    /// Creates a new [`Message`].
+    const fn new(object: Object) -> Self {
+        Self {
+            jsonrpc: Version::V2,
+            object,
         }
     }
-}
 
-impl Serialize for Message {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    /// Creates a request [`Message`].
+    pub(crate) fn request<T>(params: T::Params, id: u64) -> Result<Self, SerdeJsonError>
     where
-        S: Serializer,
+        T: Request,
+        <T as Request>::Params: Serialize,
     {
-        let mut state = serializer.serialize_struct(
-            "Content",
-            match self {
-                Self::Notification { .. } | Self::Response { .. } => 3,
-                Self::Request(..) => 4,
-            },
-        )?;
+        Object::request::<T>(params, Id::Num(id)).map(Self::new)
+    }
 
-        state.serialize_field("jsonrpc", &Some(Version::V2))?;
+    /// Creates a notification [`Message`].
+    pub(crate) fn notification<T>(params: T::Params) -> Result<Self, SerdeJsonError>
+    where
+        T: Notification,
+        <T as Notification>::Params: Serialize,
+    {
+        Object::notification::<T>(params).map(Self::new)
+    }
 
-        match self {
-            Self::Notification { method, params } => {
-                state.serialize_field("method", method)?;
-                state.serialize_field("params", params)?;
-            }
-            Self::Request(MessageRequest { id, method, params }) => {
-                state.serialize_field("id", &Id::Num(*id))?;
-                state.serialize_field("method", method)?;
-                state.serialize_field("params", params)?;
-            }
-            Self::Response { id, .. } => {
-                state.serialize_field("id", &Id::Num(*id))?;
-                state.serialize_field("result", &Value::Null)?;
-            }
+    /// Creates a response [`Message`].
+    pub(crate) fn response<T>(result: T::Result, id: Id) -> Result<Self, SerdeJsonError>
+    where
+        T: Request,
+        <T as Request>::Result: Serialize,
+    {
+        Object::response::<T>(result, id).map(Self::new)
+    }
+}
+
+impl ComposeFrom<u8> for Message {
+    fn compose_from(parts: &mut Vec<u8>) -> Option<Self> {
+        let mut length = 0;
+
+        let message = std::str::from_utf8(parts).ok().and_then(|buffer| {
+            buffer.find(HEADER_END).and_then(|header_length| {
+                let mut content_length: Option<usize> = None;
+                #[allow(clippy::indexing_slicing)]
+                // The range is determined by the previous `find()`.
+                let header = &buffer[..header_length];
+                #[allow(clippy::integer_arithmetic)]
+                // This returns the end of the previous `find()`.
+                let content_start = header_length + HEADER_END.len();
+
+                for field in header.split("\r\n") {
+                    let mut items = field.split(": ");
+
+                    if items.next() == Some(HEADER_CONTENT_LENGTH) {
+                        if let Some(content_length_str) = items.next() {
+                            if let Ok(value) = content_length_str.parse() {
+                                content_length = Some(value);
+                            }
+                        }
+
+                        break;
+                    }
+                }
+
+                match content_length {
+                    None => {
+                        length = header_length;
+                        None
+                    }
+                    Some(content_length) => {
+                        if let Some(total_len) = content_start.checked_add(content_length) {
+                            if parts.len() < total_len {
+                                None
+                            } else if let Some(content) = buffer.get(content_start..total_len) {
+                                length = total_len;
+                                serde_json::from_str(content).ok()
+                            } else {
+                                length = content_start;
+                                None
+                            }
+                        } else {
+                            length = content_start;
+                            None
+                        }
+                    }
+                }
+            })
+        });
+
+        #[allow(unused_results)]
+        {
+            // Intended to not use drained elements.
+            parts.drain(..length);
         }
 
-        state.end()
+        message
+    }
+}
+
+impl StripFrom<Message> for u8 {
+    #[inline]
+    fn strip_from(good: &Message) -> Vec<Self> {
+        serde_json::to_string(good).map_or(Vec::new(), |content| {
+            trace!("write content: {}", content);
+            format!(
+                "{}: {}\r\n\r\n{}",
+                HEADER_CONTENT_LENGTH,
+                content.len(),
+                content
+            )
+            .as_bytes()
+            .to_vec()
+        })
+    }
+}
+
+/// A json-rpc object.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+#[allow(dead_code)] // False positive.
+pub(crate) enum Object {
+    /// A request json-rpc object.
+    Request {
+        /// The method identifier.
+        // TODO: Convert this to &str.
+        method: String,
+        /// The parameters.
+        params: Value,
+        /// The id.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<Id>,
+    },
+    /// A response json-rpc object.
+    Response {
+        /// The outcome.
+        #[serde(flatten)]
+        outcome: Outcome,
+        /// The id.
+        id: Id,
+    },
+}
+
+impl Object {
+    /// Creates a request of type `T` with `id`.
+    fn request<T>(params: T::Params, id: Id) -> Result<Self, SerdeJsonError>
+    where
+        T: Request,
+        <T as Request>::Params: Serialize,
+    {
+        Ok(Self::Request {
+            method: T::METHOD.to_string(),
+            params: serde_json::to_value(params)?,
+            id: Some(id),
+        })
+    }
+
+    /// Creates a notification of type `T`.
+    fn notification<T>(params: T::Params) -> Result<Self, SerdeJsonError>
+    where
+        T: Notification,
+        <T as Notification>::Params: Serialize,
+    {
+        Ok(Self::Request {
+            method: T::METHOD.to_string(),
+            params: serde_json::to_value(params)?,
+            id: None,
+        })
+    }
+
+    /// Creates a response to a request of type `T` with `id`.
+    fn response<T>(result: T::Result, id: Id) -> Result<Self, SerdeJsonError>
+    where
+        T: Request,
+        <T as Request>::Result: Serialize,
+    {
+        Ok(Self::Response {
+            outcome: Outcome::Result(serde_json::to_value(result)?),
+            id,
+        })
     }
 }
 
 /// The outcome of the response.
-#[derive(Debug)]
-enum Outcome {
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Outcome {
     /// The result was successful.
-    Success(Value),
-}
-
-impl fmt::Display for Message {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let content = serde_json::to_string(&self).map_err(|_| fmt::Error)?;
-
-        write!(f, "Content-Length: {}\r\n\r\n{}", content.len(), content)
-    }
-}
-
-/// Signifies an LSP Request Message.
-struct MessageRequest {
-    /// An identifier of a request.
-    id: u64,
-    /// The method of the request.
-    method: String,
-    /// The parameters of the request.
-    params: Value,
-}
-
-/// Implemented so prevent the repetition of the inner class name.
-impl fmt::Debug for MessageRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "id: {:?}, method: {:?}, params: {:?}",
-            self.id, self.method, self.params
-        )
-    }
-}
-
-/// Sends messages to the language server process.
-#[derive(Clone, Debug)]
-pub(crate) struct LspTransmitter(Arc<Mutex<AtomicTransmitter>>);
-
-impl LspTransmitter {
-    /// Creates a new `LspTransmitter`.
-    pub(crate) fn new(stdin: ChildStdin) -> Self {
-        Self(Arc::new(Mutex::new(AtomicTransmitter { id: 0, stdin })))
-    }
-
-    /// Sends a notification with `params`.
-    pub(crate) fn notify<T: Notification>(
-        &mut self,
-        params: T::Params,
-    ) -> Result<(), SendNotificationError>
-    where
-        T::Params: Serialize,
-    {
-        self.lock()?
-            .send(&Message::Notification {
-                method: T::METHOD,
-                params: serde_json::to_value(params)?,
-            })
-            .map_err(|e| e.into())
-    }
-
-    /// Sends a response with `id` and `result`.
-    pub(crate) fn respond<T: lsp_types::request::Request>(
-        &mut self,
-        id: u64,
-        result: T::Result,
-    ) -> Result<(), Fault>
-    where
-        T::Result: Serialize,
-    {
-        self.lock()?
-            .send(&Message::Response {
-                id,
-                outcome: Outcome::Success(serde_json::to_value(result)?),
-            })
-            .map_err(|e| e.into())
-    }
-
-    /// Sends `request` to the lsp server and waits for the response.
-    pub(crate) fn request<T: lsp_types::request::Request>(
-        &mut self,
-        params: T::Params,
-        receiver: &LspReceiver,
-    ) -> Result<T::Result, RequestResponseError>
-    where
-        T::Params: Serialize,
-        T::Result: DeserializeOwned,
-    {
-        let mut transmitter = self.lock()?;
-        let current_id = transmitter.id;
-
-        transmitter.send(&Message::Request(MessageRequest {
-            id: current_id,
-            method: T::METHOD.to_string(),
-            params: serde_json::to_value(params)?,
-        }))?;
-
-        let response: T::Result;
-
-        loop {
-            if let Message::Response {
-                id,
-                outcome: Outcome::Success(value),
-            } = receiver.recv()?
-            {
-                if transmitter.id == id {
-                    transmitter.id = transmitter.id.wrapping_add(1);
-                    match serde_json::from_value(value.clone()) {
-                        Ok(result) => {
-                            response = result;
-                            break;
-                        }
-                        Err(e) => {
-                            warn!("Failed to convert `{}` to result: {}", value, e);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(response)
-    }
-
-    /// Locks the [`AtomicTransmitter`] to prevent race conditions.
-    fn lock(&self) -> Result<MutexGuard<'_, AtomicTransmitter>, AcquireLockError> {
-        self.0.lock().map_err(|_| AcquireLockError())
-    }
-}
-
-/// Transmits messages to the language server process.
-#[derive(Debug)]
-struct AtomicTransmitter {
-    /// The input of the language server process.
-    stdin: ChildStdin,
-    /// Current request id.
-    id: u64,
-}
-
-impl AtomicTransmitter {
-    /// Sends `message` to the language server process.
-    fn send(&mut self, message: &Message) -> Result<(), SendMessageError> {
-        trace!("sending: {:?}", message);
-        write!(self.stdin, "{}", message.to_protocol()?).map_err(|e| e.into())
-    }
-}
-
-/// Processes data from the language server.
-struct LspProcessor {
-    /// Transmits data to the language server process.
-    transmitter: LspTransmitter,
-    /// Reads data from the language server process.
-    reader: BufReader<ChildStdout>,
-    /// Sends data to the [`LspServer`].
-    response_tx: Sender<Message>,
-    /// Signifies if the thread is quitting.
-    is_quitting: bool,
-}
-
-impl LspProcessor {
-    /// Creates a new `LspProcessor`.
-    fn new(stdout: ChildStdout, response_tx: Sender<Message>, transmitter: LspTransmitter) -> Self {
-        Self {
-            reader: BufReader::new(stdout),
-            response_tx,
-            is_quitting: false,
-            transmitter,
-        }
-    }
-
-    /// Processes data from the language server.
-    fn process(&mut self) -> Result<(), Fault> {
-        while !self.is_quitting {
-            if let Some(message) = self.read_message() {
-                trace!("received: {:?}", message);
-
-                match message {
-                    Message::Response { .. } => self
-                        .response_tx
-                        .send(message)
-                        .map_err(|_| Fault::Send("response message".to_string()))?,
-                    Message::Request(MessageRequest { id, .. }) => {
-                        self.transmitter.respond::<RegisterCapability>(id, ())?
-                    }
-                    Message::Notification { .. } => {}
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Reads a message.
-    fn read_message(&mut self) -> Option<Message> {
-        let length = self.read_header();
-
-        if let Some(content) = self.read_content(length) {
-            match serde_json::from_str::<Value>(&content) {
-                Ok(value) => {
-                    if let Some(id) = value
-                        .get("id")
-                        .and_then(|id_value| serde_json::from_value(id_value.to_owned()).ok())
-                    {
-                        if let Some(result) = value.get("result") {
-                            // Success response
-                            Some(Message::Response {
-                                id,
-                                outcome: Outcome::Success(result.to_owned()),
-                            })
-                        } else if value.get("error").is_some() {
-                            // Error response
-                            None
-                        } else if let Some(method) = value.get("method").and_then(|method_value| {
-                            serde_json::from_value(method_value.to_owned()).ok()
-                        }) {
-                            if let Some(params) = value.get("params").and_then(|params_value| {
-                                serde_json::from_value(params_value.to_owned()).ok()
-                            }) {
-                                // Request
-                                Some(Message::Request(MessageRequest { id, method, params }))
-                            } else {
-                                // Invalid
-                                None
-                            }
-                        } else {
-                            // Invalid
-                            None
-                        }
-                    } else {
-                        // Notification
-                        None
-                    }
-                }
-                Err(e) => {
-                    warn!("failed to convert `{}` to json value: {}", content, e);
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Finds the first valid message header and returns the length of the content.
-    fn read_header(&mut self) -> usize {
-        let mut length = None;
-
-        loop {
-            let mut line = String::new();
-
-            if let Err(e) = self.reader.read_line(&mut line) {
-                warn!("failed to read line from language server process: {}", e);
-            }
-
-            if line == "\r\n" {
-                if let Some(len) = length {
-                    return len;
-                }
-            } else {
-                let mut split = line.trim().split(": ");
-
-                if split.next() == Some(HEADER_CONTENT_LENGTH) {
-                    length = split.next().and_then(|s| s.parse().ok());
-                }
-            }
-        }
-    }
-
-    /// Reads the content of a message with known `length`.
-    fn read_content(&mut self, length: usize) -> Option<String> {
-        let mut content = vec![0; length];
-
-        if let Err(e) = self.reader.read_exact(&mut content) {
-            warn!("failed to read message content: {}", e);
-        }
-
-        match String::from_utf8(content) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                warn!("received message that is not valid UTF8: {}", e);
-                None
-            }
-        }
-    }
-}
-
-impl Drop for LspProcessor {
-    fn drop(&mut self) {
-        self.is_quitting = true;
-    }
-}
-
-/// Signifies the receiver of LSP messages.
-#[derive(Debug)]
-pub(crate) struct LspReceiver(Receiver<Message>);
-
-impl LspReceiver {
-    /// Creates a new [`LspReceiver`].
-    pub(crate) fn new(stdout: ChildStdout, transmitter: &LspTransmitter) -> Self {
-        let (tx, rx) = mpsc::channel();
-        let mut processor = LspProcessor::new(stdout, tx, transmitter.clone());
-
-        let _ = thread::spawn(move || {
-            if let Err(error) = processor.process() {
-                error!("processing language server output: {}", error);
-            }
-        });
-
-        Self(rx)
-    }
-
-    /// Receives a [`Message`] from that was read by [`LspProcessor`].
-    fn recv(&self) -> Result<Message, RecvError> {
-        self.0.recv()
-    }
+    Result(Value),
 }
 
 /// Processes output from stderr.

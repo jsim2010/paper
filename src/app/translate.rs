@@ -354,10 +354,9 @@ impl ModeInterpreter for ViewInterpreter {
                     message: format!("{}", glitch),
                 }));
             }
-            Input::Config(setting) => {
+            Input::Setting(setting) => {
                 output.add_op(Operation::UpdateSetting(setting));
             }
-            Input::Quit => {}
         }
 
         output
@@ -391,7 +390,7 @@ impl ModeInterpreter for ConfirmInterpreter {
                     output.reset();
                 }
             },
-            Input::File { .. } | Input::Glitch(..) | Input::Config(..) | Input::Quit => {}
+            Input::File { .. } | Input::Glitch(..) | Input::Setting(..) => {}
         }
 
         output
@@ -431,7 +430,7 @@ impl ModeInterpreter for CollectInterpreter {
                 }
                 ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {}
             },
-            Input::File { .. } | Input::Glitch(..) | Input::Config(..) | Input::Quit => {}
+            Input::File { .. } | Input::Glitch(..) | Input::Setting(..) => {}
         }
 
         output
@@ -473,7 +472,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::Config(Setting::Wrap(true))),
+                int.translate(Input::Setting(Setting::Wrap(true))),
                 Some(Operation::UpdateSetting(Setting::Wrap(true)))
             );
             assert_eq!(int.mode, Mode::View);
