@@ -157,12 +157,12 @@ impl Message {
     }
 
     /// Creates a response [`Message`].
-    pub(crate) fn response<T>(result: T::Result, id: u64) -> Result<Self, SerdeJsonError>
+    pub(crate) fn response<T>(result: T::Result, id: Id) -> Result<Self, SerdeJsonError>
     where
         T: Request,
         <T as Request>::Result: Serialize,
     {
-        Object::response::<T>(result, Id::Num(id)).map(Self::new)
+        Object::response::<T>(result, id).map(Self::new)
     }
 }
 

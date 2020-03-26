@@ -25,11 +25,14 @@ use {
         TextDocumentItem, TextDocumentSaveReason, TextDocumentSyncCapability, TextDocumentSyncKind,
         Url, VersionedTextDocumentIdentifier, WillSaveTextDocumentParams,
     },
-    market::{ByteWriter, Consumer, Producer, Reader, StripError, StrippingProducer},
+    market::{
+        io::{Reader, Writer},
+        Consumer, Producer, StripError,
+    },
     serde::{de::DeserializeOwned, Serialize},
     serde_json::error::Error as SerdeJsonError,
     std::{
-        io::{self, BufReader},
+        io,
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
         rc::Rc,
     },
@@ -148,7 +151,7 @@ pub(crate) struct LanguageClient {
     /// The language server process.
     pub(crate) server: LangServer,
     /// Transmits messages to the language server process.
-    writer: StrippingProducer<Message, ByteWriter<ChildStdin>>,
+    writer: Writer<Message>,
     /// The current request id.
     id: Cell<u64>,
     /// Processes output from the stderr of the language server.
@@ -156,7 +159,7 @@ pub(crate) struct LanguageClient {
     /// Controls settings for the language server.
     settings: Cell<LspSettings>,
     /// Reads messages from the language server process.
-    reader: Reader<Message, BufReader<ChildStdout>>,
+    reader: Reader<Message>,
 }
 
 impl LanguageClient {
@@ -166,8 +169,8 @@ impl LanguageClient {
         U: AsRef<Url>,
     {
         let mut server = LangServer::new(language_id)?;
-        let writer = StrippingProducer::new(ByteWriter::new(server.stdin()?));
-        let reader = Reader::new(BufReader::new(server.stdout()?));
+        let writer = Writer::new(server.stdin()?);
+        let reader = Reader::new(server.stdout()?);
         let capabilities = ClientCapabilities {
             workspace: None,
             text_document: Some(TextDocumentClientCapabilities {
@@ -248,16 +251,17 @@ impl Consumer for LanguageClient {
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
         if let Some(message) = self.reader.consume()? {
+            warn!("message: {:?}", message);
             match message {
                 Message {
                     object:
                         utils::Object::Request {
-                            id: Some(Id::Num(id_num)),
+                            id: Some(request_id),
                             ..
                         },
                     ..
                 } => {
-                    return Ok(Some(ServerMessage::Request { id: id_num }));
+                    return Ok(Some(ServerMessage::Request { id: request_id }));
                 }
                 Message {
                     object:
@@ -463,7 +467,7 @@ pub(crate) enum ServerMessage {
     /// Request.
     Request {
         /// Id of the request.
-        id: u64,
+        id: Id,
     },
 }
 
@@ -495,7 +499,7 @@ pub(crate) enum ClientMessage {
     /// Registers a capability.
     RegisterCapability {
         /// Id of the request.
-        id: u64,
+        id: Id,
     },
 }
 

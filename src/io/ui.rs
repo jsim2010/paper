@@ -300,6 +300,7 @@ impl From<BodySize> for Input {
 }
 
 /// An output.
+#[derive(Debug)]
 pub(crate) enum Output {
     /// Initializes the terminal.
     Init,

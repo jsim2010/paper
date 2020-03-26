@@ -302,8 +302,9 @@ impl Consumer for Interface {
     type Error = ConsumeInputError;
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        let a = self.language_tool.consume();
-        if let Some(lang_input) = a? {
+        if let Some(ui_input) = self.user_interface.consume()? {
+            Ok(Some(Self::Good::from(ui_input)))
+        } else if let Some(lang_input) = self.language_tool.consume()? {
             match lang_input.message {
                 ServerMessage::Initialize => {
                     self.language_tool.force(ToolMessage {
@@ -321,8 +322,6 @@ impl Consumer for Interface {
             }
 
             Ok(None)
-        } else if let Some(ui_input) = self.user_interface.consume()? {
-            Ok(Some(Self::Good::from(ui_input)))
         } else if let Some(setting) = self.setting_consumer.consume()? {
             Ok(Some(Self::Good::from(setting)))
         } else {
@@ -474,6 +473,7 @@ impl Producer for Interface {
             }
         };
 
+        error!("io: {:?} -> {:?}", output, result);
         Ok(result.map(|_| output))
     }
 }
