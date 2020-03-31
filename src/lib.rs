@@ -116,9 +116,7 @@ impl Paper {
     #[inline]
     pub fn run(&mut self) -> Result<(), RunPaperError> {
         for input in self.io.goods() {
-            for output in self.processor.process(input) {
-                self.io.force(output)?;
-            }
+            self.io.force_all(self.processor.process(input))?;
         }
 
         Ok(())

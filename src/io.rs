@@ -183,7 +183,7 @@ pub enum Glitch {
 pub enum ConsumeInputError {
     /// An error reading a message from the language tool.
     #[error("")]
-    Read(#[from] io::Error),
+    Read(#[from] Fault),
     /// An error producing a language tool protocol.
     #[error("")]
     Produce(#[from] lsp::ProduceProtocolError),
@@ -305,23 +305,7 @@ impl Consumer for Interface {
         if let Some(ui_input) = self.user_interface.consume()? {
             Ok(Some(Self::Good::from(ui_input)))
         } else if let Some(lang_input) = self.language_tool.consume()? {
-            match lang_input.message {
-                ServerMessage::Initialize => {
-                    self.language_tool.force(ToolMessage {
-                        language_id: lang_input.language_id,
-                        message: ClientMessage::Initialized,
-                    })?;
-                }
-                ServerMessage::Request { id } => {
-                    self.language_tool.force(ToolMessage {
-                        language_id: lang_input.language_id,
-                        message: ClientMessage::RegisterCapability { id },
-                    })?;
-                }
-                ServerMessage::Shutdown => {}
-            }
-
-            Ok(None)
+            Ok(Some(Self::Good::from(lang_input)))
         } else if let Some(setting) = self.setting_consumer.consume()? {
             Ok(Some(Self::Good::from(setting)))
         } else {
@@ -395,13 +379,16 @@ impl Producer for Interface {
     fn produce(&self, output: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         if let Ok(protocol) = ToolMessage::try_from(output.clone()) {
             if let Err(error) = self.language_tool.produce(protocol) {
-                self.user_interface.force(ui::Output::Notify {
+                if let Err(produce_error) = self.user_interface.produce(ui::Output::Notify {
                     message: error.into(),
-                })?;
+                }) {
+                    error!("Unable to display error: {}", produce_error);
+                }
             }
         }
 
         let result = match output.clone() {
+            Output::SendLsp(..) => None,
             Output::GetFile { path } => {
                 self.add_file(&path)?;
                 None
@@ -614,6 +601,15 @@ pub enum Input {
     Setting(Setting),
     /// A glitch.
     Glitch(Glitch),
+    /// A message from the language server.
+    Lsp(ToolMessage<ServerMessage>),
+}
+
+impl From<ToolMessage<ServerMessage>> for Input {
+    #[inline]
+    fn from(value: ToolMessage<ServerMessage>) -> Self {
+        Self::Lsp(value)
+    }
 }
 
 impl From<ui::Input> for Input {
@@ -633,6 +629,8 @@ impl From<Setting> for Input {
 /// An output.
 #[derive(Clone, Debug)]
 pub(crate) enum Output {
+    /// Sends message to language server.
+    SendLsp(ToolMessage<ClientMessage>),
     /// Retrieves the URL and text of a file.
     GetFile {
         /// The relative path of the file.
@@ -701,6 +699,7 @@ pub(crate) enum Output {
 impl TryFrom<Output> for ToolMessage<ClientMessage> {
     type Error = TryIntoProtocolError;
 
+    #[inline]
     fn try_from(value: Output) -> Result<Self, Self::Error> {
         match value {
             Output::EditDoc { url, edit } => {
@@ -717,6 +716,7 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
                     Err(TryIntoProtocolError::InvalidOutput)
                 }
             }
+            Output::SendLsp(message) => Ok(message),
             Output::GetFile { .. }
             | Output::Wrap { .. }
             | Output::MoveSelection { .. }

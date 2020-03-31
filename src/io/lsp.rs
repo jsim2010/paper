@@ -81,6 +81,9 @@ pub enum Fault {
     /// Write.
     #[error("")]
     Write(#[from] StripError<io::Error>),
+    /// Normal IO.
+    #[error("")]
+    NormalIo(#[from] io::Error),
 }
 
 impl From<Fault> for ShowMessageParams {
@@ -426,19 +429,24 @@ impl LanguageTool {
 
 impl Consumer for LanguageTool {
     type Good = ToolMessage<ServerMessage>;
-    type Error = io::Error;
+    type Error = Fault;
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        for (language_id, client) in &self.clients {
-            if let Some(message) = client.borrow().consume()? {
-                return Ok(Some(ToolMessage {
+        let mut good = None;
+
+        for (language_id, language_client) in &self.clients {
+            let client = language_client.borrow();
+
+            if let Some(message) = client.consume()? {
+                good = Some(ToolMessage {
                     language_id,
                     message,
-                }));
+                });
+                break;
             }
         }
 
-        Ok(None)
+        Ok(good)
     }
 }
 
@@ -459,7 +467,7 @@ impl Producer for LanguageTool {
 
 /// A message from the language server.
 #[derive(Debug)]
-pub(crate) enum ServerMessage {
+pub enum ServerMessage {
     /// Initialize.
     Initialize,
     /// Shutdown.
@@ -472,8 +480,8 @@ pub(crate) enum ServerMessage {
 }
 
 /// Tool message of language server.
-#[derive(Clone, Debug)]
-pub(crate) struct ToolMessage<T> {
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolMessage<T> {
     /// The URL that generated.
     pub(crate) language_id: LanguageId,
     /// The message.
@@ -481,7 +489,7 @@ pub(crate) struct ToolMessage<T> {
 }
 
 /// Client message to language server.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ClientMessage {
     /// Shuts down language server.
     Shutdown,
@@ -566,7 +574,7 @@ pub enum TryIntoMessageError {
 
 /// A message for interacting with a document.
 #[allow(dead_code)] // False positive.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DocMessage {
     /// Open a doc.
     Open {

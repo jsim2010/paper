@@ -2,6 +2,7 @@
 use {
     crate::io::{
         config::Setting,
+        lsp::{ClientMessage, ServerMessage, ToolMessage},
         ui::{self, Key},
         Input, PathUrl,
     },
@@ -14,6 +15,8 @@ use {
 /// Signifies actions that can be performed by the application.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Operation {
+    /// Sends message to language server.
+    SendLsp(ToolMessage<ClientMessage>),
     /// Resizes the user interface.
     Size(ui::BodySize),
     /// Resets the application.
@@ -162,8 +165,44 @@ pub(crate) struct Interpreter {
 impl Interpreter {
     /// Returns the [`Operation`] that maps to `input` given the current [`Mode`].
     pub(crate) fn translate(&mut self, input: Input) -> Option<Operation> {
-        #[allow(clippy::indexing_slicing)] // EnumMap guarantees indexing will not panic.
-        let output = self.map[self.mode].decode(input);
+        let mut output = Output::new();
+
+        match input {
+            Input::File { url, text } => {
+                output.add_op(Operation::OpenDoc { url, text });
+            }
+            Input::Glitch(glitch) => {
+                output.add_op(Operation::Alert(ShowMessageParams {
+                    typ: MessageType::Error,
+                    message: format!("{}", glitch),
+                }));
+            }
+            Input::Setting(setting) => {
+                output.add_op(Operation::UpdateSetting(setting));
+            }
+            Input::Lsp(ToolMessage {
+                language_id,
+                message,
+            }) => {
+                if let Some(return_message) = match message {
+                    ServerMessage::Initialize => Some(ClientMessage::Initialized),
+                    ServerMessage::Request { id } => Some(ClientMessage::RegisterCapability { id }),
+                    ServerMessage::Shutdown => None,
+                } {
+                    output.add_op(Operation::SendLsp(ToolMessage {
+                        language_id,
+                        message: return_message,
+                    }));
+                }
+            }
+            Input::User(user_input) => {
+                #[allow(clippy::indexing_slicing)]
+                {
+                    // EnumMap guarantees indexing will not panic.
+                    output = self.map[self.mode].decode(user_input);
+                }
+            }
+        }
 
         if let Some(mode) = output.new_mode {
             self.mode = mode;
@@ -253,7 +292,7 @@ impl Output {
 /// Defines the functionality to convert [`Input`] to [`Output`].
 trait ModeInterpreter: Debug {
     /// Converts `input` to [`Operation`]s.
-    fn decode(&self, input: Input) -> Output;
+    fn decode(&self, input: ui::Input) -> Output;
 }
 
 /// The [`ModeInterpreter`] for [`Mode::View`].
@@ -332,31 +371,17 @@ impl ViewInterpreter {
 }
 
 impl ModeInterpreter for ViewInterpreter {
-    fn decode(&self, input: Input) -> Output {
+    fn decode(&self, input: ui::Input) -> Output {
         let mut output = Output::new();
 
         match input {
-            Input::User(user_input) => match user_input {
-                ui::Input::Key { key, .. } => {
-                    Self::decode_key(key, &mut output);
-                }
-                ui::Input::Resize(size) => {
-                    output.add_op(Operation::Size(size));
-                }
-                ui::Input::Mouse => {}
-            },
-            Input::File { url, text } => {
-                output.add_op(Operation::OpenDoc { url, text });
+            ui::Input::Key { key, .. } => {
+                Self::decode_key(key, &mut output);
             }
-            Input::Glitch(glitch) => {
-                output.add_op(Operation::Alert(ShowMessageParams {
-                    typ: MessageType::Error,
-                    message: format!("{}", glitch),
-                }));
+            ui::Input::Resize(size) => {
+                output.add_op(Operation::Size(size));
             }
-            Input::Setting(setting) => {
-                output.add_op(Operation::UpdateSetting(setting));
-            }
+            ui::Input::Mouse => {}
         }
 
         output
@@ -375,22 +400,19 @@ impl ConfirmInterpreter {
 }
 
 impl ModeInterpreter for ConfirmInterpreter {
-    fn decode(&self, input: Input) -> Output {
+    fn decode(&self, input: ui::Input) -> Output {
         let mut output = Output::new();
 
         match input {
-            Input::User(user_input) => match user_input {
-                ui::Input::Key {
-                    key: Key::Char('y'),
-                    ..
-                } => {
-                    output.add_op(Operation::Quit);
-                }
-                ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {
-                    output.reset();
-                }
-            },
-            Input::File { .. } | Input::Glitch(..) | Input::Setting(..) => {}
+            ui::Input::Key {
+                key: Key::Char('y'),
+                ..
+            } => {
+                output.add_op(Operation::Quit);
+            }
+            ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {
+                output.reset();
+            }
         }
 
         output
@@ -409,28 +431,25 @@ impl CollectInterpreter {
 }
 
 impl ModeInterpreter for CollectInterpreter {
-    fn decode(&self, input: Input) -> Output {
+    fn decode(&self, input: ui::Input) -> Output {
         let mut output = Output::new();
 
         match input {
-            Input::User(user_input) => match user_input {
-                ui::Input::Key { key: Key::Esc, .. } => {
-                    output.reset();
-                }
-                ui::Input::Key {
-                    key: Key::Enter, ..
-                } => {
-                    output.add_op(Operation::Execute);
-                    output.set_mode(Mode::View);
-                }
-                ui::Input::Key {
-                    key: Key::Char(c), ..
-                } => {
-                    output.add_op(Operation::Collect(c));
-                }
-                ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {}
-            },
-            Input::File { .. } | Input::Glitch(..) | Input::Setting(..) => {}
+            ui::Input::Key { key: Key::Esc, .. } => {
+                output.reset();
+            }
+            ui::Input::Key {
+                key: Key::Enter, ..
+            } => {
+                output.add_op(Operation::Execute);
+                output.set_mode(Mode::View);
+            }
+            ui::Input::Key {
+                key: Key::Char(c), ..
+            } => {
+                output.add_op(Operation::Collect(c));
+            }
+            ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {}
         }
 
         output
