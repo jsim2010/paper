@@ -10,7 +10,6 @@
 //!
 //! [Language Server Protocol]: https://microsoft.github.io/language-server-protocol/
 #![warn(
-    absolute_paths_not_starting_with_crate,
     anonymous_parameters,
     bare_trait_objects,
     box_pointers,

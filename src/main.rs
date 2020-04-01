@@ -1,5 +1,6 @@
 use {
     // `app_from_crate` requires using all the macros that it calls.
+    // https://github.com/clap-rs/clap/issues/1478 states that fix has been added to be release in 3.0.0.
     clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, Arg},
     paper::{Failure, Paper},
 };
