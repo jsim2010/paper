@@ -6,9 +6,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
-      run: sudo chown -R $(whoami):$(id -ng) ~/.cargo/
     - name: cache cargo binaries
-      uses: actions/cache@v1
+      run: sudo chown -R $(whoami):$(id -ng) ~/.cargo/
+    - uses: actions/cache@v1
       with:
         path: ~/.cargo/bin
         key: cargo-bin
