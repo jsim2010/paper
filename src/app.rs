@@ -106,6 +106,9 @@ impl Processor {
             Operation::OpenDoc { url, text } => {
                 outputs.append(&mut self.pane.open_doc(url, text));
             }
+            Operation::SendLsp(message) => {
+                outputs.push(Output::SendLsp(message));
+            }
         };
 
         outputs.push(Output::UpdateHeader);

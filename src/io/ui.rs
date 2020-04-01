@@ -113,9 +113,12 @@ pub struct SelectionConversionError(#[from] num::TryFromIntError);
 /// An error consuming input.
 #[derive(Debug, Error)]
 pub enum ConsumeInputError {
+    /// An error polling the user input.
+    #[error("")]
+    Poll(#[source] ErrorKind),
     /// Read.
     #[error("")]
-    Read(#[from] ErrorKind),
+    Read(#[source] ErrorKind),
 }
 
 /// A user interface provided by a terminal.
@@ -159,7 +162,7 @@ impl Consumer for Terminal {
     type Error = ConsumeInputError;
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        if event::poll(INSTANT).map_err(Self::Error::Read)? {
+        if event::poll(INSTANT).map_err(Self::Error::Poll)? {
             event::read()
                 .map(|event| Some(event.into()))
                 .map_err(Self::Error::Read)
