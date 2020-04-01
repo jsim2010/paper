@@ -1,5 +1,6 @@
 alias b := build
 alias f := fix
+alias l := lint
 alias t := test
 alias v := validate
 
@@ -28,7 +29,7 @@ format:
 
 # Validates code style
 lint:
-    cargo clippy -- -D warnings
+    cargo clippy -- -D absolute_paths_not_starting_with_crate -D warnings
 
 # Runs tests
 test:

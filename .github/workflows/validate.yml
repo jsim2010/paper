@@ -6,9 +6,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
+    - name: set cargo permissions to allow cache to work
+      run: sudo chown -R $(whoami):$(id -ng) ~/.cargo/
+    - name: cache cargo binaries
+      uses: actions/cache@v1
+      id: cache
+      with:
+        path: ~/.cargo/bin
+        key: cargo-bin
     - name: update rust
-      run: rustup update 1.41.0 && rustup override set 1.41.0
+      run: rustup update 1.42.0 && rustup override set 1.42.0 && rustup component add rustfmt && rustup component add clippy
     - name: install just
+      if: steps.cache.outputs.cache-hit != 'true'
       run: cargo install just
     - name: validate
       run: just validate
