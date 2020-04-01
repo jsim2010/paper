@@ -12,7 +12,7 @@ jobs:
         path: ~/.cargo/bin
         key: cargo-bin
     - name: update rust
-      run: rustup update 1.41.0 && rustup override set 1.41.0
+      run: rustup update 1.42.0 && rustup override set 1.42.0
     - name: install just
       run: cargo install just
     - name: validate
