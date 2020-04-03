@@ -1,5 +1,6 @@
 //! Implements the interface for all input and output to the application.
 pub mod config;
+pub mod fs;
 pub mod logging;
 pub mod lsp;
 pub mod ui;
@@ -8,29 +9,29 @@ use {
     clap::ArgMatches,
     config::{ConsumeSettingError, CreateSettingConsumerError, Setting, SettingConsumer},
     core::{
-        convert::{TryFrom, TryInto},
+        convert::TryFrom,
         fmt::{self, Display},
+        sync::atomic::{AtomicBool, Ordering},
     },
     enum_map::Enum,
+    fs::{PathUrl, File, ConsumeFileError, FileSystem, FileCommand},
     log::{error, LevelFilter},
     logging::LogManager,
     lsp::{
-        ClientMessage, CreateLangClientError, Fault, LanguageTool, SendNotificationError,
+        ClientMessage, CreateLangClientError, DocMessage, Fault, LanguageTool, SendNotificationError,
         ServerMessage, ToolMessage,
     },
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
-    market::{ClosedMarketError, Consumer, Producer, UnlimitedQueue},
+    market::{ClosedMarketError, Consumer, Producer},
     starship::{context::Context, print},
     std::{
         env,
-        ffi::OsStr,
-        fs,
         io::{self, ErrorKind},
-        path::{Path, PathBuf},
     },
     thiserror::Error,
     toml::{value::Table, Value},
     ui::{
+        UserAction, ConsumeUserActionError,
         BodySize, CommandError, CreateTerminalError, ProduceTerminalOutputError, Selection,
         SelectionConversionError, Terminal,
     },
@@ -71,8 +72,8 @@ pub enum CreateInterfaceError {
     #[error("current working directory is invalid: {0}")]
     RootDir(#[from] io::Error),
     /// An error while working with a Url.
-    #[error("{0}")]
-    Url(#[from] UrlError),
+    #[error("")]
+    Url,
     /// An error creating a [`Terminal`].
     ///
     /// [`Terminal`]: ui/struct.Terminal.html
@@ -142,8 +143,8 @@ pub enum ReadInputError {
 #[derive(Debug, Error)]
 pub enum CreateFileError {
     /// An error while generating the URL of the file.
-    #[error("{0}")]
-    CreateUrl(#[from] UrlError),
+    #[error("")]
+    Url,
     /// An error while reading the text of the file.
     #[error("{0}")]
     ReadFile(#[from] ReadFileError),
@@ -178,6 +179,17 @@ pub enum Glitch {
     ConfigFormat(#[from] toml::de::Error),
 }
 
+/// An event that prevents [`Interface`] from consuming.
+#[derive(Debug, Error)]
+pub enum ConsumeInputIssue {
+    /// The application has quit.
+    #[error("")]
+    Quit,
+    /// The application has encountered an error while consuming.
+    #[error("")]
+    Error(#[from] ConsumeInputError),
+}
+
 /// An error consuming input.
 #[derive(Debug, Error)]
 pub enum ConsumeInputError {
@@ -189,13 +201,16 @@ pub enum ConsumeInputError {
     Produce(#[from] lsp::ProduceProtocolError),
     /// An error consuming a user input.
     #[error("")]
-    Ui(#[from] ui::ConsumeInputError),
+    Ui(#[from] ConsumeUserActionError),
     /// An error consuming a setting.
     #[error("{0}")]
     Setting(#[from] ConsumeSettingError),
     /// The queue is closed.
     #[error("")]
     Closed(#[from] ClosedMarketError),
+    /// An error consuming a file.
+    #[error("")]
+    File(#[from] ConsumeFileError),
 }
 
 /// The interface between the application and all external components.
@@ -205,14 +220,16 @@ pub(crate) struct Interface {
     user_interface: Terminal,
     /// Notifies `self` of any events to the config file.
     setting_consumer: SettingConsumer,
-    /// Queues [`Input`]s.
-    queue: UnlimitedQueue<Input>,
     /// The interface of the application with all language servers.
     language_tool: LanguageTool,
     /// The root directory of the application.
     root_dir: PathUrl,
     /// The configuration of the logger.
     log_manager: LogManager,
+    /// The interface with the file system.
+    file_system: FileSystem,
+    /// The application has quit.
+    has_quit: AtomicBool,
 }
 
 impl Interface {
@@ -220,7 +237,7 @@ impl Interface {
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         // Create log_manager first as this is where the logger is initialized.
         let log_manager = LogManager::new()?;
-        let root_dir = PathUrl::try_from(env::current_dir()?)?;
+        let root_dir = PathUrl::try_from(env::current_dir()?).map_err(|_| CreateInterfaceError::Url)?;
 
         let interface = Self {
             log_manager,
@@ -229,10 +246,11 @@ impl Interface {
                     .ok_or(CreateInterfaceError::HomeDir)?
                     .join(".config/paper.toml"),
             )?,
-            queue: UnlimitedQueue::new(),
             user_interface: Terminal::new()?,
             language_tool: LanguageTool::new(&root_dir)?,
+            file_system: FileSystem::default(),
             root_dir,
+            has_quit: AtomicBool::new(false),
         };
 
         if let Some(file) = arguments.file {
@@ -244,38 +262,33 @@ impl Interface {
 
     /// Generates an Input for opening the file at `path`.
     fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
-        let url = self.root_dir.join(path)?;
+        let url = self.root_dir.join(path).map_err(|_| CreateFileError::Url)?;
 
-        self.queue
-            .force(Input::File {
-                text: fs::read_to_string(&url).map_err(|error| ReadFileError {
-                    file: url.to_string(),
-                    error: error.kind(),
-                })?,
-                url,
-            })
-            .map_err(|_| CreateFileError::Send)?;
+        if let Err(error) = self.file_system.produce(FileCommand::Read{ url: url.clone()}) {
+            error!("Failed to store file `{}` to be read: {}", url, error);
+        }
+
         Ok(())
     }
 
     /// Edits the doc at `url`.
-    fn edit_doc(&self, url: &PathUrl, edit: &DocEdit) -> Result<(), ProduceOutputError> {
+    fn edit_doc(&self, file: &File, edit: DocEdit) -> Result<(), ProduceOutputError> {
         match edit {
-            DocEdit::Open { text, .. } => {
+            DocEdit::Open { .. } => {
                 self.user_interface.force(ui::Output::OpenDoc {
-                    text: text.to_string(),
+                    text: file.text().to_string(),
                 })?;
             }
-            DocEdit::Save { text } => {
+            DocEdit::Save => {
                 self.user_interface.force(ui::Output::Notify {
-                    message: match fs::write(&url, text) {
+                    message: match self.file_system.produce(FileCommand::Write{url: file.url().clone(), text: file.text().to_string()}) {
                         Ok(..) => ShowMessageParams {
                             typ: MessageType::Info,
-                            message: format!("Saved document `{}`", url),
+                            message: format!("Saved document `{}`", file.url()),
                         },
                         Err(error) => ShowMessageParams {
                             typ: MessageType::Error,
-                            message: format!("Failed to save document `{}`: {}", url, error),
+                            message: format!("Failed to save document `{}`: {}", file.url(), error),
                         },
                     },
                 })?;
@@ -286,8 +299,8 @@ impl Interface {
                 ..
             } => {
                 self.user_interface.force(ui::Output::Edit {
-                    new_text: new_text.to_string(),
-                    selection: *selection,
+                    new_text,
+                    selection,
                 })?;
             }
             DocEdit::Close => {}
@@ -299,17 +312,21 @@ impl Interface {
 
 impl Consumer for Interface {
     type Good = Input;
-    type Error = ConsumeInputError;
+    type Error = ConsumeInputIssue;
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        if let Some(ui_input) = self.user_interface.consume()? {
+        if let Some(ui_input) = self.user_interface.consume().map_err(ConsumeInputError::from)? {
             Ok(Some(Self::Good::from(ui_input)))
-        } else if let Some(lang_input) = self.language_tool.consume()? {
+        } else if let Some(lang_input) = self.language_tool.consume().map_err(ConsumeInputError::from)? {
             Ok(Some(Self::Good::from(lang_input)))
-        } else if let Some(setting) = self.setting_consumer.consume()? {
+        } else if let Some(setting) = self.setting_consumer.consume().map_err(ConsumeInputError::from)? {
             Ok(Some(Self::Good::from(setting)))
+        } else if let Some(file) = self.file_system.consume().map_err(ConsumeInputError::from)? {
+            Ok(Some(Self::Good::from(file)))
+        } else if self.has_quit.load(Ordering::Relaxed) {
+            Err(Self::Error::Quit)
         } else {
-            Ok(self.queue.consume()?)
+            Ok(None)
         }
     }
 }
@@ -359,7 +376,7 @@ impl Drop for Interface {
             }
 
             // TODO: This should probably be a consume call.
-            #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
+            #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is valid.
             let server = &self.language_tool.clients[language_id];
 
             if let Err(error) = server.borrow_mut().server.wait() {
@@ -393,8 +410,8 @@ impl Producer for Interface {
                 self.add_file(&path)?;
                 None
             }
-            Output::EditDoc { url, edit } => {
-                self.edit_doc(&url, edit.as_ref())?;
+            Output::EditDoc { file, edit } => {
+                self.edit_doc(&file, edit)?;
                 None
             }
             Output::Wrap {
@@ -445,17 +462,14 @@ impl Producer for Interface {
             Output::Resize { size } => self.user_interface.produce(ui::Output::Resize { size })?,
             Output::Write { ch } => self.user_interface.produce(ui::Output::Write { ch })?,
             Output::Log { starship_level } => {
-                // TODO: Make sure to handle a failure here.
-                #[allow(unused_results)]
-                {
-                    // For now assume produce() never fails.
-                    self.log_manager
-                        .produce(logging::Output::StarshipLevel(starship_level))?;
+                if let Err(error) = self.log_manager
+                    .produce(logging::Output::StarshipLevel(starship_level)) {
+                    error!("Unable to set startship log-level: {}", error);
                 }
                 None
             }
             Output::Quit => {
-                self.queue.close();
+                self.has_quit.store(true, Ordering::Relaxed);
                 None
             }
         };
@@ -499,110 +513,26 @@ impl Display for LanguageId {
     }
 }
 
-/// A URL that is a valid path.
-///
-/// Useful for preventing repeat translations between URL and path formats.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PathUrl {
-    /// The path.
-    path: PathBuf,
-    /// The URL.
-    url: Url,
-}
-
-impl PathUrl {
-    /// Joins `path` to `self`.
-    pub(crate) fn join(&self, path: &str) -> Result<Self, UrlError> {
-        let mut joined_path = self.path.clone();
-
-        joined_path.push(path);
-        joined_path.try_into()
-    }
-
-    /// Returns the language identification of the path.
-    pub(crate) fn language_id(&self) -> Option<LanguageId> {
-        self.path
-            .extension()
-            .and_then(OsStr::to_str)
-            .and_then(|ext| match ext {
-                "rs" => Some(LanguageId::Rust),
-                _ => None,
-            })
-    }
-}
-
-impl AsRef<OsStr> for PathUrl {
-    #[inline]
-    #[must_use]
-    fn as_ref(&self) -> &OsStr {
-        self.path.as_ref()
-    }
-}
-
-impl AsRef<Path> for PathUrl {
-    #[inline]
-    #[must_use]
-    fn as_ref(&self) -> &Path {
-        self.path.as_ref()
-    }
-}
-
-impl AsRef<Url> for PathUrl {
-    #[inline]
-    #[must_use]
-    fn as_ref(&self) -> &Url {
-        &self.url
-    }
-}
-
-impl Default for PathUrl {
-    #[inline]
-    #[must_use]
-    fn default() -> Self {
-        #[allow(clippy::result_expect_used)]
-        // Default path should not fail and failure cannot be propogated.
-        Self::try_from(PathBuf::default()).expect("creating default `PathUrl`")
-    }
-}
-
-impl Display for PathUrl {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.url)
-    }
-}
-
-impl TryFrom<PathBuf> for PathUrl {
-    type Error = UrlError;
-
-    #[inline]
-    fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
-        Ok(Self {
-            url: Url::from_directory_path(value.clone())
-                .map_err(|_| UrlError(value.to_string_lossy().to_string()))?,
-            path: value,
-        })
-    }
-}
-
 /// An input.
 #[derive(Debug)]
 pub enum Input {
     /// A file to be opened.
-    File {
-        /// The URL of the file.
-        url: PathUrl,
-        /// The text of the file.
-        text: String,
-    },
+    File(File),
     /// An input from the user.
-    User(ui::Input),
+    User(UserAction),
     /// A configuration.
     Setting(Setting),
     /// A glitch.
     Glitch(Glitch),
     /// A message from the language server.
     Lsp(ToolMessage<ServerMessage>),
+}
+
+impl From<File> for Input {
+    #[inline]
+    fn from(value: File) -> Self {
+        Self::File(value)
+    }
 }
 
 impl From<ToolMessage<ServerMessage>> for Input {
@@ -612,9 +542,9 @@ impl From<ToolMessage<ServerMessage>> for Input {
     }
 }
 
-impl From<ui::Input> for Input {
+impl From<UserAction> for Input {
     #[inline]
-    fn from(value: ui::Input) -> Self {
+    fn from(value: UserAction) -> Self {
         Self::User(value)
     }
 }
@@ -638,10 +568,10 @@ pub(crate) enum Output {
     },
     /// Edits a document.
     EditDoc {
-        /// The URL of the document.
-        url: PathUrl,
+        /// The file that is edited.
+        file: File,
         /// The edit to be performed.
-        edit: Box<DocEdit>,
+        edit: DocEdit,
     },
     /// Sets the wrapping of the text.
     Wrap {
@@ -702,14 +632,33 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
     #[inline]
     fn try_from(value: Output) -> Result<Self, Self::Error> {
         match value {
-            Output::EditDoc { url, edit } => {
-                if let Some(language_id) = url.language_id() {
-                    let doc_edit: DocEdit = edit.as_ref().clone();
+            Output::EditDoc { file, edit } => {
+                if let Some(language_id) = file.language_id() {
+                    let url: &Url = file.url().as_ref();
+
                     Ok(Self {
                         language_id,
                         message: ClientMessage::Doc {
-                            url,
-                            message: Box::new(doc_edit.try_into()?),
+                            url: url.clone(),
+                            message: match edit {
+                                DocEdit::Open {version} => DocMessage::Open {
+                                        language_id,
+                                        version,
+                                        text: file.text().to_string(),
+                                    },
+                                DocEdit::Save { .. } => DocMessage::Save,
+                                DocEdit::Change {
+                                    version,
+                                    selection,
+                                    new_text,
+                                } => DocMessage::Change {
+                                    version,
+                                    text: file.text().to_string(),
+                                    range: selection.range()?,
+                                    new_text,
+                                },
+                                DocEdit::Close => DocMessage::Close,
+                            },
                         },
                     })
                 } else {
@@ -741,26 +690,19 @@ pub enum TryIntoProtocolError {
     InvalidOutput,
     /// Invalid edit doc.
     #[error("")]
-    InvalidEditDoc(#[from] TryIntoMessageError),
+    InvalidEditDoc(#[from] SelectionConversionError),
 }
 
 /// Edits a document.
 #[derive(Clone, Debug)]
 pub(crate) enum DocEdit {
     /// Opens a document.
-    Open {
-        /// The URL of the document.
-        url: PathUrl,
+    Open{
         /// The version of the document.
         version: i64,
-        /// The full text of the document
-        text: String,
     },
     /// Saves the document.
-    Save {
-        /// The text of the document.
-        text: String,
-    },
+    Save,
     /// Edits the document.
     Change {
         /// The new text.
@@ -769,41 +711,9 @@ pub(crate) enum DocEdit {
         selection: Selection,
         /// The version.
         version: i64,
-        /// The full text of the document.
-        text: String,
     },
     /// Closes the document.
     Close,
-}
-
-impl TryFrom<DocEdit> for lsp::DocMessage {
-    type Error = TryIntoMessageError;
-
-    fn try_from(value: DocEdit) -> Result<Self, Self::Error> {
-        Ok(match value {
-            DocEdit::Open { url, version, text } => url
-                .language_id()
-                .map(|language_id| Self::Open {
-                    language_id,
-                    version,
-                    text: text.to_string(),
-                })
-                .ok_or(Self::Error::UnknownLanguage)?,
-            DocEdit::Save { .. } => Self::Save,
-            DocEdit::Change {
-                version,
-                text,
-                selection,
-                new_text,
-            } => Self::Change {
-                version,
-                text,
-                range: selection.range()?,
-                new_text,
-            },
-            DocEdit::Close => Self::Close,
-        })
-    }
 }
 
 /// An error converting [`DocEdit`] into [`Message`].
