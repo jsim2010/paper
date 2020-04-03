@@ -4,7 +4,7 @@ use {
         config::Setting,
         fs::File,
         lsp::{ClientMessage, ServerMessage, ToolMessage},
-        ui::{BodySize, UserAction, Key},
+        ui::{BodySize, Key, UserAction},
         Input,
     },
     core::fmt::{self, Debug},

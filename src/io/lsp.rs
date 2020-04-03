@@ -517,16 +517,14 @@ impl TryFrom<ClientMessage> for Message {
                     language_id,
                     version,
                     text,
-                } => {
-                    Self::notification::<DidOpenTextDocument>(DidOpenTextDocumentParams {
-                        text_document: TextDocumentItem::new(
-                            url,
-                            language_id.to_string(),
-                            version,
-                            text,
-                        ),
-                    })?
-                }
+                } => Self::notification::<DidOpenTextDocument>(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem::new(
+                        url,
+                        language_id.to_string(),
+                        version,
+                        text,
+                    ),
+                })?,
                 DocMessage::Save => {
                     Self::notification::<WillSaveTextDocument>(WillSaveTextDocumentParams {
                         text_document: TextDocumentIdentifier::new(url),

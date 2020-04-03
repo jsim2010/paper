@@ -183,14 +183,12 @@ impl Pane {
             outputs.push(old_doc.close());
         }
 
-        outputs.push(
-            Output::EditDoc {
-                file,
-                edit: DocEdit::Open {
-                    version: doc.version,
-                },
-            }
-        );
+        outputs.push(Output::EditDoc {
+            file,
+            edit: DocEdit::Open {
+                version: doc.version,
+            },
+        });
         self.doc = Some(doc);
         outputs
     }
@@ -254,7 +252,8 @@ impl Document {
 
     /// Deletes the text of the [`Selection`].
     fn delete_selection(&mut self) -> Output {
-        self.file.delete_selection(self.selection.start_line(), self.selection.end_line());
+        self.file
+            .delete_selection(self.selection.start_line(), self.selection.end_line());
         self.version = self.version.wrapping_add(1);
         Output::EditDoc {
             file: self.file.clone(),

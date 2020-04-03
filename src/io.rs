@@ -14,12 +14,12 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     enum_map::Enum,
-    fs::{PathUrl, File, ConsumeFileError, FileSystem, FileCommand},
+    fs::{ConsumeFileError, File, FileCommand, FileSystem, PathUrl},
     log::{error, LevelFilter},
     logging::LogManager,
     lsp::{
-        ClientMessage, CreateLangClientError, DocMessage, Fault, LanguageTool, SendNotificationError,
-        ServerMessage, ToolMessage,
+        ClientMessage, CreateLangClientError, DocMessage, Fault, LanguageTool,
+        SendNotificationError, ServerMessage, ToolMessage,
     },
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     market::{ClosedMarketError, Consumer, Producer},
@@ -31,9 +31,8 @@ use {
     thiserror::Error,
     toml::{value::Table, Value},
     ui::{
-        UserAction, ConsumeUserActionError,
-        BodySize, CommandError, CreateTerminalError, ProduceTerminalOutputError, Selection,
-        SelectionConversionError, Terminal,
+        BodySize, CommandError, ConsumeUserActionError, CreateTerminalError,
+        ProduceTerminalOutputError, Selection, SelectionConversionError, Terminal, UserAction,
     },
     url::Url,
 };
@@ -237,7 +236,8 @@ impl Interface {
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         // Create log_manager first as this is where the logger is initialized.
         let log_manager = LogManager::new()?;
-        let root_dir = PathUrl::try_from(env::current_dir()?).map_err(|_| CreateInterfaceError::Url)?;
+        let root_dir =
+            PathUrl::try_from(env::current_dir()?).map_err(|_| CreateInterfaceError::Url)?;
 
         let interface = Self {
             log_manager,
@@ -264,7 +264,10 @@ impl Interface {
     fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
         let url = self.root_dir.join(path).map_err(|_| CreateFileError::Url)?;
 
-        if let Err(error) = self.file_system.produce(FileCommand::Read{ url: url.clone()}) {
+        if let Err(error) = self
+            .file_system
+            .produce(FileCommand::Read { url: url.clone() })
+        {
             error!("Failed to store file `{}` to be read: {}", url, error);
         }
 
@@ -281,7 +284,10 @@ impl Interface {
             }
             DocEdit::Save => {
                 self.user_interface.force(ui::Output::Notify {
-                    message: match self.file_system.produce(FileCommand::Write{url: file.url().clone(), text: file.text().to_string()}) {
+                    message: match self.file_system.produce(FileCommand::Write {
+                        url: file.url().clone(),
+                        text: file.text().to_string(),
+                    }) {
                         Ok(..) => ShowMessageParams {
                             typ: MessageType::Info,
                             message: format!("Saved document `{}`", file.url()),
@@ -315,13 +321,29 @@ impl Consumer for Interface {
     type Error = ConsumeInputIssue;
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        if let Some(ui_input) = self.user_interface.consume().map_err(ConsumeInputError::from)? {
+        if let Some(ui_input) = self
+            .user_interface
+            .consume()
+            .map_err(ConsumeInputError::from)?
+        {
             Ok(Some(Self::Good::from(ui_input)))
-        } else if let Some(lang_input) = self.language_tool.consume().map_err(ConsumeInputError::from)? {
+        } else if let Some(lang_input) = self
+            .language_tool
+            .consume()
+            .map_err(ConsumeInputError::from)?
+        {
             Ok(Some(Self::Good::from(lang_input)))
-        } else if let Some(setting) = self.setting_consumer.consume().map_err(ConsumeInputError::from)? {
+        } else if let Some(setting) = self
+            .setting_consumer
+            .consume()
+            .map_err(ConsumeInputError::from)?
+        {
             Ok(Some(Self::Good::from(setting)))
-        } else if let Some(file) = self.file_system.consume().map_err(ConsumeInputError::from)? {
+        } else if let Some(file) = self
+            .file_system
+            .consume()
+            .map_err(ConsumeInputError::from)?
+        {
             Ok(Some(Self::Good::from(file)))
         } else if self.has_quit.load(Ordering::Relaxed) {
             Err(Self::Error::Quit)
@@ -462,8 +484,10 @@ impl Producer for Interface {
             Output::Resize { size } => self.user_interface.produce(ui::Output::Resize { size })?,
             Output::Write { ch } => self.user_interface.produce(ui::Output::Write { ch })?,
             Output::Log { starship_level } => {
-                if let Err(error) = self.log_manager
-                    .produce(logging::Output::StarshipLevel(starship_level)) {
+                if let Err(error) = self
+                    .log_manager
+                    .produce(logging::Output::StarshipLevel(starship_level))
+                {
                     error!("Unable to set startship log-level: {}", error);
                 }
                 None
@@ -641,11 +665,11 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
                         message: ClientMessage::Doc {
                             url: url.clone(),
                             message: match edit {
-                                DocEdit::Open {version} => DocMessage::Open {
-                                        language_id,
-                                        version,
-                                        text: file.text().to_string(),
-                                    },
+                                DocEdit::Open { version } => DocMessage::Open {
+                                    language_id,
+                                    version,
+                                    text: file.text().to_string(),
+                                },
                                 DocEdit::Save { .. } => DocMessage::Save,
                                 DocEdit::Change {
                                     version,
@@ -697,7 +721,7 @@ pub enum TryIntoProtocolError {
 #[derive(Clone, Debug)]
 pub(crate) enum DocEdit {
     /// Opens a document.
-    Open{
+    Open {
         /// The version of the document.
         version: i64,
     },

@@ -18,7 +18,9 @@ pub use io::Arguments;
 
 use {
     app::Processor,
-    io::{CreateInterfaceError, ConsumeInputError, ConsumeInputIssue, Interface, ProduceOutputError},
+    io::{
+        ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
+    },
     market::{Consumer, Producer},
     thiserror::Error,
 };

@@ -1,9 +1,17 @@
 //! Handles filesystem operations.
 use {
-    core::{convert::{TryInto, TryFrom}, fmt::{self, Display}},
     crate::io::LanguageId,
-    market::{Consumer, ClosedMarketError, Producer, UnlimitedQueue},
-    std::{io::{self, ErrorKind}, ffi::OsStr, fs, path::{Path, PathBuf}},
+    core::{
+        convert::{TryFrom, TryInto},
+        fmt::{self, Display},
+    },
+    market::{ClosedMarketError, Consumer, Producer, UnlimitedQueue},
+    std::{
+        ffi::OsStr,
+        fs,
+        io::{self, ErrorKind},
+        path::{Path, PathBuf},
+    },
     thiserror::Error,
     url::Url,
 };
@@ -92,7 +100,7 @@ impl TryFrom<PathBuf> for PathUrl {
     }
 }
 
-/// An error 
+/// An error
 #[derive(Clone, Copy, Debug)]
 pub enum CreatePathUrlError {
     /// An error creating the URL.
@@ -135,8 +143,11 @@ impl Producer for FileSystem {
 
     fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         Ok(match good {
-            Self::Good::Read{url} => self.files_to_read.produce(url).map(|result| result.map(|url| Self::Good::Read{url}))?,
-            Self::Good::Write{url, text} => fs::write(&url, text).map(|_| None)?,
+            Self::Good::Read { url } => self
+                .files_to_read
+                .produce(url)
+                .map(|result| result.map(|url| Self::Good::Read { url }))?,
+            Self::Good::Write { url, text } => fs::write(&url, text).map(|_| None)?,
         })
     }
 }
@@ -190,9 +201,13 @@ impl File {
         if let Some(start_index) = if start_line == 0 {
             Some(0)
         } else {
-            newline_indices.nth(start_line.saturating_sub(1)).map(|index| index.0.saturating_add(1))
+            newline_indices
+                .nth(start_line.saturating_sub(1))
+                .map(|index| index.0.saturating_add(1))
         } {
-            if let Some((end_index, ..)) = newline_indices.nth(end_line.saturating_sub(start_line.saturating_add(1))) {
+            if let Some((end_index, ..)) =
+                newline_indices.nth(end_line.saturating_sub(start_line.saturating_add(1)))
+            {
                 let _ = self.text.drain(start_index..=end_index);
             }
         }

@@ -626,13 +626,9 @@ impl Printer {
     }
 
     /// Prints `rows` with `context`.
-    fn print_rows<'a, T>(
-        &'a mut self,
-        rows: T,
-        context: Context,
-    ) -> Result<(), ErrorKind>
+    fn print_rows<'a, T>(&'a mut self, rows: T, context: Context) -> Result<(), ErrorKind>
     where
-        T: Iterator<Item=Row<'a>>
+        T: Iterator<Item = Row<'a>>,
     {
         for (index, row) in (0..).zip(rows) {
             self.print_row(index, row, &context)?;
@@ -777,10 +773,8 @@ impl<'a> Iterator for Rows<'a> {
                 self.index = 0;
 
                 line_text.get(start..)
-            }.map(|text| Row {
-                line,
-                text,
-            });
+            }
+            .map(|text| Row { line, text });
 
             self.row = self.row.saturating_add(1);
             row
