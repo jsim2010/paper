@@ -2,9 +2,10 @@
 use {
     crate::io::{
         config::Setting,
+        fs::File,
         lsp::{ClientMessage, ServerMessage, ToolMessage},
-        ui::{self, Key},
-        Input, PathUrl,
+        ui::{BodySize, Key, UserAction},
+        Input,
     },
     core::fmt::{self, Debug},
     enum_map::{enum_map, Enum, EnumMap},
@@ -18,7 +19,7 @@ pub(crate) enum Operation {
     /// Sends message to language server.
     SendLsp(ToolMessage<ClientMessage>),
     /// Resizes the user interface.
-    Size(ui::BodySize),
+    Size(BodySize),
     /// Resets the application.
     Reset,
     /// Confirms that the action is desired.
@@ -39,10 +40,8 @@ pub(crate) enum Operation {
     Document(DocOp),
     /// Opens a file.
     OpenDoc {
-        /// The URL of the file.
-        url: PathUrl,
-        /// The text of the file.
-        text: String,
+        /// The file.
+        file: File,
     },
 }
 
@@ -168,8 +167,8 @@ impl Interpreter {
         let mut output = Output::new();
 
         match input {
-            Input::File { url, text } => {
-                output.add_op(Operation::OpenDoc { url, text });
+            Input::File(file) => {
+                output.add_op(Operation::OpenDoc { file });
             }
             Input::Glitch(glitch) => {
                 output.add_op(Operation::Alert(ShowMessageParams {
@@ -196,11 +195,10 @@ impl Interpreter {
                 }
             }
             Input::User(user_input) => {
-                #[allow(clippy::indexing_slicing)]
-                {
-                    // EnumMap guarantees indexing will not panic.
-                    output = self.map[self.mode].decode(user_input);
-                }
+                #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is in bounds.
+                let mode_interpreter = self.map[self.mode];
+
+                output = mode_interpreter.decode(user_input);
             }
         }
 
@@ -236,7 +234,6 @@ impl Default for Interpreter {
 }
 
 /// Signifies the mode of the application.
-#[allow(clippy::unreachable)] // unreachable added by derive(Enum).
 #[derive(Copy, Clone, Debug, Enum, Eq, ParseDisplay, PartialEq, Hash)]
 #[display(style = "CamelCase")]
 enum Mode {
@@ -292,7 +289,7 @@ impl Output {
 /// Defines the functionality to convert [`Input`] to [`Output`].
 trait ModeInterpreter: Debug {
     /// Converts `input` to [`Operation`]s.
-    fn decode(&self, input: ui::Input) -> Output;
+    fn decode(&self, input: UserAction) -> Output;
 }
 
 /// The [`ModeInterpreter`] for [`Mode::View`].
@@ -371,17 +368,17 @@ impl ViewInterpreter {
 }
 
 impl ModeInterpreter for ViewInterpreter {
-    fn decode(&self, input: ui::Input) -> Output {
+    fn decode(&self, input: UserAction) -> Output {
         let mut output = Output::new();
 
         match input {
-            ui::Input::Key { key, .. } => {
+            UserAction::Key { key, .. } => {
                 Self::decode_key(key, &mut output);
             }
-            ui::Input::Resize(size) => {
+            UserAction::Resize(size) => {
                 output.add_op(Operation::Size(size));
             }
-            ui::Input::Mouse => {}
+            UserAction::Mouse => {}
         }
 
         output
@@ -400,17 +397,17 @@ impl ConfirmInterpreter {
 }
 
 impl ModeInterpreter for ConfirmInterpreter {
-    fn decode(&self, input: ui::Input) -> Output {
+    fn decode(&self, input: UserAction) -> Output {
         let mut output = Output::new();
 
         match input {
-            ui::Input::Key {
+            UserAction::Key {
                 key: Key::Char('y'),
                 ..
             } => {
                 output.add_op(Operation::Quit);
             }
-            ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {
+            UserAction::Key { .. } | UserAction::Mouse | UserAction::Resize { .. } => {
                 output.reset();
             }
         }
@@ -431,25 +428,25 @@ impl CollectInterpreter {
 }
 
 impl ModeInterpreter for CollectInterpreter {
-    fn decode(&self, input: ui::Input) -> Output {
+    fn decode(&self, input: UserAction) -> Output {
         let mut output = Output::new();
 
         match input {
-            ui::Input::Key { key: Key::Esc, .. } => {
+            UserAction::Key { key: Key::Esc, .. } => {
                 output.reset();
             }
-            ui::Input::Key {
+            UserAction::Key {
                 key: Key::Enter, ..
             } => {
                 output.add_op(Operation::Execute);
                 output.set_mode(Mode::View);
             }
-            ui::Input::Key {
+            UserAction::Key {
                 key: Key::Char(c), ..
             } => {
                 output.add_op(Operation::Collect(c));
             }
-            ui::Input::Key { .. } | ui::Input::Mouse | ui::Input::Resize { .. } => {}
+            UserAction::Key { .. } | UserAction::Mouse | UserAction::Resize { .. } => {}
         }
 
         output
@@ -503,7 +500,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('w'),
                     modifiers: Modifiers::CONTROL,
                 })),
@@ -518,7 +515,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('o'),
                     modifiers: Modifiers::CONTROL,
                 })),
@@ -533,7 +530,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('s'),
                     modifiers: Modifiers::CONTROL,
                 })),
@@ -548,7 +545,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('j'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -566,7 +563,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('k'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -584,7 +581,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('J'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -602,7 +599,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('K'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -620,7 +617,7 @@ mod test {
             let mut int = view_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('d'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -646,7 +643,7 @@ mod test {
             let mut int = confirm_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('y'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -660,7 +657,7 @@ mod test {
             let mut int = confirm_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('n'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -671,7 +668,7 @@ mod test {
             int = confirm_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('1'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -698,7 +695,7 @@ mod test {
             let mut int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Esc,
                     modifiers: Modifiers::empty(),
                 })),
@@ -713,7 +710,7 @@ mod test {
             let mut int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('a'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -724,7 +721,7 @@ mod test {
             int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('.'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -735,7 +732,7 @@ mod test {
             int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Char('1'),
                     modifiers: Modifiers::empty(),
                 })),
@@ -750,7 +747,7 @@ mod test {
             let mut int = collect_mode();
 
             assert_eq!(
-                int.translate(Input::User(ui::Input::Key {
+                int.translate(Input::User(UserAction::Key {
                     key: Key::Enter,
                     modifiers: Modifiers::empty(),
                 })),

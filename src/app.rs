@@ -5,8 +5,9 @@ use {
     // TODO: Move everything out of ui.
     crate::io::{
         config::Setting,
+        fs::File,
         ui::{BodySize, Selection},
-        DocEdit, Input, Output, PathUrl,
+        DocEdit, Input, Output,
     },
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
@@ -103,8 +104,8 @@ impl Processor {
 
                 outputs.push(Output::Quit);
             }
-            Operation::OpenDoc { url, text } => {
-                outputs.append(&mut self.pane.open_doc(url, text));
+            Operation::OpenDoc { file } => {
+                outputs.append(&mut self.pane.open_doc(file));
             }
             Operation::SendLsp(message) => {
                 outputs.push(Output::SendLsp(message));
@@ -175,33 +176,26 @@ impl Pane {
     }
 
     /// Opens a document at `path`.
-    fn open_doc(&mut self, url: PathUrl, text: String) -> Vec<Output> {
+    fn open_doc(&mut self, file: File) -> Vec<Output> {
         let mut outputs = Vec::new();
-        let doc = self.create_doc(url, text);
-        if let Some(old_doc) = self.doc.replace(doc) {
+        let doc = self.create_doc(file.clone());
+        if let Some(old_doc) = self.doc.take() {
             outputs.push(old_doc.close());
         }
 
-        #[allow(clippy::option_expect_used)] // Replace guarantees that self.doc is Some.
-        outputs.push(
-            self.doc
-                .as_ref()
-                .map(|doc| Output::EditDoc {
-                    url: doc.path.clone(),
-                    edit: Box::new(DocEdit::Open {
-                        url: doc.path.clone(),
-                        version: doc.version,
-                        text: doc.text.clone(),
-                    }),
-                })
-                .expect("retrieving `Document` in `Pane`"),
-        );
+        outputs.push(Output::EditDoc {
+            file,
+            edit: DocEdit::Open {
+                version: doc.version,
+            },
+        });
+        self.doc = Some(doc);
         outputs
     }
 
     /// Creates a [`Document`] from `path`.
-    fn create_doc(&mut self, url: PathUrl, text: String) -> Document {
-        Document::new(url, text, &self.scroll_amount)
+    fn create_doc(&mut self, file: File) -> Document {
+        Document::new(file, &self.scroll_amount)
     }
 
     /// Updates the size of `self` to match `size`;
@@ -221,30 +215,27 @@ impl Pane {
 /// A file and the user's current interactions with it.
 #[derive(Debug)]
 struct Document {
-    /// The path of the document.
-    path: PathUrl,
-    /// The text of the document.
-    text: String,
+    /// The file of the document.
+    file: File,
     /// The current user selection.
     selection: Selection,
     /// The number of lines that a scroll will move.
     scroll_amount: Rc<RefCell<Amount>>,
-    /// The version of the text.
+    /// The version of the document.
     version: i64,
 }
 
 impl Document {
     /// Creates a new [`Document`].
-    fn new(path: PathUrl, text: String, scroll_amount: &Rc<RefCell<Amount>>) -> Self {
+    fn new(file: File, scroll_amount: &Rc<RefCell<Amount>>) -> Self {
         let mut selection = Selection::default();
 
-        if !text.is_empty() {
+        if !file.is_empty() {
             selection.init();
         }
 
         Self {
-            path,
-            text,
+            file,
             selection,
             scroll_amount: Rc::clone(scroll_amount),
             version: 0,
@@ -254,47 +245,29 @@ impl Document {
     /// Saves the document.
     fn save(&self) -> Output {
         Output::EditDoc {
-            url: self.path.clone(),
-            edit: Box::new(DocEdit::Save {
-                text: self.text.clone(),
-            }),
+            file: self.file.clone(),
+            edit: DocEdit::Save,
         }
     }
 
     /// Deletes the text of the [`Selection`].
     fn delete_selection(&mut self) -> Output {
-        let mut newline_indices = self.text.match_indices('\n');
-        let start_line = self.selection.start_line();
-        if let Some(start_index) = if start_line == 0 {
-            Some(0)
-        } else {
-            newline_indices
-                .nth(start_line.saturating_sub(1))
-                .map(|index| index.0.saturating_add(1))
-        } {
-            if let Some((end_index, ..)) = newline_indices.nth(
-                self.selection
-                    .end_line()
-                    .saturating_sub(start_line.saturating_add(1)),
-            ) {
-                let _ = self.text.drain(start_index..=end_index);
-            }
-        }
+        self.file
+            .delete_selection(self.selection.start_line(), self.selection.end_line());
         self.version = self.version.wrapping_add(1);
         Output::EditDoc {
-            url: self.path.clone(),
-            edit: Box::new(DocEdit::Change {
+            file: self.file.clone(),
+            edit: DocEdit::Change {
                 new_text: String::new(),
                 selection: self.selection,
                 version: self.version,
-                text: self.text.clone(),
-            }),
+            },
         }
     }
 
     /// Returns the number of lines in `self`.
     fn line_count(&self) -> usize {
-        self.text.lines().count()
+        self.file.line_count()
     }
 
     /// Moves the [`Selection`] as described by [`Vector`].
@@ -320,8 +293,8 @@ impl Document {
     /// Returns the output to close `self`.
     fn close(self) -> Output {
         Output::EditDoc {
-            url: self.path,
-            edit: Box::new(DocEdit::Close),
+            file: self.file,
+            edit: DocEdit::Close,
         }
     }
 }

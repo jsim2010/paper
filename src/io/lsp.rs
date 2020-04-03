@@ -299,7 +299,7 @@ impl Producer for LanguageClient {
 
     fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         if let Some(message) = match &good {
-            ClientMessage::Doc { url, message } => match message.as_ref() {
+            ClientMessage::Doc { url, message } => match message {
                 DocMessage::Open { .. } | DocMessage::Close => {
                     if self.settings.get().notify_open_close {
                         Some(good.clone().try_into().map_err(Self::Error::from)?)
@@ -320,8 +320,6 @@ impl Producer for LanguageClient {
                     range,
                     new_text,
                 } => {
-                    let uri: &Url = url.as_ref();
-
                     if let Some(content_changes) = match self.settings.get().notify_changes_kind {
                         TextDocumentSyncKind::None => None,
                         TextDocumentSyncKind::Full => Some(vec![TextDocumentContentChangeEvent {
@@ -340,7 +338,7 @@ impl Producer for LanguageClient {
                         Some(Message::notification::<DidChangeTextDocument>(
                             DidChangeTextDocumentParams {
                                 text_document: VersionedTextDocumentIdentifier::new(
-                                    uri.clone(),
+                                    url.clone(),
                                     *version,
                                 ),
                                 content_changes,
@@ -422,7 +420,7 @@ impl LanguageTool {
     }
 
     /// Returns the langauge identifiers supported by `self`.
-    pub(crate) fn language_ids<'a>(&'a self) -> impl Iterator<Item = LanguageId> + 'a {
+    pub(crate) fn language_ids(&self) -> impl Iterator<Item = LanguageId> + '_ {
         self.clients.iter().map(|(language_id, _)| language_id)
     }
 }
@@ -455,12 +453,10 @@ impl Producer for LanguageTool {
     type Error = ProduceProtocolError;
 
     fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
-        let g = good.clone();
-
-        #[allow(clippy::indexing_slicing)] // enum_map ensures indexing will not fail.
-        Ok(self.clients[g.language_id]
+        #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is in bounds.
+        Ok(self.clients[good.language_id]
             .borrow()
-            .produce(g.message)?
+            .produce(good.message.clone())?
             .map(|_| good))
     }
 }
@@ -500,9 +496,9 @@ pub(crate) enum ClientMessage {
     /// Configures a document.
     Doc {
         /// The URL of the doc.
-        url: PathUrl,
+        url: Url,
         /// The message.
-        message: Box<DocMessage>,
+        message: DocMessage,
     },
     /// Registers a capability.
     RegisterCapability {
@@ -516,33 +512,28 @@ impl TryFrom<ClientMessage> for Message {
 
     fn try_from(value: ClientMessage) -> Result<Self, Self::Error> {
         Ok(match value {
-            ClientMessage::Doc { url, message } => match message.as_ref() {
+            ClientMessage::Doc { url, message } => match message {
                 DocMessage::Open {
                     language_id,
                     version,
                     text,
-                } => {
-                    let uri: &Url = url.as_ref();
-                    Self::notification::<DidOpenTextDocument>(DidOpenTextDocumentParams {
-                        text_document: TextDocumentItem::new(
-                            uri.clone(),
-                            language_id.to_string(),
-                            *version,
-                            text.to_string(),
-                        ),
-                    })?
-                }
+                } => Self::notification::<DidOpenTextDocument>(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem::new(
+                        url,
+                        language_id.to_string(),
+                        version,
+                        text,
+                    ),
+                })?,
                 DocMessage::Save => {
-                    let uri: &Url = url.as_ref();
                     Self::notification::<WillSaveTextDocument>(WillSaveTextDocumentParams {
-                        text_document: TextDocumentIdentifier::new(uri.clone()),
+                        text_document: TextDocumentIdentifier::new(url),
                         reason: TextDocumentSaveReason::Manual,
                     })?
                 }
                 DocMessage::Close => {
-                    let uri: &Url = url.as_ref();
                     Self::notification::<DidCloseTextDocument>(DidCloseTextDocumentParams {
-                        text_document: TextDocumentIdentifier::new(uri.clone()),
+                        text_document: TextDocumentIdentifier::new(url),
                     })?
                 }
                 DocMessage::Change { .. } => {

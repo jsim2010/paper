@@ -173,55 +173,52 @@ impl ComposeFrom<u8> for Message {
         let message = std::str::from_utf8(parts).ok().and_then(|buffer| {
             buffer.find(HEADER_END).and_then(|header_length| {
                 let mut content_length: Option<usize> = None;
-                #[allow(clippy::indexing_slicing)]
-                // The range is determined by the previous `find()`.
-                let header = &buffer[..header_length];
-                #[allow(clippy::integer_arithmetic)]
-                // This returns the end of the previous `find()`.
-                let content_start = header_length + HEADER_END.len();
 
-                for field in header.split("\r\n") {
-                    let mut items = field.split(": ");
+                buffer.get(..header_length).and_then(|header| {
+                    let content_start = header_length.saturating_add(HEADER_END.len());
 
-                    if items.next() == Some(HEADER_CONTENT_LENGTH) {
-                        if let Some(content_length_str) = items.next() {
-                            if let Ok(value) = content_length_str.parse() {
-                                content_length = Some(value);
+                    for field in header.split("\r\n") {
+                        let mut items = field.split(": ");
+
+                        if items.next() == Some(HEADER_CONTENT_LENGTH) {
+                            if let Some(content_length_str) = items.next() {
+                                if let Ok(value) = content_length_str.parse() {
+                                    content_length = Some(value);
+                                }
                             }
+
+                            break;
                         }
-
-                        break;
                     }
-                }
 
-                match content_length {
-                    None => {
-                        length = header_length;
-                        None
-                    }
-                    Some(content_length) => {
-                        if let Some(total_len) = content_start.checked_add(content_length) {
-                            if parts.len() < total_len {
-                                None
-                            } else if let Some(content) = buffer.get(content_start..total_len) {
-                                length = total_len;
-                                serde_json::from_str(content).ok()
+                    match content_length {
+                        None => {
+                            length = header_length;
+                            None
+                        }
+                        Some(content_length) => {
+                            if let Some(total_len) = content_start.checked_add(content_length) {
+                                if parts.len() < total_len {
+                                    None
+                                } else if let Some(content) = buffer.get(content_start..total_len) {
+                                    length = total_len;
+                                    serde_json::from_str(content).ok()
+                                } else {
+                                    length = content_start;
+                                    None
+                                }
                             } else {
                                 length = content_start;
                                 None
                             }
-                        } else {
-                            length = content_start;
-                            None
                         }
                     }
-                }
+                })
             })
         });
 
-        #[allow(unused_results)]
+        #[allow(unused_results)] // No intent to use drained elements.
         {
-            // Intended to not use drained elements.
             parts.drain(..length);
         }
 
