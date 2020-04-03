@@ -134,10 +134,6 @@ impl Processor {
                         .map_or(EMPTY_SELECTION, |doc| doc.selection),
                 });
             }
-            Setting::StarshipLog(starship_level) => {
-                trace!("updating starship log level to `{}`", starship_level);
-                outputs.push(Output::Log { starship_level });
-            }
         }
 
         outputs

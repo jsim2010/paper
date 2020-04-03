@@ -1,7 +1,7 @@
 //! Implements the logging functionality of `paper`.
 use {
+    crate::io::Arguments,
     log::{trace, LevelFilter, Log, Metadata, Record, SetLoggerError},
-    market::Producer,
     std::{
         fs::File,
         io::{self, Write},
@@ -34,8 +34,8 @@ pub(crate) struct LogManager {
 
 impl LogManager {
     /// Creates a new [`LogManager`].
-    pub(crate) fn new() -> Result<Self, Fault> {
-        let logger = Logger::new()?;
+    pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, Fault> {
+        let logger = Logger::new(arguments)?;
         let config = Arc::clone(logger.config());
 
         log::set_boxed_logger(Box::new(logger))?;
@@ -43,23 +43,6 @@ impl LogManager {
         trace!("Logger initialized");
 
         Ok(Self { config })
-    }
-}
-
-impl Producer for LogManager {
-    type Good = Output;
-    type Error = Fault;
-
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
-        match good {
-            Output::StarshipLevel(level) => {
-                if let Ok(mut config) = self.config.write() {
-                    config.starship_level = level;
-                }
-            }
-        }
-
-        Ok(None)
     }
 }
 
@@ -73,14 +56,14 @@ struct Logger {
 
 impl Logger {
     /// Creates a new [`Logger`].
-    fn new() -> Result<Self, Fault> {
+    fn new(arguments: &Arguments<'_>) -> Result<Self, Fault> {
         let log_filename = "paper.log".to_string();
 
         Ok(Self {
             file: Arc::new(RwLock::new(
                 File::create(&log_filename).map_err(|e| Fault::CreateFile(log_filename, e))?,
             )),
-            config: Arc::new(RwLock::new(Config::new())),
+            config: Arc::new(RwLock::new(Config::new(arguments))),
         })
     }
 
@@ -93,10 +76,14 @@ impl Logger {
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
         if let Ok(config) = self.config.read() {
-            if metadata.target().starts_with("starship") {
-                metadata.level() <= config.starship_level
+            if metadata.level() <= config.level {
+                if metadata.target().starts_with("starship") {
+                    config.is_starship_enabled
+                } else {
+                    true
+                }
             } else {
-                true
+                false
             }
         } else {
             false
@@ -135,21 +122,18 @@ impl Log for Logger {
 /// Implements writing logs to a file.
 #[derive(Debug)]
 struct Config {
-    /// Defines the level at which logs from starship are allowed.
-    starship_level: LevelFilter,
+    /// Defines if logs from starship are written.
+    is_starship_enabled: bool,
+    /// The minimum level of logs to be written.
+    level: LevelFilter,
 }
 
 impl Config {
     /// Creates a new [`Config`].
-    const fn new() -> Self {
+    const fn new(arguments: &Arguments<'_>) -> Self {
         Self {
-            starship_level: LevelFilter::Off,
+            is_starship_enabled: arguments.is_starship_enabled,
+            level: arguments.verbosity,
         }
     }
-}
-
-/// A logging output.
-pub(crate) enum Output {
-    /// The level of the starship module.
-    StarshipLevel(LevelFilter),
 }

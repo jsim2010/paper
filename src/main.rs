@@ -12,7 +12,9 @@ fn main() -> Result<(), Failure> {
 
     Paper::new(
         &(&app_from_crate!()
-            .arg(Arg::with_name("file").help("the file to be viewed"))
+            .arg(Arg::with_name("log").long("log").value_name("COMPONENT").possible_values(&["starship"]).help("Enables logs for components"))
+            .arg(Arg::with_name("file").value_name("FILE").help("The file to be viewed"))
+            .arg(Arg::with_name("verbose").short("v").multiple(true).help("Increases the logging verbosity - can be repeated upto 3 times"))
             .get_matches())
             .into(),
     )?

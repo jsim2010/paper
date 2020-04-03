@@ -40,7 +40,7 @@ use {
 /// A configuration of the initialization of a [`Paper`].
 ///
 /// [`Paper`]: ../struct.Paper.html
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Arguments<'a> {
     /// The file to be viewed.
     ///
@@ -48,6 +48,10 @@ pub struct Arguments<'a> {
     ///
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     pub file: Option<&'a str>,
+    /// The verbosity of the log.
+    pub verbosity: LevelFilter,
+    /// If the starship logs are enabled.
+    pub is_starship_enabled: bool,
 }
 
 impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
@@ -55,6 +59,24 @@ impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
     fn from(value: &'a ArgMatches<'a>) -> Self {
         Self {
             file: value.value_of("file"),
+            verbosity: match value.occurrences_of("verbose") {
+                0 => LevelFilter::Warn,
+                1 => LevelFilter::Info,
+                2 => LevelFilter::Debug,
+                _ => LevelFilter::Trace,
+            },
+            is_starship_enabled: value.value_of("log") == Some("starship"),
+        }
+    }
+}
+
+impl Default for Arguments<'_> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            file: None,
+            verbosity: LevelFilter::Error,
+            is_starship_enabled: false,
         }
     }
 }
@@ -235,7 +257,7 @@ impl Interface {
     /// Creates a new interface.
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         // Create log_manager first as this is where the logger is initialized.
-        let log_manager = LogManager::new()?;
+        let log_manager = LogManager::new(arguments)?;
         let root_dir =
             PathUrl::try_from(env::current_dir()?).map_err(|_| CreateInterfaceError::Url)?;
 
@@ -483,15 +505,6 @@ impl Producer for Interface {
                 .produce(ui::Output::Reset { selection })?,
             Output::Resize { size } => self.user_interface.produce(ui::Output::Resize { size })?,
             Output::Write { ch } => self.user_interface.produce(ui::Output::Write { ch })?,
-            Output::Log { starship_level } => {
-                if let Err(error) = self
-                    .log_manager
-                    .produce(logging::Output::StarshipLevel(starship_level))
-                {
-                    error!("Unable to set startship log-level: {}", error);
-                }
-                None
-            }
             Output::Quit => {
                 self.has_quit.store(true, Ordering::Relaxed);
                 None
@@ -643,11 +656,6 @@ pub(crate) enum Output {
     },
     /// Quit the application.
     Quit,
-    /// Configure the logger.
-    Log {
-        /// The level for starship logs.
-        starship_level: LevelFilter,
-    },
 }
 
 impl TryFrom<Output> for ToolMessage<ClientMessage> {
@@ -700,8 +708,7 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
             | Output::Reset { .. }
             | Output::Resize { .. }
             | Output::Write { .. }
-            | Output::Quit
-            | Output::Log { .. } => Err(TryIntoProtocolError::InvalidOutput),
+            | Output::Quit => Err(TryIntoProtocolError::InvalidOutput),
         }
     }
 }
