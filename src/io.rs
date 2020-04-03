@@ -15,8 +15,8 @@ use {
     },
     enum_map::Enum,
     fs::{ConsumeFileError, File, FileCommand, FileSystem, PathUrl},
-    log::{error, LevelFilter},
-    logging::LogManager,
+    log::error,
+    logging::Config,
     lsp::{
         ClientMessage, CreateLangClientError, DocMessage, Fault, LanguageTool,
         SendNotificationError, ServerMessage, ToolMessage,
@@ -48,10 +48,8 @@ pub struct Arguments<'a> {
     ///
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     pub file: Option<&'a str>,
-    /// The verbosity of the log.
-    pub verbosity: LevelFilter,
-    /// If the starship logs are enabled.
-    pub is_starship_enabled: bool,
+    /// The configuration of the logger.
+    pub log_config: Config,
 }
 
 impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
@@ -59,13 +57,7 @@ impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
     fn from(value: &'a ArgMatches<'a>) -> Self {
         Self {
             file: value.value_of("file"),
-            verbosity: match value.occurrences_of("verbose") {
-                0 => LevelFilter::Warn,
-                1 => LevelFilter::Info,
-                2 => LevelFilter::Debug,
-                _ => LevelFilter::Trace,
-            },
-            is_starship_enabled: value.value_of("log") == Some("starship"),
+            log_config: Config::from(value),
         }
     }
 }
@@ -75,8 +67,7 @@ impl Default for Arguments<'_> {
     fn default() -> Self {
         Self {
             file: None,
-            verbosity: LevelFilter::Error,
-            is_starship_enabled: false,
+            log_config: Config::default(),
         }
     }
 }
@@ -245,8 +236,6 @@ pub(crate) struct Interface {
     language_tool: LanguageTool,
     /// The root directory of the application.
     root_dir: PathUrl,
-    /// The configuration of the logger.
-    log_manager: LogManager,
     /// The interface with the file system.
     file_system: FileSystem,
     /// The application has quit.
@@ -256,13 +245,12 @@ pub(crate) struct Interface {
 impl Interface {
     /// Creates a new interface.
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
-        // Create log_manager first as this is where the logger is initialized.
-        let log_manager = LogManager::new(arguments)?;
+        // Create logger as early as possible.
+        logging::init(arguments.log_config)?;
         let root_dir =
             PathUrl::try_from(env::current_dir()?).map_err(|_| CreateInterfaceError::Url)?;
 
         let interface = Self {
-            log_manager,
             setting_consumer: SettingConsumer::new(
                 &dirs::home_dir()
                     .ok_or(CreateInterfaceError::HomeDir)?
