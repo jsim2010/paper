@@ -14,7 +14,7 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     enum_map::Enum,
-    fs::{ConsumeFileError, File, FileCommand, FileSystem, PathUrl},
+    fs::{ConsumeFileError, File, FileCommand, FileSystem, Purl},
     log::error,
     logging::Config,
     lsp::{
@@ -235,7 +235,7 @@ pub(crate) struct Interface {
     /// The interface of the application with all language servers.
     language_tool: LanguageTool,
     /// The root directory of the application.
-    root_dir: PathUrl,
+    root_dir: Purl,
     /// The interface with the file system.
     file_system: FileSystem,
     /// The application has quit.
@@ -248,7 +248,7 @@ impl Interface {
         // Create logger as early as possible.
         logging::init(arguments.log_config)?;
         let root_dir =
-            PathUrl::try_from(env::current_dir()?).map_err(|_| CreateInterfaceError::Url)?;
+            Purl::try_from(env::current_dir()?).map_err(|_| CreateInterfaceError::Url)?;
 
         let interface = Self {
             setting_consumer: SettingConsumer::new(
@@ -499,7 +499,6 @@ impl Producer for Interface {
             }
         };
 
-        error!("io: {:?} -> {:?}", output, result);
         Ok(result.map(|_| output))
     }
 }

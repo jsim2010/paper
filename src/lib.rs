@@ -21,6 +21,7 @@ use {
     io::{
         ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
     },
+    log::{error, info},
     market::{Consumer, Producer},
     thiserror::Error,
 };
@@ -76,11 +77,14 @@ impl Paper {
         loop {
             match self.io.demand() {
                 Ok(input) => self.io.force_all(self.processor.process(input))?,
-                Err(ConsumeInputIssue::Quit) => {
-                    break;
-                }
-                Err(ConsumeInputIssue::Error(error)) => {
-                    result = Err(error.into());
+                Err(demand_error) => {
+                    if let ConsumeInputIssue::Error(error) = demand_error {
+                        error!("Encountered error: {}", error);
+                        result = Err(error.into());
+                    } else {
+                        info!("Application quitting");
+                    }
+
                     break;
                 }
             }

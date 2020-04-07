@@ -1,7 +1,8 @@
 //! Implements language server utilities.
 use {
+    core::fmt::{self, Display},
     jsonrpc_core::{Id, Value, Version},
-    log::{error, trace},
+    log::error,
     lsp_types::{notification::Notification, request::Request},
     market::{ComposeFrom, StripFrom},
     serde::{Deserialize, Serialize},
@@ -226,11 +227,16 @@ impl ComposeFrom<u8> for Message {
     }
 }
 
+impl Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LSP {}", self.object)
+    }
+}
+
 impl StripFrom<Message> for u8 {
     #[inline]
     fn strip_from(good: &Message) -> Vec<Self> {
         serde_json::to_string(good).map_or(Vec::new(), |content| {
-            trace!("write content: {}", content);
             format!(
                 "{}: {}\r\n\r\n{}",
                 HEADER_CONTENT_LENGTH,
@@ -309,12 +315,33 @@ impl Object {
     }
 }
 
+impl Display for Object {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} : {}", match self {
+            Self::Request { id: Some(_), ..} => "Request",
+            Self::Request { ..} => "Notification",
+            Self::Response {..} => "Response",
+        }, match self {
+            Self::Request { method, params, .. } => format!("{} w/ {}", method, params),
+            Self::Response { outcome, .. } => outcome.to_string(),
+        })
+    }
+}
+
 /// The outcome of the response.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Outcome {
     /// The result was successful.
     Result(Value),
+}
+
+impl Display for Outcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Result(value) => write!(f, "Success {}", value),
+        }
+    }
 }
 
 /// Processes output from stderr.

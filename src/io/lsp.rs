@@ -4,14 +4,14 @@ pub(crate) mod utils;
 pub(crate) use utils::SendNotificationError;
 
 use {
-    crate::io::{LanguageId, PathUrl},
+    crate::io::{LanguageId, Purl},
     core::{
         cell::{Cell, RefCell},
         convert::{TryFrom, TryInto},
     },
     enum_map::{enum_map, EnumMap},
     jsonrpc_core::Id,
-    log::warn,
+    log::{warn, trace},
     lsp_types::{
         notification::{
             DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
@@ -254,7 +254,7 @@ impl Consumer for LanguageClient {
 
     fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
         if let Some(message) = self.reader.consume()? {
-            warn!("message: {:?}", message);
+            trace!("Received LSP message: {}", message);
             match message {
                 Message {
                     object:
@@ -276,13 +276,11 @@ impl Consumer for LanguageClient {
                 } => {
                     if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
                         self.settings.set(LspSettings::from(result));
-                        warn!("Settings: {:?}", self.settings);
                         return Ok(Some(ServerMessage::Initialize));
-                    } else if serde_json::from_value::<()>(value).is_ok() {
-                        warn!("Shutdown result");
+                    } else if serde_json::from_value::<()>(value.clone()).is_ok() {
                         return Ok(Some(ServerMessage::Shutdown));
                     } else {
-                        warn!("Received unknown message from language client");
+                        warn!("Received unknown response outcome from language client: {}", value);
                     }
                 }
                 _ => {}
@@ -359,6 +357,7 @@ impl Producer for LanguageClient {
                 Some(self.request::<Shutdown>(()).map_err(Self::Error::from)?)
             }
         } {
+            trace!("Sending LSP message: {}", message);
             Ok(self.writer.produce(message)?.map(|_| good))
         } else {
             Ok(None)
@@ -406,7 +405,7 @@ pub(crate) struct LanguageTool {
 
 impl LanguageTool {
     /// Creates a new [`LanguageTool`].
-    pub(crate) fn new(root_dir: &PathUrl) -> Result<Self, CreateLanguageToolError> {
+    pub(crate) fn new(root_dir: &Purl) -> Result<Self, CreateLanguageToolError> {
         let rust_server = Rc::new(RefCell::new(LanguageClient::new(
             LanguageId::Rust,
             &root_dir,

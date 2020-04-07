@@ -16,16 +16,16 @@ use {
     url::Url,
 };
 
-/// A URL of a path.
+/// A **P**ath **URL** - a path and its appropriate URL.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PathUrl {
+pub(crate) struct Purl {
     /// The path.
     path: PathBuf,
     /// The URL of `path`.
     url: Url,
 }
 
-impl PathUrl {
+impl Purl {
     /// Appends `child` to `self`.
     pub(crate) fn join(&self, child: &str) -> Result<Self, CreatePathUrlError> {
         let mut path = self.path.clone();
@@ -46,7 +46,7 @@ impl PathUrl {
     }
 }
 
-impl AsRef<OsStr> for PathUrl {
+impl AsRef<OsStr> for Purl {
     #[inline]
     #[must_use]
     fn as_ref(&self) -> &OsStr {
@@ -54,7 +54,7 @@ impl AsRef<OsStr> for PathUrl {
     }
 }
 
-impl AsRef<Path> for PathUrl {
+impl AsRef<Path> for Purl {
     #[inline]
     #[must_use]
     fn as_ref(&self) -> &Path {
@@ -62,7 +62,7 @@ impl AsRef<Path> for PathUrl {
     }
 }
 
-impl AsRef<Url> for PathUrl {
+impl AsRef<Url> for Purl {
     #[inline]
     #[must_use]
     fn as_ref(&self) -> &Url {
@@ -70,14 +70,14 @@ impl AsRef<Url> for PathUrl {
     }
 }
 
-impl Display for PathUrl {
+impl Display for Purl {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.url)
     }
 }
 
-impl TryFrom<PathBuf> for PathUrl {
+impl TryFrom<PathBuf> for Purl {
     type Error = CreatePathUrlError;
 
     #[inline]
@@ -113,7 +113,7 @@ pub enum CreatePathUrlError {
 #[derive(Debug, Default)]
 pub(crate) struct FileSystem {
     /// Queue of URLs to read.
-    files_to_read: UnlimitedQueue<PathUrl>,
+    files_to_read: UnlimitedQueue<Purl>,
 }
 
 impl Consumer for FileSystem {
@@ -168,12 +168,12 @@ pub(crate) enum FileCommand {
     /// Reads from the file at `url`.
     Read {
         /// The URL of the file to be read.
-        url: PathUrl,
+        url: Purl,
     },
     /// Writes `text` to the file at `url`.
     Write {
         /// The URL of the file to be written.
-        url: PathUrl,
+        url: Purl,
         /// The text to be written.
         text: String,
     },
@@ -183,7 +183,7 @@ pub(crate) enum FileCommand {
 #[derive(Clone, Debug, PartialEq)]
 pub struct File {
     /// The URL of the file.
-    url: PathUrl,
+    url: Purl,
     /// The text of a file.
     text: String,
 }
@@ -224,7 +224,7 @@ impl File {
     }
 
     /// Returns a reference to the URL of `self`.
-    pub(crate) const fn url(&self) -> &PathUrl {
+    pub(crate) const fn url(&self) -> &Purl {
         &self.url
     }
 

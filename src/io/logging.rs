@@ -1,7 +1,7 @@
 //! Implements the logging functionality of `paper`.
 use {
     clap::ArgMatches,
-    log::{trace, LevelFilter, Log, Metadata, Record, SetLoggerError},
+    log::{info, LevelFilter, Log, Metadata, Record, SetLoggerError},
     std::{
         fs::File,
         io::{self, Write},
@@ -20,9 +20,6 @@ pub enum Fault {
     /// An error while creating the log file.
     #[error("while creating log file `{0}`: {1}")]
     CreateFile(String, #[source] io::Error),
-    /// Failed to lock the logger.
-    #[error("unable to lock logger")]
-    Lock,
 }
 
 /// Creates a new logger.
@@ -31,7 +28,7 @@ pub(crate) fn init(config: Config) -> Result<(), Fault> {
 
     log::set_boxed_logger(Box::new(logger))?;
     log::set_max_level(config.level);
-    trace!("Logger initialized");
+    info!("Logger initialized");
     Ok(())
 }
 
@@ -69,9 +66,8 @@ impl Log for Logger {
     fn log(&self, record: &Record<'_>) {
         if self.enabled(record.metadata()) {
             if let Ok(mut file) = self.file.write() {
-                #[allow(unused_must_use)]
+                #[allow(unused_must_use)] // Log::log() does not propagate error.
                 {
-                    // log() definition does not allow propagating error.
                     writeln!(
                         file,
                         "{} [{}]: {}",
@@ -86,9 +82,8 @@ impl Log for Logger {
 
     fn flush(&self) {
         if let Ok(mut file) = self.file.write() {
-            #[allow(unused_must_use)]
+            #[allow(unused_must_use)] // Log::flush() does not propagate error.
             {
-                // flush() definition does not allow propagating error.
                 file.flush();
             }
         }

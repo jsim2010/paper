@@ -46,7 +46,7 @@ impl Processor {
         }
     }
 
-    /// Performs `operation` and returns the appropriate [`Display`]s.
+    /// Performs `operation` and returns the appropriate [`Output`]s.
     pub(crate) fn operate(&mut self, operation: Operation) -> Vec<Output> {
         let mut outputs = Vec::new();
         // Retrieve here to avoid error. This will not work once changes start modifying the working dir.
@@ -55,7 +55,6 @@ impl Processor {
                 outputs.append(&mut self.update_setting(setting));
             }
             Operation::Size(size) => {
-                trace!("resize {:?}", size);
                 outputs.push(self.pane.update_size(size));
             }
             Operation::Confirm(action) => {
@@ -113,7 +112,7 @@ impl Processor {
         };
 
         outputs.push(Output::UpdateHeader);
-        trace!("output {:?}", outputs);
+        trace!("outputs: {:?}", outputs);
 
         outputs
     }
@@ -124,7 +123,6 @@ impl Processor {
 
         match setting {
             Setting::Wrap(is_wrapped) => {
-                trace!("setting wrap to `{}`", is_wrapped);
                 outputs.push(Output::Wrap {
                     is_wrapped,
                     selection: self

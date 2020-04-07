@@ -32,7 +32,7 @@ use {
         style::{Color, Print, ResetColor, SetBackgroundColor},
         terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     },
-    log::{error, warn},
+    log::warn,
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
     market::{Consumer, Producer},
     std::{
@@ -150,8 +150,8 @@ impl Debug for Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        if execute!(self.out.borrow_mut(), LeaveAlternateScreen).is_err() {
-            warn!("Failed to leave alternate screen");
+        if let Err(error) = execute!(self.out.borrow_mut(), LeaveAlternateScreen) {
+            warn!("Failed to leave alternate screen: {}", error);
         }
     }
 }
@@ -473,9 +473,7 @@ impl Body {
             }
         }
 
-        error!("size: {}, rows: {:?}", self.size.rows, visible_rows);
         for row in rows {
-            error!("front: {:?}, top: {}", visible_rows.front(), self.top_line);
             if visible_rows.front().map(|r| r.line) != Some(self.top_line) {
                 let _ = visible_rows.pop_front();
                 visible_rows.push_back(row);
@@ -488,7 +486,6 @@ impl Body {
             }
         }
 
-        error!("visible_rows: {:?}", visible_rows);
         self.printer.print_rows(
             visible_rows.drain(..),
             Context::Document {
