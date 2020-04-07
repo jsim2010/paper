@@ -72,17 +72,26 @@ impl Paper {
     /// [`RunPaperError`]: enum.RunPaperError.html
     #[inline]
     pub fn run(&mut self) -> Result<(), RunPaperError> {
+        let result = self.execute();
+
+        if let Err(error) = &result {
+            error!("Encountered error: {}", error);
+        }
+
+        info!("Application quitting");
+
+        result
+    }
+
+    fn execute(&mut self) -> Result<(), RunPaperError> {
         let mut result = Ok(());
 
         loop {
             match self.io.demand() {
                 Ok(input) => self.io.force_all(self.processor.process(input))?,
-                Err(demand_error) => {
-                    if let ConsumeInputIssue::Error(error) = demand_error {
-                        error!("Encountered error: {}", error);
+                Err(issue) => {
+                    if let ConsumeInputIssue::Error(error) = issue {
                         result = Err(error.into());
-                    } else {
-                        info!("Application quitting");
                     }
 
                     break;
@@ -113,7 +122,7 @@ pub enum CreatePaperError {
     /// An error creating an [`Interface`].
     ///
     /// [`Interface`]: io/struct.Interface.html
-    #[error("failed to create interface: {0}")]
+    #[error("failed to create application: {0}")]
     Interface(#[from] CreateInterfaceError),
 }
 

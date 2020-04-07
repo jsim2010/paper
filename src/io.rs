@@ -16,7 +16,7 @@ use {
     enum_map::Enum,
     fs::{ConsumeFileError, File, FileCommand, FileSystem, Purl},
     log::error,
-    logging::Config,
+    logging::{Config, InitLoggerError},
     lsp::{
         ClientMessage, CreateLangClientError, DocMessage, Fault, LanguageTool,
         SendNotificationError, ServerMessage, ToolMessage,
@@ -79,7 +79,7 @@ impl Default for Arguments<'_> {
 pub enum CreateInterfaceError {
     /// An error while creating the logging configuration.
     #[error("{0}")]
-    CreateLogConfig(#[from] logging::Fault),
+    Logger(#[from] InitLoggerError),
     /// An error determing the root directory.
     #[error("current working directory is invalid: {0}")]
     RootDir(#[from] io::Error),
@@ -135,9 +135,6 @@ pub enum ProduceOutputError {
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),
-    /// An error while configuring the logger.
-    #[error("{0}")]
-    Log(#[from] logging::Fault),
     /// Produce error from ui.
     #[error("{0}")]
     UiProduce(#[from] ProduceTerminalOutputError),

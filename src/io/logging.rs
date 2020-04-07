@@ -11,19 +11,23 @@ use {
     time::OffsetDateTime,
 };
 
-/// An error from which the logging functionality was unable to recover.
+/// An error initializing the logger.
 #[derive(Debug, Error)]
-pub enum Fault {
-    /// A failure to initialize the logger.
-    #[error("while initializing logger: {0}")]
+pub enum InitLoggerError {
+    /// An error creating the log file.
+    #[error("unable to create log file `{file}`: {error}")]
+    CreateFile {
+        file: String,
+        #[source]
+        error: io::Error,
+    },
+    /// An error setting the logger.
+    #[error("unable to set logger: {0}")]
     Init(#[from] SetLoggerError),
-    /// An error while creating the log file.
-    #[error("while creating log file `{0}`: {1}")]
-    CreateFile(String, #[source] io::Error),
 }
 
 /// Creates a new logger.
-pub(crate) fn init(config: Config) -> Result<(), Fault> {
+pub(crate) fn init(config: Config) -> Result<(), InitLoggerError> {
     let logger = Logger::new(config.is_starship_enabled)?;
 
     log::set_boxed_logger(Box::new(logger))?;
@@ -42,12 +46,12 @@ struct Logger {
 
 impl Logger {
     /// Creates a new [`Logger`].
-    fn new(is_starship_enabled: bool) -> Result<Self, Fault> {
+    fn new(is_starship_enabled: bool) -> Result<Self, InitLoggerError> {
         let log_filename = "paper.log".to_string();
 
         Ok(Self {
             file: Arc::new(RwLock::new(
-                File::create(&log_filename).map_err(|e| Fault::CreateFile(log_filename, e))?,
+                File::create(&log_filename).map_err(|error| InitLoggerError::CreateFile { file: log_filename, error})?,
             )),
             is_starship_enabled,
         })
