@@ -14,6 +14,7 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     enum_map::Enum,
+    fehler::throws,
     fs::{ConsumeFileError, CreatePurlError, File, FileCommand, FileError, FileSystem, Purl},
     log::error,
     logging::{Config, InitLoggerError},
@@ -232,7 +233,8 @@ pub(crate) struct Interface {
 
 impl Interface {
     /// Creates a new interface.
-    pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
+    #[throws(CreateInterfaceError)]
+    pub(crate) fn new(arguments: &Arguments<'_>) -> Self {
         // Create logger as early as possible.
         logging::init(arguments.log_config)?;
         let root_dir = Purl::try_from(env::current_dir()?)?;
@@ -254,18 +256,20 @@ impl Interface {
             interface.add_file(file)?;
         }
 
-        Ok(interface)
+        interface
     }
 
     /// Reads the file at `path`.
-    fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
-        Ok(self.file_system.one_shot(FileCommand::Read {
+    #[throws(CreateFileError)]
+    fn add_file(&self, path: &str) {
+        self.file_system.one_shot(FileCommand::Read {
             url: self.root_dir.join(path)?,
-        })?)
+        })?
     }
 
     /// Edits the doc at `url`.
-    fn edit_doc(&self, file: &File, edit: DocEdit) -> Result<(), ProduceOutputError> {
+    #[throws(ProduceOutputError)]
+    fn edit_doc(&self, file: &File, edit: DocEdit) {
         match edit {
             DocEdit::Open { .. } => {
                 self.user_interface.force(ui::Output::OpenDoc {
@@ -301,8 +305,6 @@ impl Interface {
             }
             DocEdit::Close => {}
         }
-
-        Ok(())
     }
 }
 
@@ -317,18 +319,18 @@ impl Consumer for Interface {
             .map_err(ConsumeInputError::from)?
         {
             Ok(Some(Self::Good::from(ui_input)))
-        } else if let Some(lang_input) = self
-            .language_tool
-            .consume()
-            .map_err(ConsumeInputError::from)?
-        {
-            Ok(Some(Self::Good::from(lang_input)))
         } else if let Some(setting) = self
             .setting_consumer
             .consume()
             .map_err(ConsumeInputError::from)?
         {
             Ok(Some(Self::Good::from(setting)))
+        } else if let Some(lang_input) = self
+            .language_tool
+            .consume()
+            .map_err(ConsumeInputError::from)?
+        {
+            Ok(Some(Self::Good::from(lang_input)))
         } else if let Some(file) = self
             .file_system
             .consume()

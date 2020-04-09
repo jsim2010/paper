@@ -18,6 +18,7 @@ pub use io::Arguments;
 
 use {
     app::Processor,
+    fehler::{throw, throws},
     io::{
         ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
     },
@@ -55,12 +56,13 @@ impl Paper {
     ///
     /// [`CreatePaperError`]: enum.CreatePaperError.html
     #[inline]
-    pub fn new(arguments: &Arguments<'_>) -> Result<Self, CreatePaperError> {
-        Ok(Self {
+    #[throws(CreatePaperError)]
+    pub fn new(arguments: &Arguments<'_>) -> Self {
+        Self {
             // Create Interface first to create logger as early as possible.
             io: Interface::new(arguments)?,
             processor: Processor::new(),
-        })
+        }
     }
 
     /// Runs the program and logs the result.
@@ -69,16 +71,14 @@ impl Paper {
     ///
     /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
     #[inline]
-    pub fn run(&mut self) -> Result<(), RunPaperError> {
-        let result = self.execute();
-
-        if let Err(error) = &result {
+    #[throws(RunPaperError)]
+    pub fn run(&mut self) {
+        if let Err(error) = self.execute() {
             error!("Encountered error: {}", error);
+            throw!(error);
         }
 
         info!("Application quitting");
-
-        result
     }
 
     /// Loops through program execution until a failure occurs or the application quits.
@@ -88,23 +88,20 @@ impl Paper {
     /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
     ///
     /// [`RunPaperError`]: enum.RunPaperError.html
-    fn execute(&mut self) -> Result<(), RunPaperError> {
-        let mut result = Ok(());
-
+    #[throws(RunPaperError)]
+    fn execute(&mut self) {
         loop {
             match self.io.demand() {
                 Ok(input) => self.io.force_all(self.processor.process(input))?,
                 Err(issue) => {
                     if let ConsumeInputIssue::Error(error) = issue {
-                        result = Err(error.into());
+                        throw!(error);
                     }
 
                     break;
                 }
             }
         }
-
-        result
     }
 }
 

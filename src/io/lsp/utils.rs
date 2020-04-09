@@ -1,6 +1,7 @@
 //! Implements language server utilities.
 use {
     core::fmt::{self, Display},
+    fehler::throws,
     jsonrpc_core::{Id, Value, Version},
     log::error,
     lsp_types::{notification::Notification, request::Request},
@@ -140,30 +141,33 @@ impl Message {
     }
 
     /// Creates a request [`Message`].
-    pub(crate) fn request<T>(params: T::Params, id: u64) -> Result<Self, SerdeJsonError>
+    #[throws(SerdeJsonError)]
+    pub(crate) fn request<T>(params: T::Params, id: u64) -> Self
     where
         T: Request,
         <T as Request>::Params: Serialize,
     {
-        Object::request::<T>(params, Id::Num(id)).map(Self::new)
+        Object::request::<T>(params, Id::Num(id)).map(Self::new)?
     }
 
     /// Creates a notification [`Message`].
-    pub(crate) fn notification<T>(params: T::Params) -> Result<Self, SerdeJsonError>
+    #[throws(SerdeJsonError)]
+    pub(crate) fn notification<T>(params: T::Params) -> Self
     where
         T: Notification,
         <T as Notification>::Params: Serialize,
     {
-        Object::notification::<T>(params).map(Self::new)
+        Object::notification::<T>(params).map(Self::new)?
     }
 
     /// Creates a response [`Message`].
-    pub(crate) fn response<T>(result: T::Result, id: Id) -> Result<Self, SerdeJsonError>
+    #[throws(SerdeJsonError)]
+    pub(crate) fn response<T>(result: T::Result, id: Id) -> Self
     where
         T: Request,
         <T as Request>::Result: Serialize,
     {
-        Object::response::<T>(result, id).map(Self::new)
+        Object::response::<T>(result, id).map(Self::new)?
     }
 }
 
@@ -277,41 +281,44 @@ pub(crate) enum Object {
 
 impl Object {
     /// Creates a request of type `T` with `id`.
-    fn request<T>(params: T::Params, id: Id) -> Result<Self, SerdeJsonError>
+    #[throws(SerdeJsonError)]
+    fn request<T>(params: T::Params, id: Id) -> Self
     where
         T: Request,
         <T as Request>::Params: Serialize,
     {
-        Ok(Self::Request {
+        Self::Request {
             method: T::METHOD.to_string(),
             params: serde_json::to_value(params)?,
             id: Some(id),
-        })
+        }
     }
 
     /// Creates a notification of type `T`.
-    fn notification<T>(params: T::Params) -> Result<Self, SerdeJsonError>
+    #[throws(SerdeJsonError)]
+    fn notification<T>(params: T::Params) -> Self
     where
         T: Notification,
         <T as Notification>::Params: Serialize,
     {
-        Ok(Self::Request {
+        Self::Request {
             method: T::METHOD.to_string(),
             params: serde_json::to_value(params)?,
             id: None,
-        })
+        }
     }
 
     /// Creates a response to a request of type `T` with `id`.
-    fn response<T>(result: T::Result, id: Id) -> Result<Self, SerdeJsonError>
+    #[throws(SerdeJsonError)]
+    fn response<T>(result: T::Result, id: Id) -> Self
     where
         T: Request,
         <T as Request>::Result: Serialize,
     {
-        Ok(Self::Response {
+        Self::Response {
             outcome: Outcome::Result(serde_json::to_value(result)?),
             id,
-        })
+        }
     }
 }
 
@@ -374,9 +381,10 @@ impl LspErrorProcessor {
     }
 
     /// Terminates the error processor thread.
-    pub(crate) fn terminate(&self) -> Result<(), Fault> {
+    #[throws(Fault)]
+    pub(crate) fn terminate(&self) {
         self.0
             .send(())
-            .map_err(|_| Fault::Send("language server stderr".to_string()))
+            .map_err(|_| Fault::Send("language server stderr".to_string()))?
     }
 }

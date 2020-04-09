@@ -5,6 +5,7 @@ use {
         convert::{TryFrom, TryInto},
         fmt::{self, Display},
     },
+    fehler::throws,
     market::{ClosedMarketError, Consumer, Producer, UnlimitedQueue},
     std::{
         ffi::OsStr,
@@ -29,11 +30,12 @@ pub(crate) struct Purl {
 
 impl Purl {
     /// Creates a new `Purl` by appending `child` to `self`.
-    pub(crate) fn join(&self, child: &str) -> Result<Self, CreatePurlError> {
+    #[throws(CreatePurlError)]
+    pub(crate) fn join(&self, child: &str) -> Self {
         let mut path = self.path.clone();
 
         path.push(child);
-        path.try_into()
+        path.try_into()?
     }
 
     /// Returns the language id of `self`.

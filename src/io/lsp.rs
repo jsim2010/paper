@@ -9,6 +9,7 @@ use {
         cell::{Cell, RefCell},
         convert::{TryFrom, TryInto},
     },
+    fehler::throws,
     enum_map::{enum_map, EnumMap},
     jsonrpc_core::Id,
     log::{trace, warn},
@@ -161,10 +162,11 @@ pub(crate) struct LanguageClient {
 
 impl LanguageClient {
     /// Creates a new `LanguageClient` for `language_id`.
+    #[throws(CreateLanguageClientError)]
     pub(crate) fn new<U>(
         language_id: LanguageId,
         root: U,
-    ) -> Result<Self, CreateLanguageClientError>
+    ) -> Self
     where
         U: AsRef<Url>,
     {
@@ -219,7 +221,7 @@ impl LanguageClient {
             },
             0,
         )?)?;
-        Ok(Self {
+        Self {
             // error_processor must be created before server is moved.
             error_processor: LspErrorProcessor::new(server.stderr()?),
             server,
@@ -227,18 +229,19 @@ impl LanguageClient {
             reader,
             settings,
             id: Cell::new(1),
-        })
+        }
     }
 
     /// Returns the appropriate request message.
-    fn request<T: Request>(&self, params: T::Params) -> Result<Message, RequestResponseError>
+    #[throws(RequestResponseError)]
+    fn request<T: Request>(&self, params: T::Params) -> Message
     where
         T::Params: Serialize,
         T::Result: DeserializeOwned + Default,
     {
         let id = self.id.get().wrapping_add(1);
         self.id.set(id);
-        Ok(Message::request::<T>(params, id)?)
+        Message::request::<T>(params, id)?
     }
 }
 
@@ -405,7 +408,8 @@ pub(crate) struct LanguageTool {
 
 impl LanguageTool {
     /// Creates a new [`LanguageTool`].
-    pub(crate) fn new(root_dir: &Purl) -> Result<Self, CreateLanguageToolError> {
+    #[throws(CreateLanguageToolError)]
+    pub(crate) fn new(root_dir: &Purl) -> Self {
         let rust_server = Rc::new(RefCell::new(
             LanguageClient::new(LanguageId::Rust, &root_dir).map_err(|error| {
                 CreateLanguageToolError {
@@ -415,11 +419,11 @@ impl LanguageTool {
             })?,
         ));
 
-        Ok(Self {
+        Self {
             clients: enum_map! {
                 LanguageId::Rust => Rc::clone(&rust_server),
             },
-        })
+        }
     }
 
     /// Returns the langauge identifiers supported by `self`.
@@ -630,8 +634,9 @@ pub(crate) struct LangServer(Child);
 
 impl LangServer {
     /// Creates a new [`LangServer`].
-    fn new(language_id: LanguageId) -> Result<Self, SpawnServerError> {
-        Ok(Self(
+    #[throws(SpawnServerError)]
+    fn new(language_id: LanguageId) -> Self {
+        Self(
             Command::new(language_id.server_cmd())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -641,27 +646,31 @@ impl LangServer {
                     command: language_id.server_cmd().to_string(),
                     error,
                 })?,
-        ))
+        )
     }
 
     /// Returns the stderr of the process.
-    fn stderr(&mut self) -> Result<ChildStderr, AccessIoError> {
-        self.0.stderr.take().ok_or_else(|| "stderr".into())
+    #[throws(AccessIoError)]
+    fn stderr(&mut self) -> ChildStderr {
+        self.0.stderr.take().ok_or_else(|| AccessIoError::from("stderr"))?
     }
 
     /// Returns the stdin of the process.
-    fn stdin(&mut self) -> Result<ChildStdin, AccessIoError> {
-        self.0.stdin.take().ok_or_else(|| "stdin".into())
+    #[throws(AccessIoError)]
+    fn stdin(&mut self) -> ChildStdin {
+        self.0.stdin.take().ok_or_else(|| AccessIoError::from("stdin"))?
     }
 
     /// Returns the stdout of the process.
-    fn stdout(&mut self) -> Result<ChildStdout, AccessIoError> {
-        self.0.stdout.take().ok_or_else(|| "stdout".into())
+    #[throws(AccessIoError)]
+    fn stdout(&mut self) -> ChildStdout {
+        self.0.stdout.take().ok_or_else(|| AccessIoError::from("stdout"))?
     }
 
     /// Blocks until the proccess ends.
-    pub(crate) fn wait(&mut self) -> Result<(), Fault> {
-        self.0.wait().map(|_| ()).map_err(Fault::Wait)
+    #[throws(Fault)]
+    pub(crate) fn wait(&mut self) {
+        self.0.wait().map(|_| ()).map_err(Fault::Wait)?
     }
 }
 
