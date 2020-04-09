@@ -11,7 +11,7 @@ use {
     },
     enum_map::{enum_map, EnumMap},
     jsonrpc_core::Id,
-    log::{warn, trace},
+    log::{trace, warn},
     lsp_types::{
         notification::{
             DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
@@ -27,7 +27,7 @@ use {
     },
     market::{
         io::{Reader, Writer},
-        Consumer, Producer, StripError, OneShotError,
+        Consumer, OneShotError, Producer, StripError,
     },
     serde::{de::DeserializeOwned, Serialize},
     serde_json::error::Error as SerdeJsonError,
@@ -161,7 +161,10 @@ pub(crate) struct LanguageClient {
 
 impl LanguageClient {
     /// Creates a new `LanguageClient` for `language_id`.
-    pub(crate) fn new<U>(language_id: LanguageId, root: U) -> Result<Self, CreateLanguageClientError>
+    pub(crate) fn new<U>(
+        language_id: LanguageId,
+        root: U,
+    ) -> Result<Self, CreateLanguageClientError>
     where
         U: AsRef<Url>,
     {
@@ -271,7 +274,10 @@ impl Consumer for LanguageClient {
                     } else if serde_json::from_value::<()>(value.clone()).is_ok() {
                         return Ok(Some(ServerMessage::Shutdown));
                     } else {
-                        warn!("Received unknown response outcome from language client: {}", value);
+                        warn!(
+                            "Received unknown response outcome from language client: {}",
+                            value
+                        );
                     }
                 }
                 _ => {}
@@ -400,10 +406,14 @@ pub(crate) struct LanguageTool {
 impl LanguageTool {
     /// Creates a new [`LanguageTool`].
     pub(crate) fn new(root_dir: &Purl) -> Result<Self, CreateLanguageToolError> {
-        let rust_server = Rc::new(RefCell::new(LanguageClient::new(
-            LanguageId::Rust,
-            &root_dir,
-        ).map_err(|error| CreateLanguageToolError{language_id: LanguageId::Rust, error})?));
+        let rust_server = Rc::new(RefCell::new(
+            LanguageClient::new(LanguageId::Rust, &root_dir).map_err(|error| {
+                CreateLanguageToolError {
+                    language_id: LanguageId::Rust,
+                    error,
+                }
+            })?,
+        ));
 
         Ok(Self {
             clients: enum_map! {

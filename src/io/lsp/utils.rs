@@ -317,14 +317,19 @@ impl Object {
 
 impl Display for Object {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} : {}", match self {
-            Self::Request { id: Some(_), ..} => "Request",
-            Self::Request { ..} => "Notification",
-            Self::Response {..} => "Response",
-        }, match self {
-            Self::Request { method, params, .. } => format!("{} w/ {}", method, params),
-            Self::Response { outcome, .. } => outcome.to_string(),
-        })
+        write!(
+            f,
+            "{} : {}",
+            match self {
+                Self::Request { id: Some(_), .. } => "Request",
+                Self::Request { .. } => "Notification",
+                Self::Response { .. } => "Response",
+            },
+            match self {
+                Self::Request { method, params, .. } => format!("{} w/ {}", method, params),
+                Self::Response { outcome, .. } => outcome.to_string(),
+            }
+        )
     }
 }
 

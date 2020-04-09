@@ -34,7 +34,7 @@ use {
     },
     log::warn,
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
-    market::{Consumer, Producer, OneShotError},
+    market::{Consumer, OneShotError, Producer},
     std::{
         collections::VecDeque,
         io::{self, Stdout, Write},

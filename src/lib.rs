@@ -63,13 +63,11 @@ impl Paper {
         })
     }
 
-    /// Loops through program execution until a failure occurs or the application quits.
+    /// Runs the program and logs the result.
     ///
     /// # Errors
     ///
     /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
-    ///
-    /// [`RunPaperError`]: enum.RunPaperError.html
     #[inline]
     pub fn run(&mut self) -> Result<(), RunPaperError> {
         let result = self.execute();
@@ -83,6 +81,13 @@ impl Paper {
         result
     }
 
+    /// Loops through program execution until a failure occurs or the application quits.
+    ///
+    /// # Errors
+    ///
+    /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
+    ///
+    /// [`RunPaperError`]: enum.RunPaperError.html
     fn execute(&mut self) -> Result<(), RunPaperError> {
         let mut result = Ok(());
 

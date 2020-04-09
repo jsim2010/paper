@@ -17,7 +17,9 @@ pub enum InitLoggerError {
     /// An error creating the log file.
     #[error("unable to create log file `{file}`: {error}")]
     CreateFile {
+        /// The path of the log file.
         file: String,
+        /// The error.
         #[source]
         error: io::Error,
     },
@@ -50,9 +52,12 @@ impl Logger {
         let log_filename = "paper.log".to_string();
 
         Ok(Self {
-            file: Arc::new(RwLock::new(
-                File::create(&log_filename).map_err(|error| InitLoggerError::CreateFile { file: log_filename, error})?,
-            )),
+            file: Arc::new(RwLock::new(File::create(&log_filename).map_err(
+                |error| InitLoggerError::CreateFile {
+                    file: log_filename,
+                    error,
+                },
+            )?)),
             is_starship_enabled,
         })
     }

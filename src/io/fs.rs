@@ -86,7 +86,7 @@ impl TryFrom<PathBuf> for Purl {
     fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
         Ok(Self {
             path: value.clone(),
-            url: Url::from_file_path(&value).map_err(|_| Self::Error::Create{path: value})?,
+            url: Url::from_file_path(&value).map_err(|_| Self::Error::Create { path: value })?,
         })
     }
 }
@@ -97,6 +97,7 @@ pub enum CreatePurlError {
     /// An error creating the URL from `path`.
     #[error("`{path}` is not absolute or has an invalid prefix")]
     Create {
+        /// The path.
         path: PathBuf,
     },
 }
@@ -148,7 +149,7 @@ impl Producer for FileSystem {
 #[derive(Debug, Error)]
 pub enum FileError {
     /// The queue is closed.
-    #[error("")]
+    #[error(transparent)]
     Closed(#[from] ClosedMarketError),
     /// An IO error.
     #[error("")]

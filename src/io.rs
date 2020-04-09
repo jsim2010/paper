@@ -14,15 +14,15 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     enum_map::Enum,
-    fs::{CreatePurlError, ConsumeFileError, FileError, File, FileCommand, FileSystem, Purl},
+    fs::{ConsumeFileError, CreatePurlError, File, FileCommand, FileError, FileSystem, Purl},
     log::error,
     logging::{Config, InitLoggerError},
     lsp::{
-        ClientMessage, DocMessage, Fault, LanguageTool,
-        SendNotificationError, ServerMessage, ToolMessage,
+        ClientMessage, DocMessage, Fault, LanguageTool, SendNotificationError, ServerMessage,
+        ToolMessage,
     },
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
-    market::{ClosedMarketError, OneShotError, Consumer, Producer},
+    market::{ClosedMarketError, Consumer, OneShotError, Producer},
     starship::{context::Context, print},
     std::{
         env,
@@ -259,12 +259,9 @@ impl Interface {
 
     /// Reads the file at `path`.
     fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
-        let url = self.root_dir.join(path)?;
-
-        Ok(
-        self
-            .file_system
-            .one_shot(FileCommand::Read { url: url.clone() })?)
+        Ok(self.file_system.one_shot(FileCommand::Read {
+            url: self.root_dir.join(path)?,
+        })?)
     }
 
     /// Edits the doc at `url`.
