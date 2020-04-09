@@ -27,7 +27,7 @@ use {
     },
     market::{
         io::{Reader, Writer},
-        Consumer, Producer, StripError,
+        Consumer, Producer, StripError, OneShotError,
     },
     serde::{de::DeserializeOwned, Serialize},
     serde_json::error::Error as SerdeJsonError,
@@ -53,7 +53,7 @@ pub enum Fault {
     Io(#[from] AccessIoError),
     /// An error while spawning a language server process.
     #[error("{0}")]
-    Spawn(#[from] SpawnLangServerError),
+    Spawn(#[from] SpawnServerError),
     /// An error while waiting for a language server process.
     #[error("unable to wait for language server process exit: {0}")]
     Wait(#[source] io::Error),
@@ -97,33 +97,27 @@ impl From<Fault> for ShowMessageParams {
     }
 }
 
-/// Failed to create language server client.
+/// An error creating an LSP client.
 #[derive(Debug, Error)]
-pub enum CreateLangClientError {
-    /// Failed to spawn server.
-    #[error("{0}")]
-    SpawnServer(#[from] SpawnLangServerError),
-    /// Failed to access IO.
-    #[error("{0}")]
+pub enum CreateLanguageClientError {
+    /// An error spawning the language server.
+    #[error(transparent)]
+    SpawnServer(#[from] SpawnServerError),
+    /// An error accessing an IO of the language server.
+    #[error(transparent)]
     Io(#[from] AccessIoError),
-    /// Failed to initialize language server.
-    #[error("failed to initialize language server: {0}")]
-    Init(#[from] RequestResponseError),
-    /// Failed to notify language server.
-    #[error("failed to notify language server of initialization: {0}")]
-    NotifyInit(#[from] SendNotificationError),
-    /// An error while serializing a language server message.
+    /// An error serializing a language server message.
     #[error("unable to serialize language server message: {0}")]
     Serialize(#[from] SerdeJsonError),
-    /// Write.
-    #[error("")]
-    Write(#[from] StripError<io::Error>),
+    /// An error initializing the language server.
+    #[error("unable to send initialize message to language server: {0}")]
+    Initialize(#[from] OneShotError<StripError<io::Error>>),
 }
 
 /// An error while spawning the language server process.
 #[derive(Debug, Error)]
-#[error("failed to spawn language server `{command}`: {error}")]
-pub struct SpawnLangServerError {
+#[error("unable to spawn process `{command}`: {error}")]
+pub struct SpawnServerError {
     /// The command.
     command: String,
     /// The error.
@@ -133,7 +127,7 @@ pub struct SpawnLangServerError {
 
 /// An error while accessing the stdio of the language server process.
 #[derive(Debug, Error)]
-#[error("failed to access {stdio_type} of language server")]
+#[error("unable to access {stdio_type} of language server")]
 pub struct AccessIoError {
     /// The type of the stdio.
     stdio_type: String,
@@ -167,63 +161,62 @@ pub(crate) struct LanguageClient {
 
 impl LanguageClient {
     /// Creates a new `LanguageClient` for `language_id`.
-    pub(crate) fn new<U>(language_id: LanguageId, root: U) -> Result<Self, CreateLangClientError>
+    pub(crate) fn new<U>(language_id: LanguageId, root: U) -> Result<Self, CreateLanguageClientError>
     where
         U: AsRef<Url>,
     {
         let mut server = LangServer::new(language_id)?;
         let writer = Writer::new(server.stdin()?);
         let reader = Reader::new(server.stdout()?);
-        let capabilities = ClientCapabilities {
-            workspace: None,
-            text_document: Some(TextDocumentClientCapabilities {
-                synchronization: Some(SynchronizationCapability {
-                    dynamic_registration: None,
-                    will_save: Some(true),
-                    will_save_wait_until: None,
-                    did_save: None,
-                }),
-                completion: None,
-                hover: None,
-                signature_help: None,
-                references: None,
-                document_highlight: None,
-                document_symbol: None,
-                formatting: None,
-                range_formatting: None,
-                on_type_formatting: None,
-                declaration: None,
-                definition: None,
-                type_definition: None,
-                implementation: None,
-                code_action: None,
-                code_lens: None,
-                document_link: None,
-                color_provider: None,
-                rename: None,
-                publish_diagnostics: None,
-                folding_range: None,
-            }),
-            window: None,
-            experimental: None,
-        };
         let settings = Cell::new(LspSettings::default());
 
         #[allow(deprecated)] // root_path is a required field.
-        writer.force(Message::request::<Initialize>(
+        writer.one_shot(Message::request::<Initialize>(
             InitializeParams {
                 process_id: Some(u64::from(process::id())),
                 root_path: None,
                 root_uri: Some(root.as_ref().clone()),
                 initialization_options: None,
-                capabilities,
+                capabilities: ClientCapabilities {
+                    workspace: None,
+                    text_document: Some(TextDocumentClientCapabilities {
+                        synchronization: Some(SynchronizationCapability {
+                            dynamic_registration: None,
+                            will_save: Some(true),
+                            will_save_wait_until: None,
+                            did_save: None,
+                        }),
+                        completion: None,
+                        hover: None,
+                        signature_help: None,
+                        references: None,
+                        document_highlight: None,
+                        document_symbol: None,
+                        formatting: None,
+                        range_formatting: None,
+                        on_type_formatting: None,
+                        declaration: None,
+                        definition: None,
+                        type_definition: None,
+                        implementation: None,
+                        code_action: None,
+                        code_lens: None,
+                        document_link: None,
+                        color_provider: None,
+                        rename: None,
+                        publish_diagnostics: None,
+                        folding_range: None,
+                    }),
+                    window: None,
+                    experimental: None,
+                },
                 trace: None,
                 workspace_folders: None,
                 client_info: None,
             },
             0,
         )?)?;
-        let client = Self {
+        Ok(Self {
             // error_processor must be created before server is moved.
             error_processor: LspErrorProcessor::new(server.stderr()?),
             server,
@@ -231,9 +224,7 @@ impl LanguageClient {
             reader,
             settings,
             id: Cell::new(1),
-        };
-
-        Ok(client)
+        })
     }
 
     /// Returns the appropriate request message.
@@ -365,12 +356,15 @@ impl Producer for LanguageClient {
     }
 }
 
-/// An error creating client.
+/// An error creating a [`LanguageTool`].
 #[derive(Debug, Error)]
-pub enum CreateLanguageToolError {
-    /// Server.
-    #[error("")]
-    Server(#[from] CreateLangClientError),
+#[error("unable to create {language_id} language server: {error}")]
+pub struct CreateLanguageToolError {
+    /// The language identifier of the server.
+    language_id: LanguageId,
+    /// The error.
+    #[source]
+    error: CreateLanguageClientError,
 }
 
 /// An error editing language client.
@@ -409,7 +403,7 @@ impl LanguageTool {
         let rust_server = Rc::new(RefCell::new(LanguageClient::new(
             LanguageId::Rust,
             &root_dir,
-        )?));
+        ).map_err(|error| CreateLanguageToolError{language_id: LanguageId::Rust, error})?));
 
         Ok(Self {
             clients: enum_map! {
@@ -626,15 +620,15 @@ pub(crate) struct LangServer(Child);
 
 impl LangServer {
     /// Creates a new [`LangServer`].
-    fn new(language_id: LanguageId) -> Result<Self, SpawnLangServerError> {
+    fn new(language_id: LanguageId) -> Result<Self, SpawnServerError> {
         Ok(Self(
             Command::new(language_id.server_cmd())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|error| SpawnLangServerError {
-                    command: language_id.to_string(),
+                .map_err(|error| SpawnServerError {
+                    command: language_id.server_cmd().to_string(),
                     error,
                 })?,
         ))

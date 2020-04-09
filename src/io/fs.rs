@@ -17,6 +17,8 @@ use {
 };
 
 /// A **P**ath **URL** - a path and its appropriate URL.
+///
+/// Analysis that path converts to a valid URL is performed one time, when the `Purl` is created.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Purl {
     /// The path.
@@ -26,8 +28,8 @@ pub(crate) struct Purl {
 }
 
 impl Purl {
-    /// Appends `child` to `self`.
-    pub(crate) fn join(&self, child: &str) -> Result<Self, CreatePathUrlError> {
+    /// Creates a new `Purl` by appending `child` to `self`.
+    pub(crate) fn join(&self, child: &str) -> Result<Self, CreatePurlError> {
         let mut path = self.path.clone();
 
         path.push(child);
@@ -78,35 +80,25 @@ impl Display for Purl {
 }
 
 impl TryFrom<PathBuf> for Purl {
-    type Error = CreatePathUrlError;
+    type Error = CreatePurlError;
 
     #[inline]
     fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
-        let mut path = value.to_string_lossy().to_string();
-        if let Some(last_char) = path.pop() {
-            path.push(last_char);
-
-            Ok(Self {
-                path: value.clone(),
-                url: if last_char == '/' {
-                    Url::from_directory_path(value).map_err(|_| Self::Error::Create)?
-                } else {
-                    Url::from_file_path(value).map_err(|_| Self::Error::Create)?
-                },
-            })
-        } else {
-            Err(Self::Error::EmptyPath)
-        }
+        Ok(Self {
+            path: value.clone(),
+            url: Url::from_file_path(&value).map_err(|_| Self::Error::Create{path: value})?,
+        })
     }
 }
 
-/// An error
-#[derive(Clone, Copy, Debug)]
-pub enum CreatePathUrlError {
-    /// An error creating the URL.
-    Create,
-    /// The provided path is empty.
-    EmptyPath,
+/// An error creating a [`Purl`].
+#[derive(Clone, Debug, Error)]
+pub enum CreatePurlError {
+    /// An error creating the URL from `path`.
+    #[error("`{path}` is not absolute or has an invalid prefix")]
+    Create {
+        path: PathBuf,
+    },
 }
 
 /// The interface to the file system.

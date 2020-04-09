@@ -11,18 +11,15 @@ use {
     thiserror::Error,
 };
 
-/// An error while creating a [`SettingConsumer`].
+/// An error creating a [`SettingConsumer`].
 #[derive(Debug, Error)]
 pub enum CreateSettingConsumerError {
     /// An error creating a [`Watcher`].
-    #[error("")]
+    #[error("unable to create config file event watcher: {0}")]
     CreateWatcher(#[source] notify::Error),
-    /// An error beginning to watch a file.
-    #[error("")]
-    WatchFile(#[source] notify::Error),
-    /// An error building the configuration.
-    #[error("")]
-    CreateConfiguration(#[from] CreateConfigurationError),
+    /// An error beginning to watch the config file.
+    #[error("unable to begin watch of config file: {0}")]
+    BeginWatch(#[source] notify::Error),
 }
 
 /// An error creating the [`Configuration`].
@@ -69,11 +66,9 @@ impl SettingConsumer {
         let mut watcher = notify::watcher(event_tx, Duration::from_secs(0))
             .map_err(CreateSettingConsumerError::CreateWatcher)?;
 
-        if path.is_file() {
-            watcher
-                .watch(path, RecursiveMode::NonRecursive)
-                .map_err(CreateSettingConsumerError::WatchFile)?;
-        }
+        watcher
+            .watch(path, RecursiveMode::NonRecursive)
+            .map_err(CreateSettingConsumerError::BeginWatch)?;
 
         Ok(Self {
             watcher,

@@ -34,7 +34,7 @@ use {
     },
     log::warn,
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
-    market::{Consumer, Producer},
+    market::{Consumer, Producer, OneShotError},
     std::{
         collections::VecDeque,
         io::{self, Stdout, Write},
@@ -48,8 +48,8 @@ use {
 #[derive(Debug, Error)]
 pub enum CreateTerminalError {
     /// An error initializing the terminal output.
-    #[error("initializing output: {0}")]
-    Init(#[from] ProduceTerminalOutputError),
+    #[error(transparent)]
+    Init(#[from] OneShotError<ProduceTerminalOutputError>),
 }
 
 /// A span of time that equal to no time.
@@ -59,7 +59,7 @@ static INSTANT: Duration = Duration::from_secs(0);
 #[derive(Debug, Error)]
 pub enum ProduceTerminalOutputError {
     /// An error initializing the terminal output.
-    #[error("{0}")]
+    #[error("unable to initialize terminal output: {0}")]
     Init(#[source] ErrorKind),
     /// An error displaying a new document on the terminal.
     #[error("{0}")]
@@ -137,7 +137,7 @@ impl Terminal {
             body: RefCell::new(Body::default()),
         };
 
-        terminal.force(Output::Init)?;
+        terminal.one_shot(Output::Init)?;
         Ok(terminal)
     }
 }

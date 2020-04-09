@@ -14,15 +14,15 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     enum_map::Enum,
-    fs::{ConsumeFileError, File, FileCommand, FileSystem, Purl},
+    fs::{CreatePurlError, ConsumeFileError, FileError, File, FileCommand, FileSystem, Purl},
     log::error,
     logging::{Config, InitLoggerError},
     lsp::{
-        ClientMessage, CreateLangClientError, DocMessage, Fault, LanguageTool,
+        ClientMessage, DocMessage, Fault, LanguageTool,
         SendNotificationError, ServerMessage, ToolMessage,
     },
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
-    market::{ClosedMarketError, Consumer, Producer},
+    market::{ClosedMarketError, OneShotError, Consumer, Producer},
     starship::{context::Context, print},
     std::{
         env,
@@ -77,35 +77,32 @@ impl Default for Arguments<'_> {
 /// [`Interface`]: struct.Interface.html
 #[derive(Debug, Error)]
 pub enum CreateInterfaceError {
-    /// An error while creating the logging configuration.
-    #[error("{0}")]
+    /// An error initializing the logger.
+    #[error(transparent)]
     Logger(#[from] InitLoggerError),
-    /// An error determing the root directory.
+    /// An error determing the current working directory.
     #[error("current working directory is invalid: {0}")]
-    RootDir(#[from] io::Error),
-    /// An error while working with a Url.
-    #[error("")]
-    Url,
-    /// An error creating a [`Terminal`].
-    ///
-    /// [`Terminal`]: ui/struct.Terminal.html
-    #[error("creating terminal: {0}")]
-    CreateTerminal(#[from] CreateTerminalError),
+    WorkingDir(#[from] io::Error),
+    /// An error creating the root directory [`Purl`].
+    #[error("unable to create URL of root directory: {0}")]
+    RootDir(#[from] CreatePurlError),
     /// An error determining the home directory of the current user.
     #[error("home directory of current user is unknown")]
     HomeDir,
-    /// An error while reading a file.
-    #[error("{0}")]
-    CreateFile(#[from] CreateFileError),
     /// An error creating the setting consumer.
-    #[error("")]
-    CreateConfig(#[from] CreateSettingConsumerError),
-    /// Failed to create language client.
-    #[error("{0}")]
-    CreateLangClient(#[from] CreateLangClientError),
-    /// An error with client.
-    #[error("")]
-    Client(#[from] lsp::CreateLanguageToolError),
+    #[error(transparent)]
+    Config(#[from] CreateSettingConsumerError),
+    /// An error creating a [`Terminal`].
+    ///
+    /// [`Terminal`]: ui/struct.Terminal.html
+    #[error(transparent)]
+    Terminal(#[from] CreateTerminalError),
+    /// An error creating a [`LangaugeTool`].
+    #[error(transparent)]
+    LanguageTool(#[from] lsp::CreateLanguageToolError),
+    /// An error creating a file.
+    #[error(transparent)]
+    CreateFile(#[from] CreateFileError),
 }
 
 /// An error while writing output.
@@ -126,9 +123,6 @@ pub enum ProduceOutputError {
     /// An error while converting from a [`Selection`].
     #[error("{0}")]
     SelectionConversion(#[from] SelectionConversionError),
-    /// Failed to create language client.
-    #[error("{0}")]
-    CreateLangClient(#[from] CreateLangClientError),
     /// Failed to send notification.
     #[error("{0}")]
     SendNotification(#[from] SendNotificationError),
@@ -148,18 +142,15 @@ pub enum ReadInputError {
     Ui(#[from] CommandError),
 }
 
-/// An error while creating a file.
+/// An error creating a file.
 #[derive(Debug, Error)]
 pub enum CreateFileError {
-    /// An error while generating the URL of the file.
-    #[error("")]
-    Url,
-    /// An error while reading the text of the file.
-    #[error("{0}")]
-    ReadFile(#[from] ReadFileError),
-    /// An error sending an input.
-    #[error("sending error")]
-    Send,
+    /// An error generating the [`Purl`] of the file.
+    #[error(transparent)]
+    Purl(#[from] CreatePurlError),
+    /// An error triggering a file read.
+    #[error(transparent)]
+    Read(#[from] OneShotError<FileError>),
 }
 
 /// An error while reading a file.
@@ -244,8 +235,7 @@ impl Interface {
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
         // Create logger as early as possible.
         logging::init(arguments.log_config)?;
-        let root_dir =
-            Purl::try_from(env::current_dir()?).map_err(|_| CreateInterfaceError::Url)?;
+        let root_dir = Purl::try_from(env::current_dir()?)?;
 
         let interface = Self {
             setting_consumer: SettingConsumer::new(
@@ -267,18 +257,14 @@ impl Interface {
         Ok(interface)
     }
 
-    /// Generates an Input for opening the file at `path`.
+    /// Reads the file at `path`.
     fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
-        let url = self.root_dir.join(path).map_err(|_| CreateFileError::Url)?;
+        let url = self.root_dir.join(path)?;
 
-        if let Err(error) = self
+        Ok(
+        self
             .file_system
-            .produce(FileCommand::Read { url: url.clone() })
-        {
-            error!("Failed to store file `{}` to be read: {}", url, error);
-        }
-
-        Ok(())
+            .one_shot(FileCommand::Read { url: url.clone() })?)
     }
 
     /// Edits the doc at `url`.
