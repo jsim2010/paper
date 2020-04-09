@@ -21,6 +21,7 @@ use {
     io::{
         ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
     },
+    log::{error, info},
     market::{Consumer, Producer},
     thiserror::Error,
 };
@@ -62,6 +63,24 @@ impl Paper {
         })
     }
 
+    /// Runs the program and logs the result.
+    ///
+    /// # Errors
+    ///
+    /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
+    #[inline]
+    pub fn run(&mut self) -> Result<(), RunPaperError> {
+        let result = self.execute();
+
+        if let Err(error) = &result {
+            error!("Encountered error: {}", error);
+        }
+
+        info!("Application quitting");
+
+        result
+    }
+
     /// Loops through program execution until a failure occurs or the application quits.
     ///
     /// # Errors
@@ -69,18 +88,17 @@ impl Paper {
     /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
     ///
     /// [`RunPaperError`]: enum.RunPaperError.html
-    #[inline]
-    pub fn run(&mut self) -> Result<(), RunPaperError> {
+    fn execute(&mut self) -> Result<(), RunPaperError> {
         let mut result = Ok(());
 
         loop {
             match self.io.demand() {
                 Ok(input) => self.io.force_all(self.processor.process(input))?,
-                Err(ConsumeInputIssue::Quit) => {
-                    break;
-                }
-                Err(ConsumeInputIssue::Error(error)) => {
-                    result = Err(error.into());
+                Err(issue) => {
+                    if let ConsumeInputIssue::Error(error) = issue {
+                        result = Err(error.into());
+                    }
+
                     break;
                 }
             }
@@ -109,7 +127,7 @@ pub enum CreatePaperError {
     /// An error creating an [`Interface`].
     ///
     /// [`Interface`]: io/struct.Interface.html
-    #[error("failed to create interface: {0}")]
+    #[error("failed to create application: {0}")]
     Interface(#[from] CreateInterfaceError),
 }
 

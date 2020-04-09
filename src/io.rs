@@ -14,15 +14,15 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     enum_map::Enum,
-    fs::{ConsumeFileError, File, FileCommand, FileSystem, PathUrl},
-    log::{error, LevelFilter},
-    logging::LogManager,
+    fs::{ConsumeFileError, CreatePurlError, File, FileCommand, FileError, FileSystem, Purl},
+    log::error,
+    logging::{Config, InitLoggerError},
     lsp::{
-        ClientMessage, CreateLangClientError, DocMessage, Fault, LanguageTool,
-        SendNotificationError, ServerMessage, ToolMessage,
+        ClientMessage, DocMessage, Fault, LanguageTool, SendNotificationError, ServerMessage,
+        ToolMessage,
     },
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
-    market::{ClosedMarketError, Consumer, Producer},
+    market::{ClosedMarketError, Consumer, OneShotError, Producer},
     starship::{context::Context, print},
     std::{
         env,
@@ -40,7 +40,7 @@ use {
 /// A configuration of the initialization of a [`Paper`].
 ///
 /// [`Paper`]: ../struct.Paper.html
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Arguments<'a> {
     /// The file to be viewed.
     ///
@@ -48,6 +48,8 @@ pub struct Arguments<'a> {
     ///
     /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
     pub file: Option<&'a str>,
+    /// The configuration of the logger.
+    pub log_config: Config,
 }
 
 impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
@@ -55,6 +57,17 @@ impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
     fn from(value: &'a ArgMatches<'a>) -> Self {
         Self {
             file: value.value_of("file"),
+            log_config: Config::from(value),
+        }
+    }
+}
+
+impl Default for Arguments<'_> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            file: None,
+            log_config: Config::default(),
         }
     }
 }
@@ -64,35 +77,32 @@ impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
 /// [`Interface`]: struct.Interface.html
 #[derive(Debug, Error)]
 pub enum CreateInterfaceError {
-    /// An error while creating the logging configuration.
-    #[error("{0}")]
-    CreateLogConfig(#[from] logging::Fault),
-    /// An error determing the root directory.
+    /// An error initializing the logger.
+    #[error(transparent)]
+    Logger(#[from] InitLoggerError),
+    /// An error determing the current working directory.
     #[error("current working directory is invalid: {0}")]
-    RootDir(#[from] io::Error),
-    /// An error while working with a Url.
-    #[error("")]
-    Url,
-    /// An error creating a [`Terminal`].
-    ///
-    /// [`Terminal`]: ui/struct.Terminal.html
-    #[error("creating terminal: {0}")]
-    CreateTerminal(#[from] CreateTerminalError),
+    WorkingDir(#[from] io::Error),
+    /// An error creating the root directory [`Purl`].
+    #[error("unable to create URL of root directory: {0}")]
+    RootDir(#[from] CreatePurlError),
     /// An error determining the home directory of the current user.
     #[error("home directory of current user is unknown")]
     HomeDir,
-    /// An error while reading a file.
-    #[error("{0}")]
-    CreateFile(#[from] CreateFileError),
     /// An error creating the setting consumer.
-    #[error("")]
-    CreateConfig(#[from] CreateSettingConsumerError),
-    /// Failed to create language client.
-    #[error("{0}")]
-    CreateLangClient(#[from] CreateLangClientError),
-    /// An error with client.
-    #[error("")]
-    Client(#[from] lsp::CreateLanguageToolError),
+    #[error(transparent)]
+    Config(#[from] CreateSettingConsumerError),
+    /// An error creating a [`Terminal`].
+    ///
+    /// [`Terminal`]: ui/struct.Terminal.html
+    #[error(transparent)]
+    Terminal(#[from] CreateTerminalError),
+    /// An error creating a [`LangaugeTool`].
+    #[error(transparent)]
+    LanguageTool(#[from] lsp::CreateLanguageToolError),
+    /// An error creating a file.
+    #[error(transparent)]
+    CreateFile(#[from] CreateFileError),
 }
 
 /// An error while writing output.
@@ -113,18 +123,12 @@ pub enum ProduceOutputError {
     /// An error while converting from a [`Selection`].
     #[error("{0}")]
     SelectionConversion(#[from] SelectionConversionError),
-    /// Failed to create language client.
-    #[error("{0}")]
-    CreateLangClient(#[from] CreateLangClientError),
     /// Failed to send notification.
     #[error("{0}")]
     SendNotification(#[from] SendNotificationError),
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),
-    /// An error while configuring the logger.
-    #[error("{0}")]
-    Log(#[from] logging::Fault),
     /// Produce error from ui.
     #[error("{0}")]
     UiProduce(#[from] ProduceTerminalOutputError),
@@ -138,18 +142,15 @@ pub enum ReadInputError {
     Ui(#[from] CommandError),
 }
 
-/// An error while creating a file.
+/// An error creating a file.
 #[derive(Debug, Error)]
 pub enum CreateFileError {
-    /// An error while generating the URL of the file.
-    #[error("")]
-    Url,
-    /// An error while reading the text of the file.
-    #[error("{0}")]
-    ReadFile(#[from] ReadFileError),
-    /// An error sending an input.
-    #[error("sending error")]
-    Send,
+    /// An error generating the [`Purl`] of the file.
+    #[error(transparent)]
+    Purl(#[from] CreatePurlError),
+    /// An error triggering a file read.
+    #[error(transparent)]
+    Read(#[from] OneShotError<FileError>),
 }
 
 /// An error while reading a file.
@@ -222,9 +223,7 @@ pub(crate) struct Interface {
     /// The interface of the application with all language servers.
     language_tool: LanguageTool,
     /// The root directory of the application.
-    root_dir: PathUrl,
-    /// The configuration of the logger.
-    log_manager: LogManager,
+    root_dir: Purl,
     /// The interface with the file system.
     file_system: FileSystem,
     /// The application has quit.
@@ -234,13 +233,11 @@ pub(crate) struct Interface {
 impl Interface {
     /// Creates a new interface.
     pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
-        // Create log_manager first as this is where the logger is initialized.
-        let log_manager = LogManager::new()?;
-        let root_dir =
-            PathUrl::try_from(env::current_dir()?).map_err(|_| CreateInterfaceError::Url)?;
+        // Create logger as early as possible.
+        logging::init(arguments.log_config)?;
+        let root_dir = Purl::try_from(env::current_dir()?)?;
 
         let interface = Self {
-            log_manager,
             setting_consumer: SettingConsumer::new(
                 &dirs::home_dir()
                     .ok_or(CreateInterfaceError::HomeDir)?
@@ -260,18 +257,11 @@ impl Interface {
         Ok(interface)
     }
 
-    /// Generates an Input for opening the file at `path`.
+    /// Reads the file at `path`.
     fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
-        let url = self.root_dir.join(path).map_err(|_| CreateFileError::Url)?;
-
-        if let Err(error) = self
-            .file_system
-            .produce(FileCommand::Read { url: url.clone() })
-        {
-            error!("Failed to store file `{}` to be read: {}", url, error);
-        }
-
-        Ok(())
+        Ok(self.file_system.one_shot(FileCommand::Read {
+            url: self.root_dir.join(path)?,
+        })?)
     }
 
     /// Edits the doc at `url`.
@@ -483,22 +473,12 @@ impl Producer for Interface {
                 .produce(ui::Output::Reset { selection })?,
             Output::Resize { size } => self.user_interface.produce(ui::Output::Resize { size })?,
             Output::Write { ch } => self.user_interface.produce(ui::Output::Write { ch })?,
-            Output::Log { starship_level } => {
-                if let Err(error) = self
-                    .log_manager
-                    .produce(logging::Output::StarshipLevel(starship_level))
-                {
-                    error!("Unable to set startship log-level: {}", error);
-                }
-                None
-            }
             Output::Quit => {
                 self.has_quit.store(true, Ordering::Relaxed);
                 None
             }
         };
 
-        error!("io: {:?} -> {:?}", output, result);
         Ok(result.map(|_| output))
     }
 }
@@ -643,11 +623,6 @@ pub(crate) enum Output {
     },
     /// Quit the application.
     Quit,
-    /// Configure the logger.
-    Log {
-        /// The level for starship logs.
-        starship_level: LevelFilter,
-    },
 }
 
 impl TryFrom<Output> for ToolMessage<ClientMessage> {
@@ -700,8 +675,7 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
             | Output::Reset { .. }
             | Output::Resize { .. }
             | Output::Write { .. }
-            | Output::Quit
-            | Output::Log { .. } => Err(TryIntoProtocolError::InvalidOutput),
+            | Output::Quit => Err(TryIntoProtocolError::InvalidOutput),
         }
     }
 }

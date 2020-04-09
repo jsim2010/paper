@@ -1,7 +1,6 @@
 //! Implements [`Consumer`] for configs.
 use {
     core::{cell::Cell, fmt, time::Duration},
-    log::LevelFilter,
     market::{
         channel::MpscConsumer, ClosedMarketError, Consumer, Inspector, StripFrom,
         StrippingConsumer, VigilantConsumer,
@@ -12,18 +11,15 @@ use {
     thiserror::Error,
 };
 
-/// An error while creating a [`SettingConsumer`].
+/// An error creating a [`SettingConsumer`].
 #[derive(Debug, Error)]
 pub enum CreateSettingConsumerError {
     /// An error creating a [`Watcher`].
-    #[error("")]
+    #[error("unable to create config file event watcher: {0}")]
     CreateWatcher(#[source] notify::Error),
-    /// An error beginning to watch a file.
-    #[error("")]
-    WatchFile(#[source] notify::Error),
-    /// An error building the configuration.
-    #[error("")]
-    CreateConfiguration(#[from] CreateConfigurationError),
+    /// An error beginning to watch the config file.
+    #[error("unable to begin watch of config file: {0}")]
+    BeginWatch(#[source] notify::Error),
 }
 
 /// An error creating the [`Configuration`].
@@ -70,11 +66,9 @@ impl SettingConsumer {
         let mut watcher = notify::watcher(event_tx, Duration::from_secs(0))
             .map_err(CreateSettingConsumerError::CreateWatcher)?;
 
-        if path.is_file() {
-            watcher
-                .watch(path, RecursiveMode::NonRecursive)
-                .map_err(CreateSettingConsumerError::WatchFile)?;
-        }
+        watcher
+            .watch(path, RecursiveMode::NonRecursive)
+            .map_err(CreateSettingConsumerError::BeginWatch)?;
 
         Ok(Self {
             watcher,
@@ -110,7 +104,6 @@ impl StripFrom<DebouncedEvent> for Setting {
         if let DebouncedEvent::Write(file) = good {
             if let Ok(config) = Configuration::new(file) {
                 finished_goods.push(Self::Wrap(config.wrap.0));
-                finished_goods.push(Self::StarshipLog(config.starship_log.0));
             }
         }
 
@@ -148,10 +141,6 @@ impl Inspector for SettingDeduplicator {
                 result = *wrap == config.wrap.0;
                 new_config.wrap.0 = *wrap;
             }
-            Self::Good::StarshipLog(starship_log) => {
-                result = *starship_log == config.starship_log.0;
-                new_config.starship_log.0 = *starship_log;
-            }
         }
 
         self.config.set(new_config);
@@ -164,8 +153,6 @@ impl Inspector for SettingDeduplicator {
 struct Configuration {
     /// If documents shall wrap.
     wrap: Wrap,
-    /// The level filter of starship logs.
-    starship_log: StarshipLog,
 }
 
 impl Configuration {
@@ -185,21 +172,9 @@ impl Default for Wrap {
     }
 }
 
-/// The minimum level of logging the starship module.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-struct StarshipLog(LevelFilter);
-
-impl Default for StarshipLog {
-    fn default() -> Self {
-        Self(LevelFilter::Off)
-    }
-}
-
 /// Signifies a configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Setting {
     /// If the document shall wrap long text.
     Wrap(bool),
-    /// The level at which starship records shall be logged.
-    StarshipLog(LevelFilter),
 }
