@@ -25,7 +25,6 @@ use {
         ops::{Bound, RangeBounds},
         time::Duration,
     },
-    fehler::throws,
     crossterm::{
         cursor::{Hide, MoveTo, RestorePosition, SavePosition},
         event::{self, Event},
@@ -33,6 +32,7 @@ use {
         style::{Color, Print, ResetColor, SetBackgroundColor},
         terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     },
+    fehler::throws,
     log::warn,
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
     market::{Consumer, OneShotError, Producer},
@@ -162,13 +162,14 @@ impl Consumer for Terminal {
     type Good = UserAction;
     type Error = ConsumeUserActionError;
 
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         if event::poll(INSTANT).map_err(Self::Error::Poll)? {
             event::read()
                 .map(|event| Some(event.into()))
-                .map_err(Self::Error::Read)
+                .map_err(Self::Error::Read)?
         } else {
-            Ok(None)
+            None
         }
     }
 }
@@ -177,7 +178,8 @@ impl Producer for Terminal {
     type Good = Output;
     type Error = ProduceTerminalOutputError;
 
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         match good {
             Output::Init => {
                 execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
@@ -258,7 +260,7 @@ impl Producer for Terminal {
             }
         }
 
-        Ok(None)
+        None
     }
 }
 
@@ -586,12 +588,7 @@ struct Printer {
 impl Printer {
     /// Prints `row` at `index` of body with `context`.
     #[throws(ErrorKind)]
-    fn print_row<'a>(
-        &'a mut self,
-        index: UiUnit,
-        row: Row<'a>,
-        context: &Context,
-    ) {
+    fn print_row<'a>(&'a mut self, index: UiUnit, row: Row<'a>, context: &Context) {
         // Add 1 to account for header.
         queue!(self.out, MoveTo(0, index.saturating_add(1)))?;
 

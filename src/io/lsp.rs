@@ -9,8 +9,8 @@ use {
         cell::{Cell, RefCell},
         convert::{TryFrom, TryInto},
     },
-    fehler::throws,
     enum_map::{enum_map, EnumMap},
+    fehler::{throw, throws},
     jsonrpc_core::Id,
     log::{trace, warn},
     lsp_types::{
@@ -163,10 +163,7 @@ pub(crate) struct LanguageClient {
 impl LanguageClient {
     /// Creates a new `LanguageClient` for `language_id`.
     #[throws(CreateLanguageClientError)]
-    pub(crate) fn new<U>(
-        language_id: LanguageId,
-        root: U,
-    ) -> Self
+    pub(crate) fn new<U>(language_id: LanguageId, root: U) -> Self
     where
         U: AsRef<Url>,
     {
@@ -249,7 +246,8 @@ impl Consumer for LanguageClient {
     type Good = ServerMessage;
     type Error = io::Error;
 
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         if let Some(message) = self.reader.consume()? {
             trace!("Received LSP message: {}", message);
             match message {
@@ -261,7 +259,7 @@ impl Consumer for LanguageClient {
                         },
                     ..
                 } => {
-                    return Ok(Some(ServerMessage::Request { id: request_id }));
+                    return Some(ServerMessage::Request { id: request_id });
                 }
                 Message {
                     object:
@@ -273,9 +271,9 @@ impl Consumer for LanguageClient {
                 } => {
                     if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
                         self.settings.set(LspSettings::from(result));
-                        return Ok(Some(ServerMessage::Initialize));
+                        return Some(ServerMessage::Initialize);
                     } else if serde_json::from_value::<()>(value.clone()).is_ok() {
-                        return Ok(Some(ServerMessage::Shutdown));
+                        return Some(ServerMessage::Shutdown);
                     } else {
                         warn!(
                             "Received unknown response outcome from language client: {}",
@@ -287,7 +285,7 @@ impl Consumer for LanguageClient {
             }
         }
 
-        Ok(None)
+        None
     }
 }
 
@@ -295,7 +293,8 @@ impl Producer for LanguageClient {
     type Good = ClientMessage;
     type Error = Fault;
 
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         if let Some(message) = match &good {
             ClientMessage::Doc { url, message } => match message {
                 DocMessage::Open { .. } | DocMessage::Close => {
@@ -358,9 +357,9 @@ impl Producer for LanguageClient {
             }
         } {
             trace!("Sending LSP message: {}", message);
-            Ok(self.writer.produce(message)?.map(|_| good))
+            self.writer.produce(message)?.map(|_| good)
         } else {
-            Ok(None)
+            None
         }
     }
 }
@@ -436,7 +435,8 @@ impl Consumer for LanguageTool {
     type Good = ToolMessage<ServerMessage>;
     type Error = Fault;
 
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         let mut good = None;
 
         for (language_id, language_client) in &self.clients {
@@ -451,7 +451,7 @@ impl Consumer for LanguageTool {
             }
         }
 
-        Ok(good)
+        good
     }
 }
 
@@ -459,12 +459,13 @@ impl Producer for LanguageTool {
     type Good = ToolMessage<ClientMessage>;
     type Error = ProduceProtocolError;
 
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is in bounds.
-        Ok(self.clients[good.language_id]
+        self.clients[good.language_id]
             .borrow()
             .produce(good.message.clone())?
-            .map(|_| good))
+            .map(|_| good)
     }
 }
 
@@ -517,8 +518,9 @@ pub(crate) enum ClientMessage {
 impl TryFrom<ClientMessage> for Message {
     type Error = TryIntoMessageError;
 
-    fn try_from(value: ClientMessage) -> Result<Self, Self::Error> {
-        Ok(match value {
+    #[throws(Self::Error)]
+    fn try_from(value: ClientMessage) -> Self {
+        match value {
             ClientMessage::Doc { url, message } => match message {
                 DocMessage::Open {
                     language_id,
@@ -544,7 +546,7 @@ impl TryFrom<ClientMessage> for Message {
                     })?
                 }
                 DocMessage::Change { .. } => {
-                    return Err(Self::Error::Null);
+                    throw!(Self::Error::Null);
                 }
             },
             ClientMessage::Initialized => Self::notification::<Initialized>(InitializedParams {})?,
@@ -553,9 +555,9 @@ impl TryFrom<ClientMessage> for Message {
                 Self::response::<RegisterCapability>((), id)?
             }
             ClientMessage::Shutdown => {
-                return Err(Self::Error::Null);
+                throw!(Self::Error::Null);
             }
-        })
+        }
     }
 }
 
@@ -652,19 +654,28 @@ impl LangServer {
     /// Returns the stderr of the process.
     #[throws(AccessIoError)]
     fn stderr(&mut self) -> ChildStderr {
-        self.0.stderr.take().ok_or_else(|| AccessIoError::from("stderr"))?
+        self.0
+            .stderr
+            .take()
+            .ok_or_else(|| AccessIoError::from("stderr"))?
     }
 
     /// Returns the stdin of the process.
     #[throws(AccessIoError)]
     fn stdin(&mut self) -> ChildStdin {
-        self.0.stdin.take().ok_or_else(|| AccessIoError::from("stdin"))?
+        self.0
+            .stdin
+            .take()
+            .ok_or_else(|| AccessIoError::from("stdin"))?
     }
 
     /// Returns the stdout of the process.
     #[throws(AccessIoError)]
     fn stdout(&mut self) -> ChildStdout {
-        self.0.stdout.take().ok_or_else(|| AccessIoError::from("stdout"))?
+        self.0
+            .stdout
+            .take()
+            .ok_or_else(|| AccessIoError::from("stdout"))?
     }
 
     /// Blocks until the proccess ends.

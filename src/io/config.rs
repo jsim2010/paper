@@ -1,6 +1,10 @@
 //! Implements [`Consumer`] for configs.
 use {
-    core::{cell::Cell, fmt::{self, Display}, time::Duration},
+    core::{
+        cell::Cell,
+        fmt::{self, Display},
+        time::Duration,
+    },
     fehler::throws,
     log::trace,
     market::{
@@ -94,8 +98,9 @@ impl Consumer for SettingConsumer {
     type Good = Setting;
     type Error = ClosedMarketError;
 
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        self.consumer.consume()
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
+        self.consumer.consume()?
     }
 }
 
