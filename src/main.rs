@@ -3,10 +3,12 @@ use {
     // `app_from_crate` requires importing all the macros that it calls.
     // https://github.com/clap-rs/clap/issues/1478 states that fix has been added to be released in 3.0.0.
     clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, Arg},
+    fehler::throws,
     paper::{Failure, Paper},
 };
 
-fn main() -> Result<(), Failure> {
+#[throws(Failure)]
+fn main() {
     // Forces compiler to rebuild when Cargo.toml file is changed, needed for app_from_crate.
     let _ = include_str!("../Cargo.toml");
 
@@ -34,5 +36,4 @@ fn main() -> Result<(), Failure> {
             .into(),
     )?
     .run()?;
-    Ok(())
 }

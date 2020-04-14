@@ -1,6 +1,12 @@
 //! Implements [`Consumer`] for configs.
 use {
-    core::{cell::Cell, fmt, time::Duration},
+    core::{
+        cell::Cell,
+        fmt::{self, Display},
+        time::Duration,
+    },
+    fehler::throws,
+    log::trace,
     market::{
         channel::MpscConsumer, ClosedMarketError, Consumer, Inspector, StripFrom,
         StrippingConsumer, VigilantConsumer,
@@ -61,7 +67,8 @@ pub(crate) struct SettingConsumer {
 
 impl SettingConsumer {
     /// Creates a new [`SettingConsumer`].
-    pub(crate) fn new(path: &PathBuf) -> Result<Self, CreateSettingConsumerError> {
+    #[throws(CreateSettingConsumerError)]
+    pub(crate) fn new(path: &PathBuf) -> Self {
         let (event_tx, event_rx) = mpsc::channel();
         let mut watcher = notify::watcher(event_tx, Duration::from_secs(0))
             .map_err(CreateSettingConsumerError::CreateWatcher)?;
@@ -70,13 +77,13 @@ impl SettingConsumer {
             .watch(path, RecursiveMode::NonRecursive)
             .map_err(CreateSettingConsumerError::BeginWatch)?;
 
-        Ok(Self {
+        Self {
             watcher,
             consumer: VigilantConsumer::new(
                 StrippingConsumer::new(MpscConsumer::from(event_rx)),
                 SettingDeduplicator::new(path),
             ),
-        })
+        }
     }
 }
 
@@ -91,8 +98,9 @@ impl Consumer for SettingConsumer {
     type Good = Setting;
     type Error = ClosedMarketError;
 
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        self.consumer.consume()
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
+        self.consumer.consume()?
     }
 }
 
@@ -132,6 +140,7 @@ impl Inspector for SettingDeduplicator {
 
     #[inline]
     fn allows(&self, good: &Self::Good) -> bool {
+        trace!("Inspecting setting `{}`", good);
         let config = self.config.get();
         let mut new_config = config;
         let result;
@@ -157,8 +166,9 @@ struct Configuration {
 
 impl Configuration {
     /// Creates a new [`Configuration`].
-    fn new(file: &PathBuf) -> Result<Self, CreateConfigurationError> {
-        Ok(toml::from_str(&fs::read_to_string(file)?)?)
+    #[throws(CreateConfigurationError)]
+    fn new(file: &PathBuf) -> Self {
+        toml::from_str(&fs::read_to_string(file)?)?
     }
 }
 
@@ -177,4 +187,13 @@ impl Default for Wrap {
 pub enum Setting {
     /// If the document shall wrap long text.
     Wrap(bool),
+}
+
+impl Display for Setting {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Setting::Wrap(value) => write!(f, "Setting::Wrap({})", value),
+        }
+    }
 }

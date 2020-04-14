@@ -1,6 +1,7 @@
 //! Implements the logging functionality of `paper`.
 use {
     clap::ArgMatches,
+    fehler::throws,
     log::{info, LevelFilter, Log, Metadata, Record, SetLoggerError},
     std::{
         fs::File,
@@ -29,13 +30,13 @@ pub enum InitLoggerError {
 }
 
 /// Creates a new logger.
-pub(crate) fn init(config: Config) -> Result<(), InitLoggerError> {
+#[throws(InitLoggerError)]
+pub(crate) fn init(config: Config) {
     let logger = Logger::new(config.is_starship_enabled)?;
 
     log::set_boxed_logger(Box::new(logger))?;
     log::set_max_level(config.level);
     info!("Logger initialized");
-    Ok(())
 }
 
 /// Implements the logger of the application.
@@ -48,10 +49,11 @@ struct Logger {
 
 impl Logger {
     /// Creates a new [`Logger`].
-    fn new(is_starship_enabled: bool) -> Result<Self, InitLoggerError> {
+    #[throws(InitLoggerError)]
+    fn new(is_starship_enabled: bool) -> Self {
         let log_filename = "paper.log".to_string();
 
-        Ok(Self {
+        Self {
             file: Arc::new(RwLock::new(File::create(&log_filename).map_err(
                 |error| InitLoggerError::CreateFile {
                     file: log_filename,
@@ -59,7 +61,7 @@ impl Logger {
                 },
             )?)),
             is_starship_enabled,
-        })
+        }
     }
 }
 

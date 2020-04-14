@@ -14,6 +14,7 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     enum_map::Enum,
+    fehler::{throw, throws},
     fs::{ConsumeFileError, CreatePurlError, File, FileCommand, FileError, FileSystem, Purl},
     log::error,
     logging::{Config, InitLoggerError},
@@ -232,7 +233,8 @@ pub(crate) struct Interface {
 
 impl Interface {
     /// Creates a new interface.
-    pub(crate) fn new(arguments: &Arguments<'_>) -> Result<Self, CreateInterfaceError> {
+    #[throws(CreateInterfaceError)]
+    pub(crate) fn new(arguments: &Arguments<'_>) -> Self {
         // Create logger as early as possible.
         logging::init(arguments.log_config)?;
         let root_dir = Purl::try_from(env::current_dir()?)?;
@@ -254,18 +256,20 @@ impl Interface {
             interface.add_file(file)?;
         }
 
-        Ok(interface)
+        interface
     }
 
     /// Reads the file at `path`.
-    fn add_file(&self, path: &str) -> Result<(), CreateFileError> {
-        Ok(self.file_system.one_shot(FileCommand::Read {
+    #[throws(CreateFileError)]
+    fn add_file(&self, path: &str) {
+        self.file_system.one_shot(FileCommand::Read {
             url: self.root_dir.join(path)?,
-        })?)
+        })?
     }
 
     /// Edits the doc at `url`.
-    fn edit_doc(&self, file: &File, edit: DocEdit) -> Result<(), ProduceOutputError> {
+    #[throws(ProduceOutputError)]
+    fn edit_doc(&self, file: &File, edit: DocEdit) {
         match edit {
             DocEdit::Open { .. } => {
                 self.user_interface.force(ui::Output::OpenDoc {
@@ -301,8 +305,6 @@ impl Interface {
             }
             DocEdit::Close => {}
         }
-
-        Ok(())
     }
 }
 
@@ -310,35 +312,36 @@ impl Consumer for Interface {
     type Good = Input;
     type Error = ConsumeInputIssue;
 
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         if let Some(ui_input) = self
             .user_interface
             .consume()
             .map_err(ConsumeInputError::from)?
         {
-            Ok(Some(Self::Good::from(ui_input)))
-        } else if let Some(lang_input) = self
-            .language_tool
-            .consume()
-            .map_err(ConsumeInputError::from)?
-        {
-            Ok(Some(Self::Good::from(lang_input)))
+            Some(Self::Good::from(ui_input))
         } else if let Some(setting) = self
             .setting_consumer
             .consume()
             .map_err(ConsumeInputError::from)?
         {
-            Ok(Some(Self::Good::from(setting)))
+            Some(Self::Good::from(setting))
+        } else if let Some(lang_input) = self
+            .language_tool
+            .consume()
+            .map_err(ConsumeInputError::from)?
+        {
+            Some(Self::Good::from(lang_input))
         } else if let Some(file) = self
             .file_system
             .consume()
             .map_err(ConsumeInputError::from)?
         {
-            Ok(Some(Self::Good::from(file)))
+            Some(Self::Good::from(file))
         } else if self.has_quit.load(Ordering::Relaxed) {
-            Err(Self::Error::Quit)
+            throw!(Self::Error::Quit);
         } else {
-            Ok(None)
+            None
         }
     }
 }
@@ -405,7 +408,8 @@ impl Producer for Interface {
     type Good = Output;
     type Error = ProduceOutputError;
 
-    fn produce(&self, output: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, output: Self::Good) -> Option<Self::Good> {
         if let Ok(protocol) = ToolMessage::try_from(output.clone()) {
             if let Err(error) = self.language_tool.produce(protocol) {
                 if let Err(produce_error) = self.user_interface.produce(ui::Output::Notify {
@@ -479,7 +483,7 @@ impl Producer for Interface {
             }
         };
 
-        Ok(result.map(|_| output))
+        result.map(|_| output)
     }
 }
 
@@ -629,13 +633,14 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
     type Error = TryIntoProtocolError;
 
     #[inline]
-    fn try_from(value: Output) -> Result<Self, Self::Error> {
+    #[throws(Self::Error)]
+    fn try_from(value: Output) -> Self {
         match value {
             Output::EditDoc { file, edit } => {
                 if let Some(language_id) = file.language_id() {
                     let url: &Url = file.url().as_ref();
 
-                    Ok(Self {
+                    Self {
                         language_id,
                         message: ClientMessage::Doc {
                             url: url.clone(),
@@ -659,12 +664,12 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
                                 DocEdit::Close => DocMessage::Close,
                             },
                         },
-                    })
+                    }
                 } else {
-                    Err(TryIntoProtocolError::InvalidOutput)
+                    throw!(TryIntoProtocolError::InvalidOutput);
                 }
             }
-            Output::SendLsp(message) => Ok(message),
+            Output::SendLsp(message) => message,
             Output::GetFile { .. }
             | Output::Wrap { .. }
             | Output::MoveSelection { .. }
@@ -675,7 +680,7 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
             | Output::Reset { .. }
             | Output::Resize { .. }
             | Output::Write { .. }
-            | Output::Quit => Err(TryIntoProtocolError::InvalidOutput),
+            | Output::Quit => throw!(TryIntoProtocolError::InvalidOutput),
         }
     }
 }

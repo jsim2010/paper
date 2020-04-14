@@ -5,6 +5,7 @@ use {
         convert::{TryFrom, TryInto},
         fmt::{self, Display},
     },
+    fehler::throws,
     market::{ClosedMarketError, Consumer, Producer, UnlimitedQueue},
     std::{
         ffi::OsStr,
@@ -29,11 +30,12 @@ pub(crate) struct Purl {
 
 impl Purl {
     /// Creates a new `Purl` by appending `child` to `self`.
-    pub(crate) fn join(&self, child: &str) -> Result<Self, CreatePurlError> {
+    #[throws(CreatePurlError)]
+    pub(crate) fn join(&self, child: &str) -> Self {
         let mut path = self.path.clone();
 
         path.push(child);
-        path.try_into()
+        path.try_into()?
     }
 
     /// Returns the language id of `self`.
@@ -83,11 +85,12 @@ impl TryFrom<PathBuf> for Purl {
     type Error = CreatePurlError;
 
     #[inline]
-    fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
-        Ok(Self {
+    #[throws(Self::Error)]
+    fn try_from(value: PathBuf) -> Self {
+        Self {
             path: value.clone(),
             url: Url::from_file_path(&value).map_err(|_| Self::Error::Create { path: value })?,
-        })
+        }
     }
 }
 
@@ -113,10 +116,11 @@ impl Consumer for FileSystem {
     type Good = File;
     type Error = ConsumeFileError;
 
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         let path_url = self.files_to_read.consume()?;
 
-        Ok(if let Some(url) = path_url {
+        if let Some(url) = path_url {
             Some(File {
                 text: fs::read_to_string(&url).map_err(|error| ReadFileError {
                     file: url.to_string(),
@@ -126,7 +130,7 @@ impl Consumer for FileSystem {
             })
         } else {
             None
-        })
+        }
     }
 }
 
@@ -134,14 +138,15 @@ impl Producer for FileSystem {
     type Good = FileCommand;
     type Error = FileError;
 
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
-        Ok(match good {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+        match good {
             Self::Good::Read { url } => self
                 .files_to_read
                 .produce(url)
                 .map(|result| result.map(|url| Self::Good::Read { url }))?,
             Self::Good::Write { url, text } => fs::write(&url, text).map(|_| None)?,
-        })
+        }
     }
 }
 

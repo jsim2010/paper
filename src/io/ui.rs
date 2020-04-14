@@ -32,6 +32,7 @@ use {
         style::{Color, Print, ResetColor, SetBackgroundColor},
         terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     },
+    fehler::throws,
     log::warn,
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
     market::{Consumer, OneShotError, Producer},
@@ -131,14 +132,15 @@ pub(crate) struct Terminal {
 
 impl Terminal {
     /// Creates a new [`Terminal`].
-    pub(crate) fn new() -> Result<Self, CreateTerminalError> {
+    #[throws(CreateTerminalError)]
+    pub(crate) fn new() -> Self {
         let terminal = Self {
             out: RefCell::new(io::stdout()),
             body: RefCell::new(Body::default()),
         };
 
         terminal.one_shot(Output::Init)?;
-        Ok(terminal)
+        terminal
     }
 }
 
@@ -160,13 +162,14 @@ impl Consumer for Terminal {
     type Good = UserAction;
     type Error = ConsumeUserActionError;
 
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         if event::poll(INSTANT).map_err(Self::Error::Poll)? {
             event::read()
                 .map(|event| Some(event.into()))
-                .map_err(Self::Error::Read)
+                .map_err(Self::Error::Read)?
         } else {
-            Ok(None)
+            None
         }
     }
 }
@@ -175,7 +178,8 @@ impl Producer for Terminal {
     type Good = Output;
     type Error = ProduceTerminalOutputError;
 
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         match good {
             Output::Init => {
                 execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
@@ -256,7 +260,7 @@ impl Producer for Terminal {
             }
         }
 
-        Ok(None)
+        None
     }
 }
 
@@ -433,9 +437,10 @@ struct Body {
 
 impl Body {
     /// Sets `text` and prints it.
-    fn open(&mut self, text: &str) -> Result<(), ErrorKind> {
+    #[throws(ErrorKind)]
+    fn open(&mut self, text: &str) {
         self.lines = text.lines().map(ToString::to_string).collect();
-        self.refresh(&Selection::default())
+        self.refresh(&Selection::default())?
     }
 
     /// Returns the length at which a line will be wrapped.
@@ -455,7 +460,8 @@ impl Body {
     }
 
     /// Prints all of `self` with `selection` marked.
-    fn refresh(&mut self, selection: &Selection) -> Result<(), ErrorKind> {
+    #[throws(ErrorKind)]
+    fn refresh(&mut self, selection: &Selection) {
         let start_line = selection.start_line;
         if start_line < self.top_line {
             self.top_line = start_line
@@ -491,11 +497,12 @@ impl Body {
             Context::Document {
                 selected_line: start_line,
             },
-        )
+        )?
     }
 
     /// Adds an alert box over the grid.
-    fn add_alert(&mut self, message: &str, typ: MessageType) -> Result<(), ErrorKind> {
+    #[throws(ErrorKind)]
+    fn add_alert(&mut self, message: &str, typ: MessageType) {
         for line in message.lines() {
             self.printer.print_row(
                 self.alert_rows,
@@ -507,12 +514,11 @@ impl Body {
             )?;
             self.alert_rows = self.alert_rows.saturating_add(1);
         }
-
-        Ok(())
     }
 
     /// Adds an input box beginning with `prompt`
-    fn add_intake(&mut self, mut prompt: String) -> Result<(), ErrorKind> {
+    #[throws(ErrorKind)]
+    fn add_intake(&mut self, mut prompt: String) {
         prompt.push_str(": ");
         self.printer.print_row(
             self.size.rows.saturating_sub(1),
@@ -523,11 +529,11 @@ impl Body {
             &Context::Intake,
         )?;
         self.is_intake_active = true;
-        Ok(())
     }
 
     /// Removes all temporary boxes and re-displays the full grid.
-    fn reset(&mut self, selection: &Selection) -> Result<(), ErrorKind> {
+    #[throws(ErrorKind)]
+    fn reset(&mut self, selection: &Selection) {
         if self.alert_rows != 0 {
             self.printer.print_rows(
                 Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()),
@@ -552,8 +558,6 @@ impl Body {
             )?;
             self.is_intake_active = false;
         }
-
-        Ok(())
     }
 }
 
@@ -583,12 +587,8 @@ struct Printer {
 
 impl Printer {
     /// Prints `row` at `index` of body with `context`.
-    fn print_row<'a>(
-        &'a mut self,
-        index: UiUnit,
-        row: Row<'a>,
-        context: &Context,
-    ) -> Result<(), ErrorKind> {
+    #[throws(ErrorKind)]
+    fn print_row<'a>(&'a mut self, index: UiUnit, row: Row<'a>, context: &Context) {
         // Add 1 to account for header.
         queue!(self.out, MoveTo(0, index.saturating_add(1)))?;
 
@@ -619,11 +619,12 @@ impl Printer {
             queue!(self.out, ResetColor)?;
         }
 
-        self.out.flush().map_err(|e| e.into())
+        self.out.flush().map_err(ErrorKind::from)?
     }
 
     /// Prints `rows` with `context`.
-    fn print_rows<'a, T>(&'a mut self, rows: T, context: Context) -> Result<(), ErrorKind>
+    #[throws(ErrorKind)]
+    fn print_rows<'a, T>(&'a mut self, rows: T, context: Context)
     where
         T: Iterator<Item = Row<'a>>,
     {
@@ -631,7 +632,7 @@ impl Printer {
             self.print_row(index, row, &context)?;
         }
 
-        execute!(self.out, Clear(ClearType::FromCursorDown))
+        execute!(self.out, Clear(ClearType::FromCursorDown))?
     }
 }
 
@@ -676,8 +677,9 @@ impl Selection {
     }
 
     /// Returns the [`Range`] represented by `self`.
-    pub(crate) fn range(&self) -> Result<Range, SelectionConversionError> {
-        Ok(Range {
+    #[throws(SelectionConversionError)]
+    pub(crate) fn range(&self) -> Range {
+        Range {
             start: Position {
                 line: u64::try_from(self.start_line)?,
                 character: 0,
@@ -686,7 +688,7 @@ impl Selection {
                 line: u64::try_from(self.end_line)?,
                 character: 0,
             },
-        })
+        }
     }
 
     /// Moves `self` down by `amount` lines up to `line_count`.
