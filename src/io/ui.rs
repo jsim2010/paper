@@ -54,7 +54,7 @@ pub enum CreateTerminalError {
 }
 
 /// A span of time that equal to no time.
-static INSTANT: Duration = Duration::from_secs(0);
+static NO_DURATION: Duration = Duration::from_secs(0);
 
 /// An error producing terminal output.
 #[derive(Debug, Error)]
@@ -122,6 +122,33 @@ pub enum ConsumeUserActionError {
     Read(#[source] ErrorKind),
 }
 
+/// A [`Consumer`] of [`UserActions`].
+#[derive(Debug)]
+pub(crate) struct UserActionConsumer;
+
+impl UserActionConsumer {
+    /// Creates a new [`UserActionConsumer`].
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+impl Consumer for UserActionConsumer {
+    type Good = UserAction;
+    type Error = ConsumeUserActionError;
+
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
+        if event::poll(NO_DURATION).map_err(Self::Error::Poll)? {
+            event::read()
+                .map(|event| Some(event.into()))
+                .map_err(Self::Error::Read)?
+        } else {
+            None
+        }
+    }
+}
+
 /// A user interface provided by a terminal.
 pub(crate) struct Terminal {
     /// The output of the application.
@@ -139,7 +166,7 @@ impl Terminal {
             body: RefCell::new(Body::default()),
         };
 
-        terminal.one_shot(Output::Init)?;
+        terminal.attempt(Output::Init, 0)?;
         terminal
     }
 }
@@ -164,7 +191,7 @@ impl Consumer for Terminal {
 
     #[throws(Self::Error)]
     fn consume(&self) -> Option<Self::Good> {
-        if event::poll(INSTANT).map_err(Self::Error::Poll)? {
+        if event::poll(NO_DURATION).map_err(Self::Error::Poll)? {
             event::read()
                 .map(|event| Some(event.into()))
                 .map_err(Self::Error::Read)?

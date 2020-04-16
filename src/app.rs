@@ -49,7 +49,7 @@ impl Processor {
     /// Performs `operation` and returns the appropriate [`Output`]s.
     pub(crate) fn operate(&mut self, operation: Operation) -> Vec<Output> {
         let mut outputs = Vec::new();
-        // Retrieve here to avoid error. This will not work once changes start modifying the working dir.
+
         match operation {
             Operation::UpdateSetting(setting) => {
                 outputs.append(&mut self.update_setting(setting));
