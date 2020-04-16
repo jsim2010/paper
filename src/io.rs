@@ -23,7 +23,7 @@ use {
         ToolMessage,
     },
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
-    market::{ClosedMarketError, Consumer, OneShotError, Producer},
+    market::{ClosedMarketError, Collector, Consumer, OneShotError, Producer},
     starship::{context::Context, print},
     std::{
         env,
@@ -34,6 +34,7 @@ use {
     ui::{
         BodySize, CommandError, ConsumeUserActionError, CreateTerminalError,
         ProduceTerminalOutputError, Selection, SelectionConversionError, Terminal, UserAction,
+        UserActionConsumer,
     },
     url::Url,
 };
@@ -217,10 +218,10 @@ pub enum ConsumeInputError {
 /// The interface between the application and all external components.
 #[derive(Debug)]
 pub(crate) struct Interface {
+    /// A [`Collector`] of all input [`Consumer`]s.
+    consumers: Collector<Input, ConsumeInputError>,
     /// Manages the user interface.
     user_interface: Terminal,
-    /// Notifies `self` of any events to the config file.
-    setting_consumer: SettingConsumer,
     /// The interface of the application with all language servers.
     language_tool: LanguageTool,
     /// The root directory of the application.
@@ -238,13 +239,16 @@ impl Interface {
         // Create logger as early as possible.
         logging::init(arguments.log_config)?;
         let root_dir = Purl::try_from(env::current_dir()?)?;
+        let mut consumers = Collector::new();
+        consumers.convert_into_and_push(UserActionConsumer::new());
+        consumers.convert_into_and_push(SettingConsumer::new(
+            &dirs::home_dir()
+                .ok_or(CreateInterfaceError::HomeDir)?
+                .join(".config/paper.toml"),
+        )?);
 
         let interface = Self {
-            setting_consumer: SettingConsumer::new(
-                &dirs::home_dir()
-                    .ok_or(CreateInterfaceError::HomeDir)?
-                    .join(".config/paper.toml"),
-            )?,
+            consumers,
             user_interface: Terminal::new()?,
             language_tool: LanguageTool::new(&root_dir)?,
             file_system: FileSystem::default(),
@@ -262,9 +266,12 @@ impl Interface {
     /// Reads the file at `path`.
     #[throws(CreateFileError)]
     fn add_file(&self, path: &str) {
-        self.file_system.one_shot(FileCommand::Read {
-            url: self.root_dir.join(path)?,
-        })?
+        self.file_system.attempt(
+            FileCommand::Read {
+                url: self.root_dir.join(path)?,
+            },
+            0,
+        )?
     }
 
     /// Edits the doc at `url`.
@@ -314,18 +321,8 @@ impl Consumer for Interface {
 
     #[throws(Self::Error)]
     fn consume(&self) -> Option<Self::Good> {
-        if let Some(ui_input) = self
-            .user_interface
-            .consume()
-            .map_err(ConsumeInputError::from)?
-        {
-            Some(Self::Good::from(ui_input))
-        } else if let Some(setting) = self
-            .setting_consumer
-            .consume()
-            .map_err(ConsumeInputError::from)?
-        {
-            Some(Self::Good::from(setting))
+        if let Some(input) = self.consumers.consume()? {
+            Some(input)
         } else if let Some(lang_input) = self
             .language_tool
             .consume()
@@ -349,10 +346,13 @@ impl Consumer for Interface {
 impl Drop for Interface {
     fn drop(&mut self) {
         for language_id in self.language_tool.language_ids() {
-            if let Err(error) = self.language_tool.force(ToolMessage {
-                language_id,
-                message: ClientMessage::Shutdown,
-            }) {
+            if let Err(error) = self.language_tool.attempt(
+                ToolMessage {
+                    language_id,
+                    message: ClientMessage::Shutdown,
+                },
+                0,
+            ) {
                 error!(
                     "Failed to send shutdown message to {} language server: {}",
                     language_id, error
@@ -380,10 +380,13 @@ impl Drop for Interface {
         }
 
         for language_id in self.language_tool.language_ids() {
-            if let Err(error) = self.language_tool.force(ToolMessage {
-                language_id,
-                message: ClientMessage::Exit,
-            }) {
+            if let Err(error) = self.language_tool.attempt(
+                ToolMessage {
+                    language_id,
+                    message: ClientMessage::Exit,
+                },
+                0,
+            ) {
                 error!(
                     "Failed to send exit message to {} language server: {}",
                     language_id, error

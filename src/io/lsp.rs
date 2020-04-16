@@ -173,51 +173,54 @@ impl LanguageClient {
         let settings = Cell::new(LspSettings::default());
 
         #[allow(deprecated)] // root_path is a required field.
-        writer.one_shot(Message::request::<Initialize>(
-            InitializeParams {
-                process_id: Some(u64::from(process::id())),
-                root_path: None,
-                root_uri: Some(root.as_ref().clone()),
-                initialization_options: None,
-                capabilities: ClientCapabilities {
-                    workspace: None,
-                    text_document: Some(TextDocumentClientCapabilities {
-                        synchronization: Some(SynchronizationCapability {
-                            dynamic_registration: None,
-                            will_save: Some(true),
-                            will_save_wait_until: None,
-                            did_save: None,
+        writer.attempt(
+            Message::request::<Initialize>(
+                InitializeParams {
+                    process_id: Some(u64::from(process::id())),
+                    root_path: None,
+                    root_uri: Some(root.as_ref().clone()),
+                    initialization_options: None,
+                    capabilities: ClientCapabilities {
+                        workspace: None,
+                        text_document: Some(TextDocumentClientCapabilities {
+                            synchronization: Some(SynchronizationCapability {
+                                dynamic_registration: None,
+                                will_save: Some(true),
+                                will_save_wait_until: None,
+                                did_save: None,
+                            }),
+                            completion: None,
+                            hover: None,
+                            signature_help: None,
+                            references: None,
+                            document_highlight: None,
+                            document_symbol: None,
+                            formatting: None,
+                            range_formatting: None,
+                            on_type_formatting: None,
+                            declaration: None,
+                            definition: None,
+                            type_definition: None,
+                            implementation: None,
+                            code_action: None,
+                            code_lens: None,
+                            document_link: None,
+                            color_provider: None,
+                            rename: None,
+                            publish_diagnostics: None,
+                            folding_range: None,
                         }),
-                        completion: None,
-                        hover: None,
-                        signature_help: None,
-                        references: None,
-                        document_highlight: None,
-                        document_symbol: None,
-                        formatting: None,
-                        range_formatting: None,
-                        on_type_formatting: None,
-                        declaration: None,
-                        definition: None,
-                        type_definition: None,
-                        implementation: None,
-                        code_action: None,
-                        code_lens: None,
-                        document_link: None,
-                        color_provider: None,
-                        rename: None,
-                        publish_diagnostics: None,
-                        folding_range: None,
-                    }),
-                    window: None,
-                    experimental: None,
+                        window: None,
+                        experimental: None,
+                    },
+                    trace: None,
+                    workspace_folders: None,
+                    client_info: None,
                 },
-                trace: None,
-                workspace_folders: None,
-                client_info: None,
-            },
+                0,
+            )?,
             0,
-        )?)?;
+        )?;
         Self {
             // error_processor must be created before server is moved.
             error_processor: LspErrorProcessor::new(server.stderr()?),
