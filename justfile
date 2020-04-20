@@ -10,6 +10,10 @@ alias v := validate
 build:
     cargo build
 
+# Checks dependencies of the project
+check_deps:
+    cargo deny check
+
 # Checks the formatting of the project
 check_format:
     cargo fmt -- --check
@@ -190,4 +194,4 @@ test:
     cargo test --verbose --all-features
 
 # Validates the project
-validate: check_format build test lint
+validate: check_format check_deps build test lint
