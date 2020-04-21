@@ -5,7 +5,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - name: checkout project
+      uses: actions/checkout@v2
     - name: set cargo permissions to allow cache to work
       run: sudo chown -R $(whoami):$(id -ng) ~/.cargo/
     - name: cache cargo binaries
