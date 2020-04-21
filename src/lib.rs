@@ -13,19 +13,55 @@
 
 mod app;
 pub mod io;
-
-pub use io::Arguments;
+mod logging;
 
 use {
     app::Processor,
+    clap::ArgMatches,
     fehler::{throw, throws},
     io::{
         ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
     },
     log::{error, info},
+    logging::{Config, InitLoggerError},
     market::{Consumer, Producer},
     thiserror::Error,
 };
+
+/// A configuration of the initialization of a [`Paper`].
+///
+/// [`Paper`]: ../struct.Paper.html
+#[derive(Clone, Debug)]
+pub struct Arguments<'a> {
+    /// The file to be viewed.
+    ///
+    /// [`None`] indicates that no file will be viewed.
+    ///
+    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
+    pub file: Option<&'a str>,
+    /// The configuration of the logger.
+    pub log_config: Config,
+}
+
+impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
+    #[inline]
+    fn from(value: &'a ArgMatches<'a>) -> Self {
+        Self {
+            file: value.value_of("file"),
+            log_config: Config::from(value),
+        }
+    }
+}
+
+impl Default for Arguments<'_> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            file: None,
+            log_config: Config::default(),
+        }
+    }
+}
 
 /// An instance of the `paper` program.
 ///
@@ -58,9 +94,11 @@ impl Paper {
     #[inline]
     #[throws(CreatePaperError)]
     pub fn new(arguments: &Arguments<'_>) -> Self {
+        // First step is to create logger.
+        logging::init(arguments.log_config)?;
+
         Self {
-            // Create Interface first to create logger as early as possible.
-            io: Interface::new(arguments)?,
+            io: Interface::new(arguments.file)?,
             processor: Processor::new(),
         }
     }
@@ -121,6 +159,9 @@ pub enum Failure {
 /// [`Paper`]: struct.Paper.html
 #[derive(Debug, Error)]
 pub enum CreatePaperError {
+    /// An error creating the application logger.
+    #[error("failed to initialize logger: {0}")]
+    Logger(#[from] InitLoggerError),
     /// An error creating an [`Interface`].
     ///
     /// [`Interface`]: io/struct.Interface.html

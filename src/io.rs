@@ -1,7 +1,6 @@
 //! Implements the interface for all input and output to the application.
 pub mod config;
 pub mod fs;
-pub mod logging;
 pub mod lsp;
 pub mod ui;
 
@@ -17,7 +16,6 @@ use {
     fehler::{throw, throws},
     fs::{ConsumeFileError, CreatePurlError, File, FileCommand, FileError, FileSystem, Purl},
     log::error,
-    logging::{Config, InitLoggerError},
     lsp::{
         ClientMessage, DocMessage, Fault, LanguageTool, SendNotificationError, ServerMessage,
         ToolMessage,
@@ -39,49 +37,11 @@ use {
     url::Url,
 };
 
-/// A configuration of the initialization of a [`Paper`].
-///
-/// [`Paper`]: ../struct.Paper.html
-#[derive(Clone, Debug)]
-pub struct Arguments<'a> {
-    /// The file to be viewed.
-    ///
-    /// [`None`] indicates that no file will be viewed.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    pub file: Option<&'a str>,
-    /// The configuration of the logger.
-    pub log_config: Config,
-}
-
-impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
-    #[inline]
-    fn from(value: &'a ArgMatches<'a>) -> Self {
-        Self {
-            file: value.value_of("file"),
-            log_config: Config::from(value),
-        }
-    }
-}
-
-impl Default for Arguments<'_> {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            file: None,
-            log_config: Config::default(),
-        }
-    }
-}
-
 /// An error creating an [`Interface`].
 ///
 /// [`Interface`]: struct.Interface.html
 #[derive(Debug, Error)]
 pub enum CreateInterfaceError {
-    /// An error initializing the logger.
-    #[error(transparent)]
-    Logger(#[from] InitLoggerError),
     /// An error determing the current working directory.
     #[error("current working directory is invalid: {0}")]
     WorkingDir(#[from] io::Error),
@@ -235,9 +195,7 @@ pub(crate) struct Interface {
 impl Interface {
     /// Creates a new interface.
     #[throws(CreateInterfaceError)]
-    pub(crate) fn new(arguments: &Arguments<'_>) -> Self {
-        // Create logger as early as possible.
-        logging::init(arguments.log_config)?;
+    pub(crate) fn new(initial_file: Option<&'_ str>) -> Self {
         let root_dir = Purl::try_from(env::current_dir()?)?;
         let mut consumers = Collector::new();
         consumers.convert_into_and_push(UserActionConsumer::new());
@@ -256,7 +214,7 @@ impl Interface {
             has_quit: AtomicBool::new(false),
         };
 
-        if let Some(file) = arguments.file {
+        if let Some(file) = initial_file {
             interface.add_file(file)?;
         }
 
