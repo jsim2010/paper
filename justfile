@@ -4,6 +4,10 @@ alias l := lint
 alias t := test
 alias v := validate
 
+# Create a branch to resolve <issue>
+branch issue:
+    git switch -c {{issue}}
+
 # Ideally `build` would allow warnings - see https://github.com/rust-lang/cargo/issues/3591.
 #
 # Builds the project
