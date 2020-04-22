@@ -2,6 +2,9 @@
 
 A terminal-based text editor with goals to maximize simplicity and efficiency.
 
+![Crates.io](https://img.shields.io/crates/v/paper)
+![docs](https://docs.rs/paper/badge.svg)
+
 This project is very much in an alpha state.
 
 ## Development
