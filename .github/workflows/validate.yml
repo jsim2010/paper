@@ -15,10 +15,10 @@ jobs:
       with:
         path: ~/.cargo/bin
         key: cargo-bin_2020-04-20
-    - name: update rust
-      run: rustup update 1.42.0 && rustup override set 1.42.0 && rustup component add rustfmt && rustup component add clippy
-    - name: install binaries
+    - name: install just
       if: steps.cache.outputs.cache-hit != 'true'
-      run: cargo install just && cargo install cargo-deny
+      run: cargo install just
+    - name: update rust
+      run: rustup update 1.42.0
     - name: validate
       run: just validate

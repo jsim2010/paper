@@ -1,12 +1,23 @@
 alias b := build
+alias d := doc
 alias f := fix
 alias l := lint
 alias t := test
 alias v := validate
 
-# Create a branch to resolve <issue>
-branch issue:
-    git switch -c {{issue}}
+# For now, this is unused because it fails on GitHub runner (seems cargo thinks cargo-deny is not installed even though the binary has been included from cache)
+#
+# Installs everything needed for dependencies
+_install_deps:
+    cargo install --version 0.6.6 cargo-deny
+
+# Installs everything needed for formatting
+_install_format:
+    rustup component add rustfmt
+
+# Installs everything needed for linting
+_install_lint:
+    rustup component add clippy
 
 # Ideally `build` would allow warnings - see https://github.com/rust-lang/cargo/issues/3591.
 #
@@ -14,27 +25,19 @@ branch issue:
 build:
     cargo build
 
-# Checks dependencies of the project
-check_deps:
-    cargo deny check
-
-# Checks the formatting of the project
-check_format:
-    cargo fmt -- --check
-
-# Generates documentation for public items.
+# Generates documentation for public items
 doc:
     cargo doc
 
-# Generates documentation for public and private items.
+# Generates documentation for public and private items
 doc_all:
     cargo doc --document-private-items
 
 # Fixes issues that can be addressed automatically
-fix: format
+fix: _install_format fix_format
 
 # Formats rust code
-format:
+fix_format: _install_format
     cargo fmt
 
 # Any lint that is not forbidden is explained below:
@@ -54,8 +57,8 @@ format:
 # - clippy::empty_enum: recommended `!` type is not stable
 # - clippy::implicit_return: rust convention calls for implicit return
 #
-# Validates code style
-lint:
+# Lints the project source code
+lint: _install_lint
     cargo clippy --\
      -F absolute_paths_not_starting_with_crate\
      -F anonymous_parameters\
@@ -193,9 +196,25 @@ lint:
      -F clippy::wildcard_enum_match_arm\
      -F clippy::wrong_pub_self_convention
 
+# Create pull request for resolving <issue_num>
+pr issue_num:
+    hub pull-request --push -m "`hub issue show -f "%t" {{issue_num}}`" -m "Closes #{{issue_num}}"
+
+# Configures the version of rust
+set_rust version:
+    rustup override set {{version}}
+
 # Runs tests
 test:
     cargo test --verbose --all-features
 
 # Validates the project
-validate: check_format check_deps build test lint
+validate: (set_rust "1.42.0") validate_format validate_deps lint build test
+
+# Validates dependencies of the project
+validate_deps:
+    cargo deny check
+
+# Validates the formatting of the project
+validate_format: _install_format
+    cargo fmt -- --check
