@@ -5,6 +5,8 @@ alias l := lint
 alias t := test
 alias v := validate
 
+# For now, this is unused because it fails on GitHub runner (seems cargo thinks cargo-deny is not installed even though the binary has been included from cache)
+#
 # Installs everything needed for dependencies
 _install_deps:
     cargo install --version 0.6.6 cargo-deny
@@ -210,7 +212,7 @@ test:
 validate: (set_rust "1.42.0") validate_format validate_deps lint build test
 
 # Validates dependencies of the project
-validate_deps: _install_deps
+validate_deps:
     cargo deny check
 
 # Validates the formatting of the project
