@@ -4,6 +4,12 @@ alias l := lint
 alias t := test
 alias v := validate
 
+current_git_branch := `git rev-parse --abbrev-ref HEAD`
+
+# Create a branch to resolve <issue>
+branch issue:
+    git switch -c {{issue}}
+
 # Ideally `build` would allow warnings - see https://github.com/rust-lang/cargo/issues/3591.
 #
 # Builds the project
@@ -188,6 +194,10 @@ lint:
      -F clippy::use_debug\
      -F clippy::wildcard_enum_match_arm\
      -F clippy::wrong_pub_self_convention
+
+# Create pull request for resolving <issue_num>
+pr issue_num:
+    hub pull-request --push -m "`hub issue show -f "%t" {{issue_num}}`" -m "Closes #{{issue_num}}"
 
 # Runs tests
 test:
