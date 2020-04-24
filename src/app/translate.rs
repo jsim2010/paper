@@ -4,7 +4,7 @@ use {
         config::Setting,
         fs::File,
         lsp::{ClientMessage, ServerMessage, ToolMessage},
-        ui::{BodySize, Key, UserAction},
+        ui::{KeyEvent, BodySize, Key, UserAction},
         Input,
     },
     core::fmt::{self, Debug},
@@ -369,8 +369,8 @@ impl ModeInterpreter for ViewInterpreter {
         let mut output = Output::new();
 
         match input {
-            UserAction::Key { key, .. } => {
-                Self::decode_key(key, &mut output);
+            UserAction::Key(KeyEvent{code, .. }) => {
+                Self::decode_key(code, &mut output);
             }
             UserAction::Resize(size) => {
                 output.add_op(Operation::Size(size));
@@ -398,10 +398,10 @@ impl ModeInterpreter for ConfirmInterpreter {
         let mut output = Output::new();
 
         match input {
-            UserAction::Key {
-                key: Key::Char('y'),
+            UserAction::Key (KeyEvent{
+                code: Key::Char('y'),
                 ..
-            } => {
+            }) => {
                 output.add_op(Operation::Quit);
             }
             UserAction::Key { .. } | UserAction::Mouse | UserAction::Resize { .. } => {
@@ -429,18 +429,18 @@ impl ModeInterpreter for CollectInterpreter {
         let mut output = Output::new();
 
         match input {
-            UserAction::Key { key: Key::Esc, .. } => {
+            UserAction::Key (KeyEvent{ code: Key::Esc, .. }) => {
                 output.reset();
             }
-            UserAction::Key {
-                key: Key::Enter, ..
-            } => {
+            UserAction::Key (KeyEvent{
+                code: Key::Enter, ..
+            }) => {
                 output.add_op(Operation::Execute);
                 output.set_mode(Mode::View);
             }
-            UserAction::Key {
-                key: Key::Char(c), ..
-            } => {
+            UserAction::Key (KeyEvent{
+                code: Key::Char(c), ..
+            }) => {
                 output.add_op(Operation::Collect(c));
             }
             UserAction::Key { .. } | UserAction::Mouse | UserAction::Resize { .. } => {}

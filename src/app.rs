@@ -232,6 +232,7 @@ impl Document {
         }
     }
 
+    /// Returns the [`Output`] for opening `self`.
     fn open_output(&self) -> Output {
         Output::EditDoc {
             file: self.file.clone(),
