@@ -11,7 +11,7 @@ use {
     },
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
-    std::{cell::RefCell, rc::Rc},
+    std::{cell::RefCell, mem, rc::Rc},
     translate::{Command, Direction, DocOp, Interpreter, Magnitude, Operation, Vector},
 };
 
@@ -87,10 +87,10 @@ impl Processor {
             }
             Operation::Execute => {
                 if self.command.is_some() {
-                    outputs.push(Output::GetFile {
-                        path: self.input.clone(),
-                    });
-                    self.input.clear();
+                    let mut path = String::new();
+                    mem::swap(&mut path, &mut self.input);
+
+                    outputs.push(Output::GetFile {path});
                 }
             }
             Operation::Document(doc_op) => {
@@ -172,18 +172,14 @@ impl Pane {
     /// Opens a document at `path`.
     fn open_doc(&mut self, file: File) -> Vec<Output> {
         let mut outputs = Vec::new();
-        let doc = self.create_doc(file.clone());
-        if let Some(old_doc) = self.doc.take() {
+        let doc = self.create_doc(file);
+        let output = doc.open_output();
+
+        if let Some(old_doc) = self.doc.replace(doc) {
             outputs.push(old_doc.close());
         }
 
-        outputs.push(Output::EditDoc {
-            file,
-            edit: DocEdit::Open {
-                version: doc.version,
-            },
-        });
-        self.doc = Some(doc);
+        outputs.push(output);
         outputs
     }
 
@@ -207,7 +203,7 @@ impl Pane {
 }
 
 /// A file and the user's current interactions with it.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Document {
     /// The file of the document.
     file: File,
@@ -233,6 +229,15 @@ impl Document {
             selection,
             scroll_amount: Rc::clone(scroll_amount),
             version: 0,
+        }
+    }
+
+    fn open_output(&self) -> Output {
+        Output::EditDoc {
+            file: self.file.clone(),
+            edit: DocEdit::Open {
+                version: self.version,
+            },
         }
     }
 
