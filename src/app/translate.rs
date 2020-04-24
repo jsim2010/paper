@@ -39,10 +39,7 @@ pub(crate) enum Operation {
     /// An operation to edit the text or selection of the document.
     Document(DocOp),
     /// Opens a file.
-    OpenDoc {
-        /// The file.
-        file: File,
-    },
+    OpenDoc(Box<File>),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
@@ -168,7 +165,7 @@ impl Interpreter {
 
         match input {
             Input::File(file) => {
-                output.add_op(Operation::OpenDoc { file });
+                output.add_op(Operation::OpenDoc(file));
             }
             Input::Glitch(glitch) => {
                 output.add_op(Operation::Alert(ShowMessageParams {
@@ -185,7 +182,7 @@ impl Interpreter {
             }) => {
                 if let Some(return_message) = match message {
                     ServerMessage::Initialize => Some(ClientMessage::Initialized),
-                    ServerMessage::Request { id } => Some(ClientMessage::RegisterCapability { id }),
+                    ServerMessage::Request { id } => Some(ClientMessage::RegisterCapability(Box::new(id))),
                     ServerMessage::Shutdown => None,
                 } {
                     output.add_op(Operation::SendLsp(ToolMessage {

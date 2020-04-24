@@ -47,12 +47,12 @@ fix_format: _install_format
 # - unused_extern_crates: allowed by Deserialize and Serialize
 # - unused_qualifications: allowed by Debug
 # - unused_results: allowed by io::lsp::utils
+# - variant_size_differences: some variants size differences are unavoidable
 # - clippy::nursery: nursery lints are not fully developed
 # - clippy::indexing_slicing: required by EnumMap
 # - clippy::unreachable: required by Enum
 # ALLOW
 # - box_pointers: box pointers are okay and useful
-# - variant_size_differences: no major impact under normal conditions
 # - clippy::multiple_crate_versions: not fixable when caused by dependencies
 # - clippy::empty_enum: recommended `!` type is not stable
 # - clippy::implicit_return: rust convention calls for implicit return
@@ -86,7 +86,7 @@ lint: _install_lint
      -F unused_lifetimes\
      -D unused_qualifications\
      -D unused_results\
-     -A variant_size_differences\
+     -D variant_size_differences\
      -F warnings\
      -F ambiguous_associated_items\
      -F conflicting_repr_hints\

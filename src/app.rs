@@ -7,7 +7,7 @@ use {
         config::Setting,
         fs::File,
         ui::{BodySize, Selection},
-        DocEdit, Input, Output,
+        DocChange, DocEdit, Input, Output,
     },
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
@@ -103,8 +103,8 @@ impl Processor {
 
                 outputs.push(Output::Quit);
             }
-            Operation::OpenDoc { file } => {
-                outputs.append(&mut self.pane.open_doc(file));
+            Operation::OpenDoc(file) => {
+                outputs.append(&mut self.pane.open_doc(*file));
             }
             Operation::SendLsp(message) => {
                 outputs.push(Output::SendLsp(message));
@@ -251,11 +251,7 @@ impl Document {
         self.version = self.version.wrapping_add(1);
         Output::EditDoc {
             file: self.file.clone(),
-            edit: DocEdit::Change {
-                new_text: String::new(),
-                selection: self.selection,
-                version: self.version,
-            },
+            edit: DocEdit::Change(Box::new(DocChange::new(self.selection, self.version))),
         }
     }
 

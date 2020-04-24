@@ -521,9 +521,7 @@ impl Body {
 
         self.printer.print_rows(
             visible_rows.drain(..),
-            Context::Document {
-                selected_line: start_line,
-            },
+            Context::Document(start_line),
         )?
     }
 
@@ -564,9 +562,7 @@ impl Body {
         if self.alert_rows != 0 {
             self.printer.print_rows(
                 Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()),
-                Context::Document {
-                    selected_line: selection.end_line,
-                },
+                Context::Document(selection.end_line),
             )?;
             self.alert_rows = 0;
         }
@@ -579,9 +575,7 @@ impl Body {
                 Rows::new(&self.lines, self.wrap_length())
                     .nth(row.into())
                     .unwrap_or_default(),
-                &Context::Document {
-                    selected_line: selection.end_line,
-                },
+                &Context::Document(selection.end_line),
             )?;
             self.is_intake_active = false;
         }
@@ -589,13 +583,11 @@ impl Body {
 }
 
 /// Describes the context in which text is being printed.
+#[allow(variant_size_differences)] // Size difference is unavoidable.
 #[derive(Clone, Copy)]
 enum Context {
-    /// A document.
-    Document {
-        /// The index of the line that is selected.
-        selected_line: usize,
-    },
+    /// A document, with the index of the line that is selected given.
+    Document(usize),
     /// An intake text.
     Intake,
     /// A message to the user.
@@ -620,7 +612,7 @@ impl Printer {
         queue!(self.out, MoveTo(0, index.saturating_add(1)))?;
 
         let color = match context {
-            Context::Document { selected_line } => {
+            Context::Document ( selected_line ) => {
                 if row.line == *selected_line {
                     Some(Color::DarkGrey)
                 } else {
