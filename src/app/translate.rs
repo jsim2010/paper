@@ -4,10 +4,11 @@ use {
         config::Setting,
         fs::File,
         lsp::{ClientMessage, ServerMessage, ToolMessage},
-        ui::{KeyEvent, BodySize, Key, UserAction},
+        ui::{BodySize, UserAction},
         Input,
     },
     core::fmt::{self, Debug},
+    crossterm::event::KeyCode,
     enum_map::{enum_map, Enum, EnumMap},
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     parse_display::Display as ParseDisplay,
@@ -182,7 +183,9 @@ impl Interpreter {
             }) => {
                 if let Some(return_message) = match message {
                     ServerMessage::Initialize => Some(ClientMessage::Initialized),
-                    ServerMessage::Request { id } => Some(ClientMessage::RegisterCapability(Box::new(id))),
+                    ServerMessage::Request { id } => {
+                        Some(ClientMessage::RegisterCapability(Box::new(id)))
+                    }
                     ServerMessage::Shutdown => None,
                 } {
                     output.add_op(Operation::SendLsp(ToolMessage {
@@ -300,66 +303,66 @@ impl ViewInterpreter {
     }
 
     /// Converts `output` appropriate to `key`.
-    fn decode_key(key: Key, output: &mut Output) {
+    fn decode_key(key: KeyCode, output: &mut Output) {
         match key {
-            Key::Esc => {
+            KeyCode::Esc => {
                 output.add_op(Operation::Reset);
             }
-            Key::Char('w') => {
+            KeyCode::Char('w') => {
                 output.add_op(Operation::Confirm(ConfirmAction::Quit));
                 output.set_mode(Mode::Confirm);
             }
-            Key::Char('s') => {
+            KeyCode::Char('s') => {
                 output.add_op(Operation::Document(DocOp::Save));
             }
-            Key::Char('o') => {
+            KeyCode::Char('o') => {
                 output.add_op(Operation::StartCommand(Command::Open));
                 output.set_mode(Mode::Collect);
             }
-            Key::Char('j') => {
+            KeyCode::Char('j') => {
                 output.add_op(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
                     Magnitude::Single,
                 ))));
             }
-            Key::Char('k') => {
+            KeyCode::Char('k') => {
                 output.add_op(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
                     Magnitude::Single,
                 ))));
             }
-            Key::Char('J') => {
+            KeyCode::Char('J') => {
                 output.add_op(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
                     Magnitude::Half,
                 ))));
             }
-            Key::Char('K') => {
+            KeyCode::Char('K') => {
                 output.add_op(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
                     Magnitude::Half,
                 ))));
             }
-            Key::Char('d') => {
+            KeyCode::Char('d') => {
                 output.add_op(Operation::Document(DocOp::Delete));
             }
-            Key::Backspace
-            | Key::Enter
-            | Key::Left
-            | Key::Right
-            | Key::Up
-            | Key::Down
-            | Key::Home
-            | Key::End
-            | Key::PageUp
-            | Key::PageDown
-            | Key::Tab
-            | Key::BackTab
-            | Key::Delete
-            | Key::Insert
-            | Key::F(..)
-            | Key::Null
-            | Key::Char(..) => {}
+            KeyCode::Backspace
+            | KeyCode::Enter
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Delete
+            | KeyCode::Insert
+            | KeyCode::F(..)
+            | KeyCode::Null
+            | KeyCode::Char(..) => {}
         }
     }
 }
@@ -369,7 +372,7 @@ impl ModeInterpreter for ViewInterpreter {
         let mut output = Output::new();
 
         match input {
-            UserAction::Key(KeyEvent{code, .. }) => {
+            UserAction::Key { code, .. } => {
                 Self::decode_key(code, &mut output);
             }
             UserAction::Resize(size) => {
@@ -398,10 +401,10 @@ impl ModeInterpreter for ConfirmInterpreter {
         let mut output = Output::new();
 
         match input {
-            UserAction::Key (KeyEvent{
-                code: Key::Char('y'),
+            UserAction::Key {
+                code: KeyCode::Char('y'),
                 ..
-            }) => {
+            } => {
                 output.add_op(Operation::Quit);
             }
             UserAction::Key { .. } | UserAction::Mouse | UserAction::Resize { .. } => {
@@ -429,18 +432,22 @@ impl ModeInterpreter for CollectInterpreter {
         let mut output = Output::new();
 
         match input {
-            UserAction::Key (KeyEvent{ code: Key::Esc, .. }) => {
+            UserAction::Key {
+                code: KeyCode::Esc, ..
+            } => {
                 output.reset();
             }
-            UserAction::Key (KeyEvent{
-                code: Key::Enter, ..
-            }) => {
+            UserAction::Key {
+                code: KeyCode::Enter,
+                ..
+            } => {
                 output.add_op(Operation::Execute);
                 output.set_mode(Mode::View);
             }
-            UserAction::Key (KeyEvent{
-                code: Key::Char(c), ..
-            }) => {
+            UserAction::Key {
+                code: KeyCode::Char(c),
+                ..
+            } => {
                 output.add_op(Operation::Collect(c));
             }
             UserAction::Key { .. } | UserAction::Mouse | UserAction::Resize { .. } => {}
@@ -453,8 +460,11 @@ impl ModeInterpreter for CollectInterpreter {
 /// Testing of the translate module.
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::io::{config::Setting, ui::Modifiers, Glitch};
+    use {
+        super::*,
+        crate::io::{config::Setting, Glitch},
+        crossterm::event::KeyModifiers,
+    };
 
     /// Tests decoding user input while the [`Interpreter`] is in [`Mode::View`].
     mod view {
@@ -498,8 +508,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('w'),
-                    modifiers: Modifiers::CONTROL,
+                    code: KeyCode::Char('w'),
+                    modifiers: KeyModifiers::CONTROL,
                 })),
                 Some(Operation::Confirm(ConfirmAction::Quit))
             );
@@ -513,8 +523,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('o'),
-                    modifiers: Modifiers::CONTROL,
+                    code: KeyCode::Char('o'),
+                    modifiers: KeyModifiers::CONTROL,
                 })),
                 Some(Operation::StartCommand(Command::Open))
             );
@@ -528,8 +538,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('s'),
-                    modifiers: Modifiers::CONTROL,
+                    code: KeyCode::Char('s'),
+                    modifiers: KeyModifiers::CONTROL,
                 })),
                 Some(Operation::Document(DocOp::Save))
             );
@@ -543,8 +553,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('j'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('j'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
@@ -561,8 +571,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('k'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('k'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
@@ -579,8 +589,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('J'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('J'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Down,
@@ -597,8 +607,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('K'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('K'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Document(DocOp::Move(Vector::new(
                     Direction::Up,
@@ -615,8 +625,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('d'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('d'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Document(DocOp::Delete))
             );
@@ -641,8 +651,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('y'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('y'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Quit)
             );
@@ -655,8 +665,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('n'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('n'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Reset)
             );
@@ -666,8 +676,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('1'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('1'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Reset)
             );
@@ -693,8 +703,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Esc,
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Esc,
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Reset)
             );
@@ -708,8 +718,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('a'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('a'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Collect('a'))
             );
@@ -719,8 +729,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('.'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('.'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Collect('.'))
             );
@@ -730,8 +740,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Char('1'),
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Char('1'),
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Collect('1'))
             );
@@ -745,8 +755,8 @@ mod test {
 
             assert_eq!(
                 int.translate(Input::User(UserAction::Key {
-                    key: Key::Enter,
-                    modifiers: Modifiers::empty(),
+                    code: KeyCode::Enter,
+                    modifiers: KeyModifiers::empty(),
                 })),
                 Some(Operation::Execute)
             );

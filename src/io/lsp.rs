@@ -299,7 +299,7 @@ impl Producer for LanguageClient {
     #[throws(Self::Error)]
     fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         if let Some(message) = match &good {
-            ClientMessage::Doc (configuration) => match &configuration.message {
+            ClientMessage::Doc(configuration) => match &configuration.message {
                 DocMessage::Open { .. } | DocMessage::Close => {
                     if self.settings.get().notify_open_close {
                         Some(good.clone().try_into().map_err(Self::Error::from)?)
@@ -516,7 +516,7 @@ impl TryFrom<ClientMessage> for Message {
     #[throws(Self::Error)]
     fn try_from(value: ClientMessage) -> Self {
         match value {
-            ClientMessage::Doc (configuration) => match configuration.message {
+            ClientMessage::Doc(configuration) => match configuration.message {
                 DocMessage::Open {
                     language_id,
                     version,
@@ -546,9 +546,7 @@ impl TryFrom<ClientMessage> for Message {
             },
             ClientMessage::Initialized => Self::notification::<Initialized>(InitializedParams {})?,
             ClientMessage::Exit => Self::notification::<Exit>(())?,
-            ClientMessage::RegisterCapability(id) => {
-                Self::response::<RegisterCapability>((), *id)?
-            }
+            ClientMessage::RegisterCapability(id) => Self::response::<RegisterCapability>((), *id)?,
             ClientMessage::Shutdown => {
                 throw!(Self::Error::Null);
             }
@@ -579,10 +577,7 @@ pub(crate) struct DocConfiguration {
 impl DocConfiguration {
     /// Creates a new [`DocConfiguration`].
     pub(crate) const fn new(url: Url, message: DocMessage) -> Self {
-        Self {
-            url,
-            message,
-        }
+        Self { url, message }
     }
 }
 

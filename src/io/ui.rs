@@ -10,10 +10,7 @@
 //! - All remaining space on the screen is primarily used for displaying the text of the currently viewed document.
 //! - If the application needs to alert the user, it may do so via a message box that will temporarily overlap the top rows of the document.
 //! - If the application requires input from the user, it may do so via an input box that will temporarily overlap the bottom rows of the document.
-pub(crate) use crossterm::{
-    event::{KeyEvent, KeyCode as Key},
-    ErrorKind,
-};
+pub(crate) use crossterm::{event::KeyEvent, ErrorKind};
 
 use {
     core::{
@@ -27,7 +24,7 @@ use {
     },
     crossterm::{
         cursor::{Hide, MoveTo, RestorePosition, SavePosition},
-        event::{self, Event},
+        event::{self, Event, KeyCode, KeyModifiers},
         execute, queue,
         style::{Color, Print, ResetColor, SetBackgroundColor},
         terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
@@ -302,7 +299,12 @@ pub enum UserAction {
     /// A mouse event has occurred.
     Mouse,
     /// A key has been pressed.
-    Key(KeyEvent),
+    Key {
+        /// The key itself.
+        code: KeyCode,
+        /// Modifiers held when the key was pressed.
+        modifiers: KeyModifiers,
+    },
 }
 
 impl From<Event> for UserAction {
@@ -311,7 +313,7 @@ impl From<Event> for UserAction {
         match value {
             Event::Resize(columns, rows) => Self::Resize(TerminalSize::new(rows, columns).into()),
             Event::Mouse(..) => Self::Mouse,
-            Event::Key(key) => Self::Key(key),
+            Event::Key(key) => key.into(),
         }
     }
 }
@@ -320,6 +322,16 @@ impl From<BodySize> for UserAction {
     #[inline]
     fn from(value: BodySize) -> Self {
         Self::Resize(value)
+    }
+}
+
+impl From<KeyEvent> for UserAction {
+    #[inline]
+    fn from(value: KeyEvent) -> Self {
+        Self::Key {
+            code: value.code,
+            modifiers: value.modifiers,
+        }
     }
 }
 
@@ -510,10 +522,8 @@ impl Body {
             }
         }
 
-        self.printer.print_rows(
-            visible_rows.drain(..),
-            Context::Document(start_line),
-        )?
+        self.printer
+            .print_rows(visible_rows.drain(..), Context::Document(start_line))?
     }
 
     /// Adds an alert box over the grid.
@@ -602,7 +612,7 @@ impl Printer {
         queue!(self.out, MoveTo(0, index.saturating_add(1)))?;
 
         let color = match context {
-            Context::Document ( selected_line ) => {
+            Context::Document(selected_line) => {
                 if row.line == *selected_line {
                     Some(Color::DarkGrey)
                 } else {

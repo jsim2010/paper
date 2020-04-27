@@ -90,7 +90,7 @@ impl Processor {
                     let mut path = String::new();
                     mem::swap(&mut path, &mut self.input);
 
-                    outputs.push(Output::GetFile {path});
+                    outputs.push(Output::GetFile { path });
                 }
             }
             Operation::Document(doc_op) => {

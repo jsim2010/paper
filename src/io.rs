@@ -17,8 +17,8 @@ use {
     fs::{ConsumeFileError, CreatePurlError, File, FileCommand, FileError, FileSystem, Purl},
     log::error,
     lsp::{
-        ClientMessage, DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError, ServerMessage,
-        ToolMessage,
+        ClientMessage, DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError,
+        ServerMessage, ToolMessage,
     },
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     market::{ClosedMarketError, Collector, Consumer, OneShotError, Producer},
@@ -258,7 +258,7 @@ impl Interface {
                     },
                 })?;
             }
-            DocEdit::Change (doc_change) => {
+            DocEdit::Change(doc_change) => {
                 self.user_interface.force(ui::Output::Edit {
                     new_text: doc_change.new_text,
                     selection: doc_change.selection,
@@ -599,7 +599,7 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
 
                     Self {
                         language_id,
-                        message: ClientMessage::Doc (Box::new(DocConfiguration::new(
+                        message: ClientMessage::Doc(Box::new(DocConfiguration::new(
                             url.clone(),
                             match edit {
                                 DocEdit::Open { version } => DocMessage::Open {
@@ -608,13 +608,11 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
                                     text: file.text().to_string(),
                                 },
                                 DocEdit::Save { .. } => DocMessage::Save,
-                                DocEdit::Change (doc_change) => {
-                                    DocMessage::Change {
+                                DocEdit::Change(doc_change) => DocMessage::Change {
                                     version: doc_change.version,
                                     text: file.text().to_string(),
                                     range: doc_change.selection.range()?,
                                     new_text: doc_change.new_text,
-                                    }
                                 },
                                 DocEdit::Close => DocMessage::Close,
                             },
