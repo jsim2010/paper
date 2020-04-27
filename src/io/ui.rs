@@ -10,10 +10,7 @@
 //! - All remaining space on the screen is primarily used for displaying the text of the currently viewed document.
 //! - If the application needs to alert the user, it may do so via a message box that will temporarily overlap the top rows of the document.
 //! - If the application requires input from the user, it may do so via an input box that will temporarily overlap the bottom rows of the document.
-pub(crate) use crossterm::{
-    event::{KeyCode as Key, KeyModifiers as Modifiers},
-    ErrorKind,
-};
+pub(crate) use crossterm::{event::KeyEvent, ErrorKind};
 
 use {
     core::{
@@ -27,7 +24,7 @@ use {
     },
     crossterm::{
         cursor::{Hide, MoveTo, RestorePosition, SavePosition},
-        event::{self, Event},
+        event::{self, Event, KeyCode, KeyModifiers},
         execute, queue,
         style::{Color, Print, ResetColor, SetBackgroundColor},
         terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
@@ -302,12 +299,11 @@ pub enum UserAction {
     /// A mouse event has occurred.
     Mouse,
     /// A key has been pressed.
-    #[allow(dead_code)] // False positive.
     Key {
-        /// The keycode of the key.
-        key: Key,
-        /// All modifier keys that were held when the key was pressed.
-        modifiers: Modifiers,
+        /// The key itself.
+        code: KeyCode,
+        /// Modifiers held when the key was pressed.
+        modifiers: KeyModifiers,
     },
 }
 
@@ -317,10 +313,7 @@ impl From<Event> for UserAction {
         match value {
             Event::Resize(columns, rows) => Self::Resize(TerminalSize::new(rows, columns).into()),
             Event::Mouse(..) => Self::Mouse,
-            Event::Key(key) => Self::Key {
-                key: key.code,
-                modifiers: key.modifiers,
-            },
+            Event::Key(key) => key.into(),
         }
     }
 }
@@ -329,6 +322,16 @@ impl From<BodySize> for UserAction {
     #[inline]
     fn from(value: BodySize) -> Self {
         Self::Resize(value)
+    }
+}
+
+impl From<KeyEvent> for UserAction {
+    #[inline]
+    fn from(value: KeyEvent) -> Self {
+        Self::Key {
+            code: value.code,
+            modifiers: value.modifiers,
+        }
     }
 }
 
@@ -519,12 +522,8 @@ impl Body {
             }
         }
 
-        self.printer.print_rows(
-            visible_rows.drain(..),
-            Context::Document {
-                selected_line: start_line,
-            },
-        )?
+        self.printer
+            .print_rows(visible_rows.drain(..), Context::Document(start_line))?
     }
 
     /// Adds an alert box over the grid.
@@ -564,9 +563,7 @@ impl Body {
         if self.alert_rows != 0 {
             self.printer.print_rows(
                 Rows::new(&self.lines, self.wrap_length()).take(self.alert_rows.into()),
-                Context::Document {
-                    selected_line: selection.end_line,
-                },
+                Context::Document(selection.end_line),
             )?;
             self.alert_rows = 0;
         }
@@ -579,9 +576,7 @@ impl Body {
                 Rows::new(&self.lines, self.wrap_length())
                     .nth(row.into())
                     .unwrap_or_default(),
-                &Context::Document {
-                    selected_line: selection.end_line,
-                },
+                &Context::Document(selection.end_line),
             )?;
             self.is_intake_active = false;
         }
@@ -591,11 +586,8 @@ impl Body {
 /// Describes the context in which text is being printed.
 #[derive(Clone, Copy)]
 enum Context {
-    /// A document.
-    Document {
-        /// The index of the line that is selected.
-        selected_line: usize,
-    },
+    /// A document, with the index of the line that is selected given.
+    Document(usize),
     /// An intake text.
     Intake,
     /// A message to the user.
@@ -620,7 +612,7 @@ impl Printer {
         queue!(self.out, MoveTo(0, index.saturating_add(1)))?;
 
         let color = match context {
-            Context::Document { selected_line } => {
+            Context::Document(selected_line) => {
                 if row.line == *selected_line {
                     Some(Color::DarkGrey)
                 } else {

@@ -52,7 +52,7 @@ fix_format: _install_format
 # - clippy::unreachable: required by Enum
 # ALLOW
 # - box_pointers: box pointers are okay and useful
-# - variant_size_differences: no major impact under normal conditions
+# - variant_size_differences: handled by clippy::large_enum_variant
 # - clippy::multiple_crate_versions: not fixable when caused by dependencies
 # - clippy::empty_enum: recommended `!` type is not stable
 # - clippy::implicit_return: rust convention calls for implicit return
@@ -105,6 +105,7 @@ lint: _install_lint
      -F soft_unstable\
      -F unknown_crate_types\
      -D clippy::nursery\
+     -F clippy::perf\
      -F clippy::cast_lossless\
      -F clippy::cast_possible_truncation\
      -F clippy::cast_possible_wrap\

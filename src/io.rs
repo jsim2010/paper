@@ -17,8 +17,8 @@ use {
     fs::{ConsumeFileError, CreatePurlError, File, FileCommand, FileError, FileSystem, Purl},
     log::error,
     lsp::{
-        ClientMessage, DocMessage, Fault, LanguageTool, SendNotificationError, ServerMessage,
-        ToolMessage,
+        ClientMessage, DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError,
+        ServerMessage, ToolMessage,
     },
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     market::{ClosedMarketError, Collector, Consumer, OneShotError, Producer},
@@ -258,14 +258,10 @@ impl Interface {
                     },
                 })?;
             }
-            DocEdit::Change {
-                new_text,
-                selection,
-                ..
-            } => {
+            DocEdit::Change(doc_change) => {
                 self.user_interface.force(ui::Output::Edit {
-                    new_text,
-                    selection,
+                    new_text: doc_change.new_text,
+                    selection: doc_change.selection,
                 })?;
             }
             DocEdit::Close => {}
@@ -486,7 +482,7 @@ impl Display for LanguageId {
 #[derive(Debug)]
 pub enum Input {
     /// A file to be opened.
-    File(File),
+    File(Box<File>),
     /// An input from the user.
     User(UserAction),
     /// A configuration.
@@ -500,7 +496,7 @@ pub enum Input {
 impl From<File> for Input {
     #[inline]
     fn from(value: File) -> Self {
-        Self::File(value)
+        Self::File(Box::new(value))
     }
 }
 
@@ -603,28 +599,24 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
 
                     Self {
                         language_id,
-                        message: ClientMessage::Doc {
-                            url: url.clone(),
-                            message: match edit {
+                        message: ClientMessage::Doc(Box::new(DocConfiguration::new(
+                            url.clone(),
+                            match edit {
                                 DocEdit::Open { version } => DocMessage::Open {
                                     language_id,
                                     version,
                                     text: file.text().to_string(),
                                 },
                                 DocEdit::Save { .. } => DocMessage::Save,
-                                DocEdit::Change {
-                                    version,
-                                    selection,
-                                    new_text,
-                                } => DocMessage::Change {
-                                    version,
+                                DocEdit::Change(doc_change) => DocMessage::Change {
+                                    version: doc_change.version,
                                     text: file.text().to_string(),
-                                    range: selection.range()?,
-                                    new_text,
+                                    range: doc_change.selection.range()?,
+                                    new_text: doc_change.new_text,
                                 },
                                 DocEdit::Close => DocMessage::Close,
                             },
-                        },
+                        ))),
                     }
                 } else {
                     throw!(TryIntoProtocolError::InvalidOutput);
@@ -668,16 +660,31 @@ pub(crate) enum DocEdit {
     /// Saves the document.
     Save,
     /// Edits the document.
-    Change {
-        /// The new text.
-        new_text: String,
-        /// The selection.
-        selection: Selection,
-        /// The version.
-        version: i64,
-    },
+    Change(Box<DocChange>),
     /// Closes the document.
     Close,
+}
+
+/// The changes to be made to a document.
+#[derive(Clone, Debug)]
+pub(crate) struct DocChange {
+    /// The new text.
+    new_text: String,
+    /// The selection.
+    selection: Selection,
+    /// The version.
+    version: i64,
+}
+
+impl DocChange {
+    /// Creates a new [`DocChange`].
+    pub(crate) const fn new(selection: Selection, version: i64) -> Self {
+        Self {
+            new_text: String::new(),
+            selection,
+            version,
+        }
+    }
 }
 
 /// An error converting [`DocEdit`] into [`Message`].

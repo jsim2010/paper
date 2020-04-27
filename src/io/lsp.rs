@@ -299,7 +299,7 @@ impl Producer for LanguageClient {
     #[throws(Self::Error)]
     fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         if let Some(message) = match &good {
-            ClientMessage::Doc { url, message } => match message {
+            ClientMessage::Doc(configuration) => match &configuration.message {
                 DocMessage::Open { .. } | DocMessage::Close => {
                     if self.settings.get().notify_open_close {
                         Some(good.clone().try_into().map_err(Self::Error::from)?)
@@ -338,7 +338,7 @@ impl Producer for LanguageClient {
                         Some(Message::notification::<DidChangeTextDocument>(
                             DidChangeTextDocumentParams {
                                 text_document: VersionedTextDocumentIdentifier::new(
-                                    url.clone(),
+                                    configuration.url.clone(),
                                     *version,
                                 ),
                                 content_changes,
@@ -505,17 +505,9 @@ pub(crate) enum ClientMessage {
     /// Initialized.
     Initialized,
     /// Configures a document.
-    Doc {
-        /// The URL of the doc.
-        url: Url,
-        /// The message.
-        message: DocMessage,
-    },
+    Doc(Box<DocConfiguration>),
     /// Registers a capability.
-    RegisterCapability {
-        /// Id of the request.
-        id: Id,
-    },
+    RegisterCapability(Box<Id>),
 }
 
 impl TryFrom<ClientMessage> for Message {
@@ -524,14 +516,14 @@ impl TryFrom<ClientMessage> for Message {
     #[throws(Self::Error)]
     fn try_from(value: ClientMessage) -> Self {
         match value {
-            ClientMessage::Doc { url, message } => match message {
+            ClientMessage::Doc(configuration) => match configuration.message {
                 DocMessage::Open {
                     language_id,
                     version,
                     text,
                 } => Self::notification::<DidOpenTextDocument>(DidOpenTextDocumentParams {
                     text_document: TextDocumentItem::new(
-                        url,
+                        configuration.url,
                         language_id.to_string(),
                         version,
                         text,
@@ -539,13 +531,13 @@ impl TryFrom<ClientMessage> for Message {
                 })?,
                 DocMessage::Save => {
                     Self::notification::<WillSaveTextDocument>(WillSaveTextDocumentParams {
-                        text_document: TextDocumentIdentifier::new(url),
+                        text_document: TextDocumentIdentifier::new(configuration.url),
                         reason: TextDocumentSaveReason::Manual,
                     })?
                 }
                 DocMessage::Close => {
                     Self::notification::<DidCloseTextDocument>(DidCloseTextDocumentParams {
-                        text_document: TextDocumentIdentifier::new(url),
+                        text_document: TextDocumentIdentifier::new(configuration.url),
                     })?
                 }
                 DocMessage::Change { .. } => {
@@ -554,9 +546,7 @@ impl TryFrom<ClientMessage> for Message {
             },
             ClientMessage::Initialized => Self::notification::<Initialized>(InitializedParams {})?,
             ClientMessage::Exit => Self::notification::<Exit>(())?,
-            ClientMessage::RegisterCapability { id } => {
-                Self::response::<RegisterCapability>((), id)?
-            }
+            ClientMessage::RegisterCapability(id) => Self::response::<RegisterCapability>((), *id)?,
             ClientMessage::Shutdown => {
                 throw!(Self::Error::Null);
             }
@@ -573,6 +563,22 @@ pub enum TryIntoMessageError {
     /// An error serializing.
     #[error("")]
     Serialize(#[from] SerdeJsonError),
+}
+
+/// Configuration of a document.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DocConfiguration {
+    /// The URL of the doc.
+    url: Url,
+    /// The message.
+    message: DocMessage,
+}
+
+impl DocConfiguration {
+    /// Creates a new [`DocConfiguration`].
+    pub(crate) const fn new(url: Url, message: DocMessage) -> Self {
+        Self { url, message }
+    }
 }
 
 /// A message for interacting with a document.
