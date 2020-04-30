@@ -8,7 +8,7 @@
 //! [Language Server Protocol]: https://microsoft.github.io/language-server-protocol/
 #![allow(
     clippy::unreachable, // unreachable added by derive(Enum).
-    clippy::use_self, // Flags format macro.
+    clippy::use_self, // False positive on format macro.
 )]
 
 mod app;
@@ -25,7 +25,7 @@ use {
     log::{error, info},
     logging::{Config, InitLoggerError},
     market::{Consumer, Producer},
-    thiserror::Error,
+    thiserror::Error as ThisError,
 };
 
 /// A configuration of the initialization of a [`Paper`].
@@ -144,7 +144,7 @@ impl Paper {
 }
 
 /// An error from which `paper` is unable to recover.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum Failure {
     /// An error creating `paper`.
     #[error(transparent)]
@@ -157,7 +157,7 @@ pub enum Failure {
 /// An error creating a [`Paper`].
 ///
 /// [`Paper`]: struct.Paper.html
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum CreatePaperError {
     /// An error creating the application logger.
     #[error("failed to initialize logger: {0}")]
@@ -170,7 +170,7 @@ pub enum CreatePaperError {
 }
 
 /// An error running `paper`.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum RunPaperError {
     /// An error consuming an input.
     #[error("failed to consume input: {0}")]

@@ -6,7 +6,8 @@ use {
         fmt::{self, Display},
     },
     fehler::throws,
-    market::{ClosedMarketError, Consumer, Producer, UnlimitedQueue},
+    market::{ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer, UnlimitedQueue},
+    parse_display::Display as ParseDisplay,
     std::{
         ffi::OsStr,
         fs,
@@ -114,38 +115,41 @@ pub(crate) struct FileSystem {
 
 impl Consumer for FileSystem {
     type Good = File;
-    type Error = ConsumeFileError;
+    type Failure = ConsumeFileError;
 
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        let path_url = self.files_to_read.consume()?;
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        let path_url = self.files_to_read.consume().map_err(|error| match error {
+            ConsumeError::EmptyStock => ConsumeError::EmptyStock,
+            ConsumeError::Failure(failure) => ConsumeError::Failure(failure.into()),
+        })?;
 
-        if let Some(url) = path_url {
-            Some(File {
-                text: fs::read_to_string(&url).map_err(|error| ReadFileError {
-                    file: url.to_string(),
+        File {
+            text: fs::read_to_string(&path_url)
+                .map_err(|error| ReadFileError {
+                    file: path_url.to_string(),
                     error: error.kind(),
-                })?,
-                url,
-            })
-        } else {
-            None
+                })
+                .map_err(|error| ConsumeError::Failure(error.into()))?,
+            url: path_url,
         }
     }
 }
 
 impl Producer for FileSystem {
     type Good = FileCommand;
-    type Error = FileError;
+    type Failure = FileError;
 
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+    #[throws(ProduceError<Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
         match good {
             Self::Good::Read { url } => self
                 .files_to_read
                 .produce(url)
-                .map(|result| result.map(|url| Self::Good::Read { url }))?,
-            Self::Good::Write { url, text } => fs::write(&url, text).map(|_| None)?,
+                .map_err(|error| error.map(Self::Failure::from))?,
+            Self::Good::Write { url, text } => {
+                fs::write(&url, text).map_err(|error| ProduceError::Failure(error.into()))?
+            }
         }
     }
 }
@@ -155,20 +159,23 @@ impl Producer for FileSystem {
 pub enum FileError {
     /// The queue is closed.
     #[error(transparent)]
-    Closed(#[from] ClosedMarketError),
+    Closed(#[from] ClosedMarketFailure),
     /// An IO error.
     #[error("")]
     Io(#[from] io::Error),
 }
 
 /// Specifies a command to be executed on a file.
+#[derive(Debug, ParseDisplay)]
 pub(crate) enum FileCommand {
     /// Reads from the file at `url`.
+    #[display("Read {url}")]
     Read {
         /// The URL of the file to be read.
         url: Purl,
     },
     /// Writes `text` to the file at `url`.
+    #[display("Write {url}")]
     Write {
         /// The URL of the file to be written.
         url: Purl,
@@ -240,7 +247,7 @@ pub enum ConsumeFileError {
     Read(#[from] ReadFileError),
     /// The read queue has closed.
     #[error("")]
-    Closed(#[from] ClosedMarketError),
+    Closed(#[from] ClosedMarketFailure),
 }
 
 /// An error while reading a file.

@@ -5,7 +5,7 @@ use {
     jsonrpc_core::{Id, Value, Version},
     log::error,
     lsp_types::{notification::Notification, request::Request},
-    market::{ComposeFrom, StripFrom},
+    market::{ComposeFrom, NonComposible, StripFrom},
     serde::{Deserialize, Serialize},
     serde_json::error::Error as SerdeJsonError,
     std::{
@@ -172,7 +172,8 @@ impl Message {
 }
 
 impl ComposeFrom<u8> for Message {
-    fn compose_from(parts: &mut Vec<u8>) -> Option<Self> {
+    #[throws(NonComposible)]
+    fn compose_from(parts: &mut Vec<u8>) -> Self {
         let mut length = 0;
 
         let message = std::str::from_utf8(parts).ok().and_then(|buffer| {
@@ -227,7 +228,7 @@ impl ComposeFrom<u8> for Message {
             parts.drain(..length);
         }
 
-        message
+        message.ok_or(NonComposible)?
     }
 }
 

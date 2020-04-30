@@ -17,7 +17,7 @@ use {
         cell::RefCell,
         cmp,
         convert::TryFrom,
-        fmt::{self, Debug},
+        fmt::{self, Debug, Display},
         num,
         ops::{Bound, RangeBounds},
         time::Duration,
@@ -29,12 +29,14 @@ use {
         style::{Color, Print, ResetColor, SetBackgroundColor},
         terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     },
-    fehler::throws,
+    fehler::{throw, throws},
     log::warn,
     lsp_types::{MessageType, Position, Range, ShowMessageParams, ShowMessageRequestParams},
-    market::{Consumer, OneShotError, Producer},
+    market::{ConsumeError, Consumer, ProduceError, Producer},
+    parse_display::Display as ParseDisplay,
     std::{
         collections::VecDeque,
+        fmt::Write as _,
         io::{self, Stdout, Write},
     },
     thiserror::Error,
@@ -47,7 +49,7 @@ use {
 pub enum CreateTerminalError {
     /// An error initializing the terminal output.
     #[error(transparent)]
-    Init(#[from] OneShotError<ProduceTerminalOutputError>),
+    Init(#[from] ProduceError<ProduceTerminalOutputError>),
 }
 
 /// A span of time that equal to no time.
@@ -132,16 +134,18 @@ impl UserActionConsumer {
 
 impl Consumer for UserActionConsumer {
     type Good = UserAction;
-    type Error = ConsumeUserActionError;
+    type Failure = ConsumeUserActionError;
 
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        if event::poll(NO_DURATION).map_err(Self::Error::Poll)? {
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        if event::poll(NO_DURATION)
+            .map_err(|error| ConsumeError::Failure(Self::Failure::Poll(error)))?
+        {
             event::read()
-                .map(|event| Some(event.into()))
-                .map_err(Self::Error::Read)?
+                .map(Self::Good::from)
+                .map_err(|error| ConsumeError::Failure(Self::Failure::Read(error)))?
         } else {
-            None
+            throw!(ConsumeError::EmptyStock);
         }
     }
 }
@@ -163,7 +167,7 @@ impl Terminal {
             body: RefCell::new(Body::default()),
         };
 
-        terminal.attempt(Output::Init, 0)?;
+        terminal.produce(Output::Init)?;
         terminal
     }
 }
@@ -182,38 +186,22 @@ impl Drop for Terminal {
     }
 }
 
-impl Consumer for Terminal {
-    type Good = UserAction;
-    type Error = ConsumeUserActionError;
-
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        if event::poll(NO_DURATION).map_err(Self::Error::Poll)? {
-            event::read()
-                .map(|event| Some(event.into()))
-                .map_err(Self::Error::Read)?
-        } else {
-            None
-        }
-    }
-}
-
 impl Producer for Terminal {
     type Good = Output;
-    type Error = ProduceTerminalOutputError;
+    type Failure = ProduceTerminalOutputError;
 
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+    #[throws(ProduceError<Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
         match good {
             Output::Init => {
                 execute!(self.out.borrow_mut(), EnterAlternateScreen, Hide)
-                    .map_err(Self::Error::Init)?;
+                    .map_err(|failure| ProduceError::Failure(Self::Failure::Init(failure)))?;
             }
             Output::OpenDoc { text } => {
                 self.body
                     .borrow_mut()
                     .open(&text)
-                    .map_err(Self::Error::OpenDoc)?;
+                    .map_err(|failure| ProduceError::Failure(Self::Failure::OpenDoc(failure)))?;
             }
             Output::Wrap {
                 is_wrapped,
@@ -223,7 +211,7 @@ impl Producer for Terminal {
                 self.body
                     .borrow_mut()
                     .refresh(&selection)
-                    .map_err(Self::Error::Wrap)?;
+                    .map_err(|failure| ProduceError::Failure(Self::Failure::Wrap(failure)))?;
             }
             Output::Edit {
                 new_text,
@@ -233,13 +221,15 @@ impl Producer for Terminal {
                 self.body
                     .borrow_mut()
                     .refresh(&selection)
-                    .map_err(Self::Error::Edit)?;
+                    .map_err(|failure| ProduceError::Failure(Self::Failure::Edit(failure)))?;
             }
             Output::MoveSelection { selection } => {
                 self.body
                     .borrow_mut()
                     .refresh(&selection)
-                    .map_err(Self::Error::MoveSelection)?;
+                    .map_err(|failure| {
+                        ProduceError::Failure(Self::Failure::MoveSelection(failure))
+                    })?;
             }
             Output::SetHeader { header } => {
                 execute!(
@@ -249,7 +239,7 @@ impl Producer for Terminal {
                     Print(header),
                     RestorePosition
                 )
-                .map_err(Self::Error::SetHeader)?;
+                .map_err(|failure| ProduceError::Failure(Self::Failure::SetHeader(failure)))?;
             }
             Output::Resize { size } => {
                 self.body.borrow_mut().size = size.0;
@@ -258,33 +248,34 @@ impl Producer for Terminal {
                 self.body
                     .borrow_mut()
                     .add_alert(&message.message, message.typ)
-                    .map_err(Self::Error::Notify)?;
+                    .map_err(|failure| ProduceError::Failure(Self::Failure::Notify(failure)))?;
             }
             Output::Question { request } => {
                 // TODO: Add implementation to use actions.
                 self.body
                     .borrow_mut()
                     .add_alert(&request.message, request.typ)
-                    .map_err(Self::Error::Question)?;
+                    .map_err(|failure| ProduceError::Failure(Self::Failure::Question(failure)))?;
             }
             Output::StartIntake { title } => {
                 self.body
                     .borrow_mut()
                     .add_intake(title)
-                    .map_err(Self::Error::StartIntake)?;
+                    .map_err(|failure| {
+                        ProduceError::Failure(Self::Failure::StartIntake(failure))
+                    })?;
             }
             Output::Reset { selection } => {
                 self.body
                     .borrow_mut()
                     .reset(&selection)
-                    .map_err(Self::Error::Reset)?;
+                    .map_err(|failure| ProduceError::Failure(Self::Failure::Reset(failure)))?;
             }
             Output::Write { ch } => {
-                execute!(self.out.borrow_mut(), Print(ch)).map_err(Self::Error::Write)?;
+                execute!(self.out.borrow_mut(), Print(ch))
+                    .map_err(|failure| ProduceError::Failure(Self::Failure::Write(failure)))?;
             }
         }
-
-        None
     }
 }
 
@@ -401,8 +392,67 @@ pub(crate) enum Output {
     },
 }
 
+impl Display for Output {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Init => "Init".to_string(),
+                Self::OpenDoc { .. } => "Open document".to_string(),
+                Self::Wrap {
+                    is_wrapped,
+                    selection,
+                } => format!("Wrap {} with {}", is_wrapped, selection),
+                Self::Edit { selection, .. } => format!("Edit {}", selection),
+                Self::MoveSelection { selection } => format!("Move {}", selection),
+                Self::SetHeader { header } => format!("Set header to {}", header),
+                Self::Resize { size } => format!("Resize body to {}", size),
+                Self::Notify { message } => format!(
+                    "Notify {}: `{}`",
+                    match message.typ {
+                        MessageType::Error => "ERROR",
+                        MessageType::Warning => "WARNING",
+                        MessageType::Info => "INFO",
+                        MessageType::Log => "LOG",
+                    },
+                    message.message
+                ),
+                Self::Question { request } => format!(
+                    "Request {}: `{}` with {}",
+                    match request.typ {
+                        MessageType::Error => "ERROR",
+                        MessageType::Warning => "WARNING",
+                        MessageType::Info => "INFO",
+                        MessageType::Log => "LOG",
+                    },
+                    request.message,
+                    if let Some(actions) = &request.actions {
+                        let mut s = String::new();
+
+                        write!(s, "[")?;
+
+                        for action in actions {
+                            write!(s, "{},", action.title)?;
+                        }
+
+                        write!(s, "]")?;
+                        s
+                    } else {
+                        "[]".to_string()
+                    }
+                ),
+                Self::StartIntake { title } => format!("Start intake of {}", title),
+                Self::Reset { selection } => format!("Reset with {}", selection),
+                Self::Write { ch } => format!("Write {}", ch),
+            }
+        )
+    }
+}
+
 /// The dimensions of a grid of [`char`]s.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, ParseDisplay, PartialEq)]
+#[display("{rows} x {columns}")]
 pub struct Size {
     /// The number of rows.
     pub(crate) rows: UiUnit,
@@ -411,7 +461,8 @@ pub struct Size {
 }
 
 /// The size of the body.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, ParseDisplay, PartialEq)]
+#[display("{0}")]
 pub struct BodySize(pub(crate) Size);
 
 impl From<TerminalSize> for BodySize {
@@ -662,7 +713,8 @@ impl Default for Printer {
 }
 
 /// The text selected by the user.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, ParseDisplay, PartialEq)]
+#[display("{start_line} -> {end_line}")]
 pub(crate) struct Selection {
     /// The index of the first line of the selection.
     start_line: usize,
