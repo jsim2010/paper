@@ -8,7 +8,7 @@ use {
     fehler::throws,
     log::trace,
     market::{
-        channel::MpscConsumer, ClosedMarketError, Consumer, Inspector, StripFrom,
+        channel::StdConsumer, ClosedMarketFailure, ConsumeError, Consumer, Inspector, StripFrom,
         StrippingConsumer, VigilantConsumer,
     },
     notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
@@ -47,9 +47,9 @@ pub enum ConsumeSettingError {
     Consume(
         #[source]
         <VigilantConsumer<
-            StrippingConsumer<MpscConsumer<DebouncedEvent>, Setting>,
+            StrippingConsumer<StdConsumer<DebouncedEvent>, Setting>,
             SettingDeduplicator,
-        > as Consumer>::Error,
+        > as Consumer>::Failure,
     ),
 }
 
@@ -60,7 +60,7 @@ pub(crate) struct SettingConsumer {
     watcher: RecommendedWatcher,
     /// The consumer of settings.
     consumer: VigilantConsumer<
-        StrippingConsumer<MpscConsumer<DebouncedEvent>, Setting>,
+        StrippingConsumer<StdConsumer<DebouncedEvent>, Setting>,
         SettingDeduplicator,
     >,
 }
@@ -80,7 +80,7 @@ impl SettingConsumer {
         Self {
             watcher,
             consumer: VigilantConsumer::new(
-                StrippingConsumer::new(MpscConsumer::from(event_rx)),
+                StrippingConsumer::new(StdConsumer::from(event_rx)),
                 SettingDeduplicator::new(path),
             ),
         }
@@ -96,10 +96,10 @@ impl fmt::Debug for SettingConsumer {
 
 impl Consumer for SettingConsumer {
     type Good = Setting;
-    type Error = ClosedMarketError;
+    type Failure = ClosedMarketFailure;
 
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
         self.consumer.consume()?
     }
 }
@@ -193,7 +193,7 @@ impl Display for Setting {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Setting::Wrap(value) => write!(f, "Setting::Wrap({})", value),
+            Self::Wrap(value) => write!(f, "Setting::Wrap({})", value),
         }
     }
 }

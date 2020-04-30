@@ -8,6 +8,7 @@ use {
     core::{
         cell::{Cell, RefCell},
         convert::{TryFrom, TryInto},
+        fmt::{self, Display},
     },
     enum_map::{enum_map, EnumMap},
     fehler::{throw, throws},
@@ -28,8 +29,9 @@ use {
     },
     market::{
         io::{Reader, Writer},
-        Consumer, OneShotError, Producer, StripError,
+        ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer,
     },
+    parse_display::Display as ParseDisplay,
     serde::{de::DeserializeOwned, Serialize},
     serde_json::error::Error as SerdeJsonError,
     std::{
@@ -79,12 +81,12 @@ pub enum Fault {
     /// Conversion
     #[error("")]
     Conversion(#[from] TryIntoMessageError),
-    /// Write.
-    #[error("")]
-    Write(#[from] StripError<io::Error>),
     /// Normal IO.
     #[error("")]
     NormalIo(#[from] io::Error),
+    /// Closed.
+    #[error("")]
+    Closed(#[from] ClosedMarketFailure),
 }
 
 impl From<Fault> for ShowMessageParams {
@@ -112,7 +114,7 @@ pub enum CreateLanguageClientError {
     Serialize(#[from] SerdeJsonError),
     /// An error initializing the language server.
     #[error("unable to send initialize message to language server: {0}")]
-    Initialize(#[from] OneShotError<StripError<io::Error>>),
+    Initialize(#[from] ProduceError<ClosedMarketFailure>),
 }
 
 /// An error while spawning the language server process.
@@ -173,54 +175,51 @@ impl LanguageClient {
         let settings = Cell::new(LspSettings::default());
 
         #[allow(deprecated)] // root_path is a required field.
-        writer.attempt(
-            Message::request::<Initialize>(
-                InitializeParams {
-                    process_id: Some(u64::from(process::id())),
-                    root_path: None,
-                    root_uri: Some(root.as_ref().clone()),
-                    initialization_options: None,
-                    capabilities: ClientCapabilities {
-                        workspace: None,
-                        text_document: Some(TextDocumentClientCapabilities {
-                            synchronization: Some(SynchronizationCapability {
-                                dynamic_registration: None,
-                                will_save: Some(true),
-                                will_save_wait_until: None,
-                                did_save: None,
-                            }),
-                            completion: None,
-                            hover: None,
-                            signature_help: None,
-                            references: None,
-                            document_highlight: None,
-                            document_symbol: None,
-                            formatting: None,
-                            range_formatting: None,
-                            on_type_formatting: None,
-                            declaration: None,
-                            definition: None,
-                            type_definition: None,
-                            implementation: None,
-                            code_action: None,
-                            code_lens: None,
-                            document_link: None,
-                            color_provider: None,
-                            rename: None,
-                            publish_diagnostics: None,
-                            folding_range: None,
+        writer.produce(Message::request::<Initialize>(
+            InitializeParams {
+                process_id: Some(u64::from(process::id())),
+                root_path: None,
+                root_uri: Some(root.as_ref().clone()),
+                initialization_options: None,
+                capabilities: ClientCapabilities {
+                    workspace: None,
+                    text_document: Some(TextDocumentClientCapabilities {
+                        synchronization: Some(SynchronizationCapability {
+                            dynamic_registration: None,
+                            will_save: Some(true),
+                            will_save_wait_until: None,
+                            did_save: None,
                         }),
-                        window: None,
-                        experimental: None,
-                    },
-                    trace: None,
-                    workspace_folders: None,
-                    client_info: None,
+                        completion: None,
+                        hover: None,
+                        signature_help: None,
+                        references: None,
+                        document_highlight: None,
+                        document_symbol: None,
+                        formatting: None,
+                        range_formatting: None,
+                        on_type_formatting: None,
+                        declaration: None,
+                        definition: None,
+                        type_definition: None,
+                        implementation: None,
+                        code_action: None,
+                        code_lens: None,
+                        document_link: None,
+                        color_provider: None,
+                        rename: None,
+                        publish_diagnostics: None,
+                        folding_range: None,
+                    }),
+                    window: None,
+                    experimental: None,
                 },
-                0,
-            )?,
+                trace: None,
+                workspace_folders: None,
+                client_info: None,
+            },
             0,
-        )?;
+        )?)?;
         Self {
             // error_processor must be created before server is moved.
             error_processor: LspErrorProcessor::new(server.stderr()?),
@@ -247,122 +246,139 @@ impl LanguageClient {
 
 impl Consumer for LanguageClient {
     type Good = ServerMessage;
-    type Error = io::Error;
+    type Failure = ClosedMarketFailure;
 
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        if let Some(message) = self.reader.consume()? {
-            trace!("Received LSP message: {}", message);
-            match message {
-                Message {
-                    object:
-                        utils::Object::Request {
-                            id: Some(request_id),
-                            ..
-                        },
-                    ..
-                } => {
-                    return Some(ServerMessage::Request { id: request_id });
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        let message = self.reader.consume()?;
+        trace!("Received LSP message: {}", message);
+
+        match message {
+            Message {
+                object:
+                    utils::Object::Request {
+                        id: Some(request_id),
+                        ..
+                    },
+                ..
+            } => ServerMessage::Request { id: request_id },
+            Message {
+                object:
+                    utils::Object::Response {
+                        outcome: utils::Outcome::Result(value),
+                        ..
+                    },
+                ..
+            } => {
+                if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
+                    self.settings.set(LspSettings::from(result));
+                    ServerMessage::Initialize
+                } else if serde_json::from_value::<()>(value.clone()).is_ok() {
+                    ServerMessage::Shutdown
+                } else {
+                    warn!(
+                        "Received unknown response outcome from language client: {}",
+                        value
+                    );
+                    // TODO: Perhaps have a failure thrown here?
+                    throw!(ConsumeError::EmptyStock);
                 }
-                Message {
-                    object:
-                        utils::Object::Response {
-                            outcome: utils::Outcome::Result(value),
-                            ..
-                        },
-                    ..
-                } => {
-                    if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
-                        self.settings.set(LspSettings::from(result));
-                        return Some(ServerMessage::Initialize);
-                    } else if serde_json::from_value::<()>(value.clone()).is_ok() {
-                        return Some(ServerMessage::Shutdown);
-                    } else {
-                        warn!(
-                            "Received unknown response outcome from language client: {}",
-                            value
-                        );
-                    }
-                }
-                _ => {}
             }
+            _ => throw!(ConsumeError::EmptyStock),
         }
-
-        None
     }
 }
 
 impl Producer for LanguageClient {
     type Good = ClientMessage;
-    type Error = Fault;
+    type Failure = Fault;
 
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+    #[throws(ProduceError<Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
         if let Some(message) = match &good {
-            ClientMessage::Doc(configuration) => match &configuration.message {
-                DocMessage::Open { .. } | DocMessage::Close => {
-                    if self.settings.get().notify_open_close {
-                        Some(good.clone().try_into().map_err(Self::Error::from)?)
-                    } else {
-                        None
-                    }
-                }
-                DocMessage::Save => {
-                    if self.settings.get().notify_save {
-                        Some(good.clone().try_into().map_err(Self::Error::from)?)
-                    } else {
-                        None
-                    }
-                }
-                DocMessage::Change {
-                    version,
-                    text,
-                    range,
-                    new_text,
-                } => {
-                    if let Some(content_changes) = match self.settings.get().notify_changes_kind {
-                        TextDocumentSyncKind::None => None,
-                        TextDocumentSyncKind::Full => Some(vec![TextDocumentContentChangeEvent {
-                            range: None,
-                            range_length: None,
-                            text: text.to_string(),
-                        }]),
-                        TextDocumentSyncKind::Incremental => {
-                            Some(vec![TextDocumentContentChangeEvent {
-                                range: Some(*range),
-                                range_length: None,
-                                text: new_text.to_string(),
-                            }])
+            ClientMessage::Doc(configuration) => {
+                match &configuration.message {
+                    DocMessage::Open { .. } | DocMessage::Close => {
+                        if self.settings.get().notify_open_close {
+                            Some(good.clone().try_into().map_err(
+                                |error: TryIntoMessageError| ProduceError::Failure(error.into()),
+                            )?)
+                        } else {
+                            None
                         }
-                    } {
-                        Some(Message::notification::<DidChangeTextDocument>(
-                            DidChangeTextDocumentParams {
-                                text_document: VersionedTextDocumentIdentifier::new(
-                                    configuration.url.clone(),
-                                    *version,
-                                ),
-                                content_changes,
-                            },
-                        )?)
-                    } else {
-                        None
+                    }
+                    DocMessage::Save => {
+                        if self.settings.get().notify_save {
+                            Some(good.clone().try_into().map_err(
+                                |error: TryIntoMessageError| ProduceError::Failure(error.into()),
+                            )?)
+                        } else {
+                            None
+                        }
+                    }
+                    DocMessage::Change {
+                        version,
+                        text,
+                        range,
+                        new_text,
+                    } => {
+                        if let Some(content_changes) = match self.settings.get().notify_changes_kind
+                        {
+                            TextDocumentSyncKind::None => None,
+                            TextDocumentSyncKind::Full => {
+                                Some(vec![TextDocumentContentChangeEvent {
+                                    range: None,
+                                    range_length: None,
+                                    text: text.to_string(),
+                                }])
+                            }
+                            TextDocumentSyncKind::Incremental => {
+                                Some(vec![TextDocumentContentChangeEvent {
+                                    range: Some(*range),
+                                    range_length: None,
+                                    text: new_text.to_string(),
+                                }])
+                            }
+                        } {
+                            Some(
+                                Message::notification::<DidChangeTextDocument>(
+                                    DidChangeTextDocumentParams {
+                                        text_document: VersionedTextDocumentIdentifier::new(
+                                            configuration.url.clone(),
+                                            *version,
+                                        ),
+                                        content_changes,
+                                    },
+                                )
+                                .map_err(|error| ProduceError::Failure(error.into()))?,
+                            )
+                        } else {
+                            None
+                        }
                     }
                 }
-            },
+            }
             ClientMessage::RegisterCapability { .. }
             | ClientMessage::Initialized
-            | ClientMessage::Exit => Some(good.clone().try_into().map_err(Self::Error::from)?),
+            | ClientMessage::Exit => Some(
+                good.clone()
+                    .try_into()
+                    .map_err(|error: TryIntoMessageError| ProduceError::Failure(error.into()))?,
+            ),
             ClientMessage::Shutdown => {
                 self.error_processor
                     .terminate()
-                    .map_err(Self::Error::from)?;
-                Some(self.request::<Shutdown>(()).map_err(Self::Error::from)?)
+                    .map_err(|error| ProduceError::Failure(error.into()))?;
+                Some(
+                    self.request::<Shutdown>(())
+                        .map_err(|error| ProduceError::Failure(error.into()))?,
+                )
             }
         } {
             trace!("Sending LSP message: {}", message);
-            self.writer.produce(message)?.map(|_| good)
-        } else {
-            None
+            self.writer
+                .produce(message)
+                .map_err(|error| error.map(Self::Failure::from))?
         }
     }
 }
@@ -436,39 +452,42 @@ impl LanguageTool {
 
 impl Consumer for LanguageTool {
     type Good = ToolMessage<ServerMessage>;
-    type Error = Fault;
+    type Failure = Fault;
 
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        let mut good = None;
-
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
         for (language_id, language_client) in &self.clients {
             let client = language_client.borrow();
 
-            if let Some(message) = client.consume()? {
-                good = Some(ToolMessage {
-                    language_id,
-                    message,
-                });
-                break;
+            match client.consume() {
+                Ok(message) => {
+                    return ToolMessage {
+                        language_id,
+                        message,
+                    }
+                }
+                Err(ConsumeError::EmptyStock) => {}
+                Err(ConsumeError::Failure(failure)) => {
+                    throw!(ConsumeError::Failure(failure.into()))
+                }
             }
         }
 
-        good
+        throw!(ConsumeError::EmptyStock);
     }
 }
 
 impl Producer for LanguageTool {
     type Good = ToolMessage<ClientMessage>;
-    type Error = ProduceProtocolError;
+    type Failure = ProduceProtocolError;
 
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+    #[throws(ProduceError<Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
         #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is in bounds.
         self.clients[good.language_id]
             .borrow()
-            .produce(good.message.clone())?
-            .map(|_| good)
+            .produce(good.message)
+            .map_err(|error| error.map(Self::Failure::from))?
     }
 }
 
@@ -487,7 +506,8 @@ pub enum ServerMessage {
 }
 
 /// Tool message of language server.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, ParseDisplay, PartialEq)]
+#[display("{language_id} :: {message}")]
 pub struct ToolMessage<T> {
     /// The URL that generated.
     pub(crate) language_id: LanguageId,
@@ -505,9 +525,32 @@ pub(crate) enum ClientMessage {
     /// Initialized.
     Initialized,
     /// Configures a document.
-    Doc(Box<DocConfiguration>),
+    Doc(DocConfiguration),
     /// Registers a capability.
-    RegisterCapability(Box<Id>),
+    RegisterCapability(Id),
+}
+
+impl Display for ClientMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Shutdown => "Shutdown".to_string(),
+                Self::Exit => "Exit".to_string(),
+                Self::Initialized => "Initialized".to_string(),
+                Self::Doc(config) => format!("Document configuration {}", config),
+                Self::RegisterCapability(id) => format!(
+                    "Register capability {}",
+                    match id {
+                        Id::Null => "null".to_string(),
+                        Id::Num(num) => num.to_string(),
+                        Id::Str(s) => s.to_string(),
+                    }
+                ),
+            }
+        )
+    }
 }
 
 impl TryFrom<ClientMessage> for Message {
@@ -546,7 +589,7 @@ impl TryFrom<ClientMessage> for Message {
             },
             ClientMessage::Initialized => Self::notification::<Initialized>(InitializedParams {})?,
             ClientMessage::Exit => Self::notification::<Exit>(())?,
-            ClientMessage::RegisterCapability(id) => Self::response::<RegisterCapability>((), *id)?,
+            ClientMessage::RegisterCapability(id) => Self::response::<RegisterCapability>((), id)?,
             ClientMessage::Shutdown => {
                 throw!(Self::Error::Null);
             }
@@ -566,7 +609,8 @@ pub enum TryIntoMessageError {
 }
 
 /// Configuration of a document.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, ParseDisplay, PartialEq)]
+#[display("Configure `{url}` with {message}")]
 pub(crate) struct DocConfiguration {
     /// The URL of the doc.
     url: Url,
@@ -582,10 +626,10 @@ impl DocConfiguration {
 }
 
 /// A message for interacting with a document.
-#[allow(dead_code)] // False positive.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, ParseDisplay, PartialEq)]
 pub(crate) enum DocMessage {
     /// Open a doc.
+    #[display("Open document with {language_id} at v{version}")]
     Open {
         /// The language identifier.
         language_id: LanguageId,
@@ -595,8 +639,10 @@ pub(crate) enum DocMessage {
         text: String,
     },
     /// Save a doc.
+    #[display("Save")]
     Save,
     /// Change a doc.
+    #[display("Change document to v{version}")]
     Change {
         /// The version.
         version: i64,
@@ -608,6 +654,7 @@ pub(crate) enum DocMessage {
         new_text: String,
     },
     /// Close a doc.
+    #[display("Close")]
     Close,
 }
 
@@ -626,17 +673,6 @@ pub enum ProduceProtocolError {
     /// Utils.
     #[error("")]
     Utils(#[from] utils::Fault),
-}
-
-impl From<ProduceProtocolError> for ShowMessageParams {
-    #[inline]
-    #[must_use]
-    fn from(value: ProduceProtocolError) -> Self {
-        Self {
-            typ: MessageType::Error,
-            message: value.to_string(),
-        }
-    }
 }
 
 /// Signifies a language server process.

@@ -183,9 +183,7 @@ impl Interpreter {
             }) => {
                 if let Some(return_message) = match message {
                     ServerMessage::Initialize => Some(ClientMessage::Initialized),
-                    ServerMessage::Request { id } => {
-                        Some(ClientMessage::RegisterCapability(Box::new(id)))
-                    }
+                    ServerMessage::Request { id } => Some(ClientMessage::RegisterCapability(id)),
                     ServerMessage::Shutdown => None,
                 } {
                     output.add_op(Operation::SendLsp(ToolMessage {
