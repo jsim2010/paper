@@ -5,6 +5,7 @@ pub mod lsp;
 pub mod ui;
 
 use {
+    crate::app::Document,
     clap::ArgMatches,
     config::{ConsumeSettingError, CreateSettingConsumerError, Setting, SettingConsumer},
     core::{
@@ -19,7 +20,7 @@ use {
         ClientMessage, DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError,
         ServerMessage, ToolMessage,
     },
-    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
+    lsp_types::{ShowMessageParams, ShowMessageRequestParams},
     market::{ClosedMarketFailure, Collector, ConsumeError, Consumer, ProduceError, Producer},
     parse_display::Display as ParseDisplay,
     starship::{context::Context, print},
@@ -30,9 +31,8 @@ use {
     thiserror::Error,
     toml::{value::Table, Value},
     ui::{
-        BodySize, CommandError, ConsumeUserActionError, CreateTerminalError,
-        ProduceTerminalOutputError, Selection, SelectionConversionError, Terminal, UserAction,
-        UserActionConsumer,
+        CreateTerminalError, DisplayCmd, DisplayCmdFailure, Length, Terminal, UserAction,
+        UserActionConsumer, UserActionFailure,
     },
     url::Url,
 };
@@ -76,15 +76,12 @@ pub enum ProduceOutputError {
     /// An error with client.
     #[error("")]
     OldClient(#[from] lsp::EditLanguageToolError),
-    /// An error in the ui.
-    #[error("{0}")]
-    Ui(#[from] CommandError),
+    /// An error with a file.
+    #[error("")]
+    File(#[from] FileError),
     /// An error in the lsp.
     #[error("{0}")]
     Lsp(#[from] Fault),
-    /// An error while converting from a [`Selection`].
-    #[error("{0}")]
-    SelectionConversion(#[from] SelectionConversionError),
     /// Failed to send notification.
     #[error("{0}")]
     SendNotification(#[from] SendNotificationError),
@@ -93,15 +90,7 @@ pub enum ProduceOutputError {
     CreateFile(#[from] CreateFileError),
     /// Produce error from ui.
     #[error("{0}")]
-    UiProduce(#[from] ProduceTerminalOutputError),
-}
-
-/// An error while pulling input.
-#[derive(Debug, Error)]
-pub enum ReadInputError {
-    /// An error from the ui.
-    #[error("{0}")]
-    Ui(#[from] CommandError),
+    UiProduce(#[from] DisplayCmdFailure),
 }
 
 /// An error creating a file.
@@ -163,7 +152,7 @@ pub enum ConsumeInputError {
     Produce(#[from] lsp::ProduceProtocolError),
     /// An error consuming a user input.
     #[error("")]
-    Ui(#[from] ConsumeUserActionError),
+    Ui(#[from] UserActionFailure),
     /// An error consuming a setting.
     #[error("{0}")]
     Setting(#[from] ConsumeSettingError),
@@ -215,7 +204,7 @@ impl Interface {
         };
 
         if let Some(file) = initial_file {
-            interface.add_file(file)?;
+            interface.open_file(file)?;
         }
 
         interface
@@ -223,7 +212,7 @@ impl Interface {
 
     /// Reads the file at `path`.
     #[throws(CreateFileError)]
-    fn add_file(&self, path: &str) {
+    fn open_file(&self, path: &str) {
         self.file_system.produce(FileCommand::Read {
             url: self.root_dir.join(path)?,
         })?
@@ -231,43 +220,29 @@ impl Interface {
 
     /// Edits the doc at `url`.
     #[throws(ProduceError<ProduceOutputError>)]
-    fn edit_doc(&self, file: &File, edit: DocEdit) {
+    fn edit_doc(&self, doc: &Document, edit: &DocEdit) {
         match edit {
             DocEdit::Open { .. } => {
                 self.user_interface
-                    .produce(ui::Output::OpenDoc {
-                        text: file.text().to_string(),
+                    .produce(DisplayCmd::Rows {
+                        start: 0,
+                        rows: doc.rows(),
                     })
                     .map_err(|error| error.map(ProduceOutputError::from))?;
             }
             DocEdit::Save => {
-                self.user_interface
-                    .produce(ui::Output::Notify {
-                        message: match self.file_system.produce(FileCommand::Write {
-                            url: file.url().clone(),
-                            text: file.text().to_string(),
-                        }) {
-                            Ok(..) => ShowMessageParams {
-                                typ: MessageType::Info,
-                                message: format!("Saved document `{}`", file.url()),
-                            },
-                            Err(error) => ShowMessageParams {
-                                typ: MessageType::Error,
-                                message: format!(
-                                    "Failed to save document `{}`: {}",
-                                    file.url(),
-                                    error
-                                ),
-                            },
-                        },
+                self.file_system
+                    .produce(FileCommand::Write {
+                        url: doc.url().clone(),
+                        text: doc.text(),
                     })
                     .map_err(|error| error.map(ProduceOutputError::from))?;
             }
-            DocEdit::Change(doc_change) => {
+            DocEdit::Update => {
                 self.user_interface
-                    .produce(ui::Output::Edit {
-                        new_text: doc_change.new_text,
-                        selection: doc_change.selection,
+                    .produce(DisplayCmd::Rows {
+                        start: 0,
+                        rows: doc.rows(),
                     })
                     .map_err(|error| error.map(ProduceOutputError::from))?;
             }
@@ -374,43 +349,19 @@ impl Producer for Interface {
     fn produce(&self, output: Self::Good) {
         if let Ok(protocol) = ToolMessage::try_from(output.clone()) {
             if let Err(error) = self.language_tool.produce(protocol) {
-                if let Err(produce_error) = self.user_interface.produce(ui::Output::Notify {
-                    message: ShowMessageParams {
-                        typ: MessageType::Error,
-                        message: match error {
-                            ProduceError::FullStock => "stock is full".to_string(),
-                            ProduceError::Failure(failure) => failure.to_string(),
-                        },
-                    },
-                }) {
-                    error!("Unable to display error: {}", produce_error);
-                }
+                error!("Unable to write to language server: {}", error);
             }
         }
 
         match output {
             Output::SendLsp(..) => {}
-            Output::GetFile { path } => {
-                self.add_file(&path)
+            Output::OpenFile { path } => {
+                self.open_file(&path)
                     .map_err(|error| ProduceError::Failure(Self::Failure::from(error)))?;
             }
-            Output::EditDoc { file, edit } => {
-                self.edit_doc(&file, edit)?;
+            Output::EditDoc { doc, edit } => {
+                self.edit_doc(&doc, &edit)?;
             }
-            Output::Wrap {
-                is_wrapped,
-                selection,
-            } => self
-                .user_interface
-                .produce(ui::Output::Wrap {
-                    is_wrapped,
-                    selection,
-                })
-                .map_err(|error| error.map(Self::Failure::from))?,
-            Output::MoveSelection { selection } => self
-                .user_interface
-                .produce(ui::Output::MoveSelection { selection })
-                .map_err(|error| error.map(Self::Failure::from))?,
             Output::UpdateHeader => {
                 let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
 
@@ -431,34 +382,32 @@ impl Producer for Interface {
                     context.config.config = Some(config);
                 }
                 self.user_interface
-                    .produce(ui::Output::SetHeader {
-                        header: print::get_prompt(context),
+                    .produce(DisplayCmd::Rows {
+                        start: 0,
+                        rows: vec![print::get_prompt(context)],
                     })
                     .map_err(|error| error.map(Self::Failure::from))?
             }
             Output::Notify { message } => self
                 .user_interface
-                .produce(ui::Output::Notify { message })
+                .produce(DisplayCmd::Rows {
+                    start: 0,
+                    rows: vec![message.message],
+                })
                 .map_err(|error| error.map(Self::Failure::from))?,
             Output::Question { request } => self
                 .user_interface
-                .produce(ui::Output::Question { request })
+                .produce(DisplayCmd::Rows {
+                    start: 0,
+                    rows: vec![request.message],
+                })
                 .map_err(|error| error.map(Self::Failure::from))?,
-            Output::StartIntake { title } => self
+            Output::Command { row, command } => self
                 .user_interface
-                .produce(ui::Output::StartIntake { title })
-                .map_err(|error| error.map(Self::Failure::from))?,
-            Output::Reset { selection } => self
-                .user_interface
-                .produce(ui::Output::Reset { selection })
-                .map_err(|error| error.map(Self::Failure::from))?,
-            Output::Resize { size } => self
-                .user_interface
-                .produce(ui::Output::Resize { size })
-                .map_err(|error| error.map(Self::Failure::from))?,
-            Output::Write { ch } => self
-                .user_interface
-                .produce(ui::Output::Write { ch })
+                .produce(DisplayCmd::Rows {
+                    start: row,
+                    rows: vec![command],
+                })
                 .map_err(|error| error.map(Self::Failure::from))?,
             Output::Quit => {
                 self.has_quit.store(true, Ordering::Relaxed);
@@ -493,7 +442,7 @@ impl LanguageId {
 #[derive(Debug)]
 pub enum Input {
     /// A file to be opened.
-    File(Box<File>),
+    File(File),
     /// An input from the user.
     User(UserAction),
     /// A configuration.
@@ -507,7 +456,7 @@ pub enum Input {
 impl From<File> for Input {
     #[inline]
     fn from(value: File) -> Self {
-        Self::File(Box::new(value))
+        Self::File(value)
     }
 }
 
@@ -540,7 +489,7 @@ pub(crate) enum Output {
     SendLsp(ToolMessage<ClientMessage>),
     /// Retrieves the URL and text of a file.
     #[display("Get file `{path}`")]
-    GetFile {
+    OpenFile {
         /// The relative path of the file.
         path: String,
     },
@@ -548,23 +497,9 @@ pub(crate) enum Output {
     /// Edits a document.
     EditDoc {
         /// The file that is edited.
-        file: File,
+        doc: Document,
         /// The edit to be performed.
         edit: DocEdit,
-    },
-    /// Sets the wrapping of the text.
-    #[display("")]
-    Wrap {
-        /// If the text shall be wrapped.
-        is_wrapped: bool,
-        /// The selection.
-        selection: Selection,
-    },
-    /// Moves the selection.
-    #[display("")]
-    MoveSelection {
-        /// The selection.
-        selection: Selection,
     },
     /// Sets the header of the application.
     #[display("")]
@@ -583,27 +518,11 @@ pub(crate) enum Output {
     },
     /// Adds an intake box.
     #[display("")]
-    StartIntake {
+    Command {
+        /// The index of the row where the command is to be displayed.
+        row: Length,
         /// The prompt of the intake box.
-        title: String,
-    },
-    /// Resets the output of the application.
-    #[display("")]
-    Reset {
-        /// The selection.
-        selection: Selection,
-    },
-    /// Resizes the application display.
-    #[display("")]
-    Resize {
-        /// The new [`Size`].
-        size: BodySize,
-    },
-    /// Write a [`char`] to the application.
-    #[display("")]
-    Write {
-        /// The [`char`] to be written.
-        ch: char,
+        command: String,
     },
     /// Quit the application.
     #[display("")]
@@ -617,9 +536,9 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
     #[throws(Self::Error)]
     fn try_from(value: Output) -> Self {
         match value {
-            Output::EditDoc { file, edit } => {
-                if let Some(language_id) = file.language_id() {
-                    let url: &Url = file.url().as_ref();
+            Output::EditDoc { doc, edit } => {
+                if let Some(language_id) = doc.language_id() {
+                    let url: &Url = doc.url().as_ref();
 
                     Self {
                         language_id,
@@ -629,16 +548,11 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
                                 DocEdit::Open { version } => DocMessage::Open {
                                     language_id,
                                     version,
-                                    text: file.text().to_string(),
+                                    text: doc.text(),
                                 },
                                 DocEdit::Save { .. } => DocMessage::Save,
-                                DocEdit::Change(doc_change) => DocMessage::Change {
-                                    version: doc_change.version,
-                                    text: file.text().to_string(),
-                                    range: doc_change.selection.range()?,
-                                    new_text: doc_change.new_text,
-                                },
                                 DocEdit::Close => DocMessage::Close,
+                                DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
                             },
                         )),
                     }
@@ -647,16 +561,11 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
                 }
             }
             Output::SendLsp(message) => message,
-            Output::GetFile { .. }
-            | Output::Wrap { .. }
-            | Output::MoveSelection { .. }
+            Output::OpenFile { .. }
+            | Output::Command { .. }
             | Output::UpdateHeader
             | Output::Notify { .. }
             | Output::Question { .. }
-            | Output::StartIntake { .. }
-            | Output::Reset { .. }
-            | Output::Resize { .. }
-            | Output::Write { .. }
             | Output::Quit => throw!(TryIntoProtocolError::InvalidOutput),
         }
     }
@@ -668,13 +577,10 @@ pub enum TryIntoProtocolError {
     /// Invalid [`Output`].
     #[error("")]
     InvalidOutput,
-    /// Invalid edit doc.
-    #[error("")]
-    InvalidEditDoc(#[from] SelectionConversionError),
 }
 
 /// Edits a document.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum DocEdit {
     /// Opens a document.
     Open {
@@ -683,8 +589,8 @@ pub(crate) enum DocEdit {
     },
     /// Saves the document.
     Save,
-    /// Edits the document.
-    Change(Box<DocChange>),
+    /// Updates the display of the document.
+    Update,
     /// Closes the document.
     Close,
 }
@@ -694,29 +600,13 @@ pub(crate) enum DocEdit {
 pub(crate) struct DocChange {
     /// The new text.
     new_text: String,
-    /// The selection.
-    selection: Selection,
     /// The version.
     version: i64,
-}
-
-impl DocChange {
-    /// Creates a new [`DocChange`].
-    pub(crate) const fn new(selection: Selection, version: i64) -> Self {
-        Self {
-            new_text: String::new(),
-            selection,
-            version,
-        }
-    }
 }
 
 /// An error converting [`DocEdit`] into [`Message`].
 #[derive(Clone, Copy, Debug, Error)]
 pub enum TryIntoMessageError {
-    /// Selection.
-    #[error(transparent)]
-    Selection(#[from] SelectionConversionError),
     /// Unknown language.
     #[error("")]
     UnknownLanguage,

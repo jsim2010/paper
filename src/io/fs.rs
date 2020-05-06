@@ -13,6 +13,7 @@ use {
         fs,
         io::{self, ErrorKind},
         path::{Path, PathBuf},
+        str::Lines,
     },
     thiserror::Error,
     url::Url,
@@ -194,33 +195,9 @@ pub struct File {
 }
 
 impl File {
-    /// Returns if the text of `self` is empty.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.text.is_empty()
-    }
-
-    /// Deletes the text between `start_line` and `end_line` from the text of `self`.
-    pub(crate) fn delete_selection(&mut self, start_line: usize, end_line: usize) {
-        let mut newline_indices = self.text.match_indices('\n');
-
-        if let Some(start_index) = if start_line == 0 {
-            Some(0)
-        } else {
-            newline_indices
-                .nth(start_line.saturating_sub(1))
-                .map(|index| index.0.saturating_add(1))
-        } {
-            if let Some((end_index, ..)) =
-                newline_indices.nth(end_line.saturating_sub(start_line.saturating_add(1)))
-            {
-                let _ = self.text.drain(start_index..=end_index);
-            }
-        }
-    }
-
-    /// Returns the number of lines in `self`.
-    pub(crate) fn line_count(&self) -> usize {
-        self.text.lines().count()
+    /// Returns the  [`Lines`] of the text.
+    pub(crate) fn lines(&self) -> Lines<'_> {
+        self.text.lines()
     }
 
     /// Returns a reference to the text of `self`.
