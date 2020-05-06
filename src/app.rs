@@ -146,13 +146,15 @@ impl Pane {
     }
 
     /// Updates the size of `self` to match `dimensions`;
-    fn update_size(&mut self, dimensions: Dimensions, outputs: &mut Vec<Output>) {
+    fn update_size(&mut self, mut dimensions: Dimensions, outputs: &mut Vec<Output>) {
+        dimensions.height -= 1;
         self.size = dimensions;
         self.scroll_amount
             .borrow_mut()
             .set(usize::from(dimensions.height.wrapping_div(3)));
 
         if let Some(doc) = &mut self.doc {
+            doc.dimensions = dimensions;
             outputs.push(doc.change_output(self.is_wrapping));
         }
     }
@@ -179,7 +181,7 @@ impl Pane {
     /// Opens a document at `path`.
     fn create_doc(&mut self, file: File) -> Vec<Output> {
         let mut outputs = Vec::new();
-        let doc = Document::new(file, &self.scroll_amount, self.is_wrapping);
+        let doc = Document::new(file, self.size, self.is_wrapping);
         let output = doc.open_output();
 
         if let Some(old_doc) = self.doc.replace(doc) {
@@ -201,8 +203,8 @@ impl Pane {
 pub(crate) struct Document {
     /// The file of the document.
     file: File,
-    /// The number of lines that a scroll will move.
-    scroll_amount: Rc<RefCell<Amount>>,
+    /// The [`Dimensions`] of the Document.
+    dimensions: Dimensions,
     /// The version of the document.
     version: i64,
     /// If the document is wrapping text.
@@ -211,10 +213,10 @@ pub(crate) struct Document {
 
 impl Document {
     /// Creates a new [`Document`].
-    fn new(file: File, scroll_amount: &Rc<RefCell<Amount>>, is_wrapping: bool) -> Self {
+    fn new(file: File, dimensions: Dimensions, is_wrapping: bool) -> Self {
         Self {
             file,
-            scroll_amount: Rc::clone(scroll_amount),
+            dimensions,
             version: 0,
             is_wrapping,
         }
@@ -265,7 +267,26 @@ impl Document {
 
     /// Returns a [`Vec`] of the rows of `self`.
     pub(crate) fn rows(&self) -> Vec<String> {
-        self.file.lines().map(str::to_string).collect()
+        let mut rows = Vec::new();
+        let row_length = self.dimensions.width.into();
+
+        for line in self.file.lines() {
+            if !self.is_wrapping || line.len() <= row_length {
+                rows.push(line.to_string());
+            } else {
+                let mut line_remainder = line;
+
+                while line_remainder.len() > row_length {
+                    let (row, remainder) = line_remainder.split_at(row_length);
+                    line_remainder = remainder;
+                    rows.push(row.to_string());
+                }
+
+                rows.push(line_remainder.to_string());
+            }
+        }
+
+        rows.into_iter().take(self.dimensions.height.into()).collect()
     }
 
     /// Returns the output to close `self`.

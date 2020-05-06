@@ -23,7 +23,7 @@ use {
     },
     error::{DestroyError, InitError, PollFailure, ReadFailure, WriteFailure},
     fehler::{throw, throws},
-    log::warn,
+    log::{trace, warn},
     market::{ConsumeError, Consumer, ProduceError, Producer},
     parse_display::Display as ParseDisplay,
     std::io::{self, Stdout, Write},
@@ -139,6 +139,7 @@ impl Presenter {
     /// Writes `text` at `row`.
     #[throws(WriteFailure)]
     fn write_row(&self, row: Length, text: String) {
+        trace!("Writing to {}: `{}`", row, text);
         execute!(self.out_mut(), MoveTo(0, row), Print(text))?;
     }
 

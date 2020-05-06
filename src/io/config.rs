@@ -1,11 +1,11 @@
 //! Implements [`Consumer`] for configs.
 use {
     core::{
-        cell::Cell,
+        cell::{RefCell, Cell},
         fmt::{self, Display},
         time::Duration,
     },
-    fehler::throws,
+    fehler::{throw, throws},
     log::trace,
     market::{
         channel::StdConsumer, ClosedMarketFailure, ConsumeError, Consumer, Inspector, StripFrom,
@@ -26,6 +26,8 @@ pub enum CreateSettingConsumerError {
     /// An error beginning to watch the config file.
     #[error("unable to begin watch of config file: {0}")]
     BeginWatch(#[source] notify::Error),
+    #[error("configuration: {0}")]
+    Config(#[from] CreateConfigurationError),
 }
 
 /// An error creating the [`Configuration`].
@@ -63,6 +65,8 @@ pub(crate) struct SettingConsumer {
         StrippingConsumer<StdConsumer<DebouncedEvent>, Setting>,
         SettingDeduplicator,
     >,
+    config: Configuration,
+    is_updated: RefCell<bool>,
 }
 
 impl SettingConsumer {
@@ -83,6 +87,8 @@ impl SettingConsumer {
                 StrippingConsumer::new(StdConsumer::from(event_rx)),
                 SettingDeduplicator::new(path),
             ),
+            config: Configuration::new(path)?,
+            is_updated: RefCell::new(true),
         }
     }
 }
@@ -95,12 +101,16 @@ impl fmt::Debug for SettingConsumer {
 }
 
 impl Consumer for SettingConsumer {
-    type Good = Setting;
+    type Good = Configuration;
     type Failure = ClosedMarketFailure;
 
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good {
-        self.consumer.consume()?
+        if self.is_updated.replace(false) {
+            self.config.clone()
+        } else {
+            throw!(ConsumeError::EmptyStock);
+        }
     }
 }
 
@@ -111,7 +121,7 @@ impl StripFrom<DebouncedEvent> for Setting {
 
         if let DebouncedEvent::Write(file) = good {
             if let Ok(config) = Configuration::new(file) {
-                finished_goods.push(Self::Wrap(config.wrap.0));
+                finished_goods.push(Self::Wrap(config.wrap));
             }
         }
 
@@ -147,8 +157,8 @@ impl Inspector for SettingDeduplicator {
 
         match good {
             Self::Good::Wrap(wrap) => {
-                result = *wrap == config.wrap.0;
-                new_config.wrap.0 = *wrap;
+                result = *wrap == config.wrap;
+                new_config.wrap = *wrap;
             }
         }
 
@@ -159,9 +169,10 @@ impl Inspector for SettingDeduplicator {
 
 /// The configuration of the application.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
-struct Configuration {
+pub struct Configuration {
     /// If documents shall wrap.
-    wrap: Wrap,
+    #[serde(default)]
+    pub(crate) wrap: bool,
 }
 
 impl Configuration {
@@ -169,16 +180,6 @@ impl Configuration {
     #[throws(CreateConfigurationError)]
     fn new(file: &PathBuf) -> Self {
         toml::from_str(&fs::read_to_string(file)?)?
-    }
-}
-
-/// If all documents shall wrap long text.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-struct Wrap(bool);
-
-impl Default for Wrap {
-    fn default() -> Self {
-        Self(false)
     }
 }
 

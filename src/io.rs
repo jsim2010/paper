@@ -7,7 +7,7 @@ pub mod ui;
 use {
     crate::app::Document,
     clap::ArgMatches,
-    config::{ConsumeSettingError, CreateSettingConsumerError, Setting, SettingConsumer},
+    config::{ConsumeSettingError, CreateSettingConsumerError, Configuration, SettingConsumer},
     core::{
         convert::TryFrom,
         sync::atomic::{AtomicBool, Ordering},
@@ -225,7 +225,7 @@ impl Interface {
             DocEdit::Open { .. } => {
                 self.user_interface
                     .produce(DisplayCmd::Rows {
-                        start: 0,
+                        start: 1,
                         rows: doc.rows(),
                     })
                     .map_err(|error| error.map(ProduceOutputError::from))?;
@@ -241,7 +241,7 @@ impl Interface {
             DocEdit::Update => {
                 self.user_interface
                     .produce(DisplayCmd::Rows {
-                        start: 0,
+                        start: 1,
                         rows: doc.rows(),
                     })
                     .map_err(|error| error.map(ProduceOutputError::from))?;
@@ -446,7 +446,7 @@ pub enum Input {
     /// An input from the user.
     User(UserAction),
     /// A configuration.
-    Setting(Setting),
+    Configuration(Configuration),
     /// A glitch.
     Glitch(Glitch),
     /// A message from the language server.
@@ -474,10 +474,10 @@ impl From<UserAction> for Input {
     }
 }
 
-impl From<Setting> for Input {
+impl From<Configuration> for Input {
     #[inline]
-    fn from(value: Setting) -> Self {
-        Self::Setting(value)
+    fn from(value: Configuration) -> Self {
+        Self::Configuration(value)
     }
 }
 
