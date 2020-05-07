@@ -14,6 +14,7 @@ use {
     },
     enum_map::Enum,
     fehler::{throw, throws},
+    from_variant::FromVariant,
     fs::{ConsumeFileError, CreatePurlError, File, FileCommand, FileError, FileSystem, Purl},
     log::error,
     lsp::{
@@ -429,46 +430,18 @@ impl LanguageId {
 }
 
 /// An input.
-#[derive(Debug)]
+#[derive(Debug, FromVariant)]
 pub enum Input {
-    /// A file to be opened.
-    File(File),
     /// An input from the user.
     User(UserAction),
+    /// A file to be opened.
+    File(File),
     /// A setting.
     Setting(Setting),
     /// A glitch.
     Glitch(Glitch),
     /// A message from the language server.
     Lsp(ToolMessage<ServerMessage>),
-}
-
-impl From<File> for Input {
-    #[inline]
-    fn from(value: File) -> Self {
-        Self::File(value)
-    }
-}
-
-impl From<ToolMessage<ServerMessage>> for Input {
-    #[inline]
-    fn from(value: ToolMessage<ServerMessage>) -> Self {
-        Self::Lsp(value)
-    }
-}
-
-impl From<UserAction> for Input {
-    #[inline]
-    fn from(value: UserAction) -> Self {
-        Self::User(value)
-    }
-}
-
-impl From<Setting> for Input {
-    #[inline]
-    fn from(value: Setting) -> Self {
-        Self::Setting(value)
-    }
 }
 
 /// An output.
