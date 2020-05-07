@@ -1,22 +1,18 @@
-//! Implements the application logic of `paper`, converting an [`Input`] into a list of [`Output`]s.
+//! Implements the `paper` application logic for converting an [`Input`] into [`Output`]s.
 mod translate;
 
 use {
-    // TODO: Move everything out of ui.
     crate::io::{
         config::Setting,
-        fs::File,
-        ui::{BodySize, Selection},
-        DocChange, DocEdit, Input, Output,
+        fs::{File, Purl},
+        ui::{Dimensions, Unit},
+        DocEdit, Input, LanguageId, Output,
     },
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     std::{cell::RefCell, mem, rc::Rc},
-    translate::{Command, Direction, DocOp, Interpreter, Magnitude, Operation, Vector},
+    translate::{Command, DocOp, Interpreter, Operation},
 };
-
-/// An empty [`Selection`].
-static EMPTY_SELECTION: Selection = Selection::empty();
 
 /// The processor of the application.
 #[derive(Debug, Default)]
@@ -51,12 +47,14 @@ impl Processor {
         let mut outputs = Vec::new();
 
         match operation {
-            Operation::UpdateSetting(setting) => {
-                outputs.append(&mut self.update_setting(setting));
+            Operation::Resize { dimensions } => {
+                self.pane.update_size(dimensions, &mut outputs);
             }
-            Operation::Size(size) => {
-                outputs.push(self.pane.update_size(size));
-            }
+            Operation::UpdateSetting(setting) => match setting {
+                Setting::Wrap(is_wrapping) => {
+                    self.pane.update_is_wrapping(is_wrapping, &mut outputs);
+                }
+            },
             Operation::Confirm(action) => {
                 outputs.push(Output::Question {
                     request: ShowMessageRequestParams::from(action),
@@ -64,13 +62,8 @@ impl Processor {
             }
             Operation::Reset => {
                 self.input.clear();
-                outputs.push(Output::Reset {
-                    selection: self
-                        .pane
-                        .doc
-                        .as_ref()
-                        .map_or(EMPTY_SELECTION, |doc| doc.selection),
-                });
+                self.pane
+                    .update_is_wrapping(self.pane.is_wrapping, &mut outputs);
             }
             Operation::Alert(message) => {
                 outputs.push(Output::Notify { message });
@@ -79,22 +72,24 @@ impl Processor {
                 let prompt = command.to_string();
 
                 self.command = Some(command);
-                outputs.push(Output::StartIntake { title: prompt });
+                outputs.push(Output::Command { command: prompt });
             }
             Operation::Collect(ch) => {
                 self.input.push(ch);
-                outputs.push(Output::Write { ch });
+                outputs.push(Output::Command {
+                    command: self.input.clone(),
+                });
             }
             Operation::Execute => {
                 if self.command.is_some() {
                     let mut path = String::new();
                     mem::swap(&mut path, &mut self.input);
 
-                    outputs.push(Output::GetFile { path });
+                    outputs.push(Output::OpenFile { path });
                 }
             }
             Operation::Document(doc_op) => {
-                outputs.push(self.pane.operate(doc_op));
+                outputs.push(self.pane.operate(&doc_op));
             }
             Operation::Quit => {
                 if let Some(output) = self.pane.close_doc() {
@@ -103,8 +98,8 @@ impl Processor {
 
                 outputs.push(Output::Quit);
             }
-            Operation::OpenDoc(file) => {
-                outputs.append(&mut self.pane.open_doc(*file));
+            Operation::CreateDoc(file) => {
+                outputs.append(&mut self.pane.create_doc(file));
             }
             Operation::SendLsp(message) => {
                 outputs.push(Output::SendLsp(message));
@@ -113,26 +108,6 @@ impl Processor {
 
         outputs.push(Output::UpdateHeader);
         trace!("outputs: {:?}", outputs);
-
-        outputs
-    }
-
-    /// Updates `self` based on `setting`.
-    fn update_setting(&mut self, setting: Setting) -> Vec<Output> {
-        let mut outputs = Vec::new();
-
-        match setting {
-            Setting::Wrap(is_wrapped) => {
-                outputs.push(Output::Wrap {
-                    is_wrapped,
-                    selection: self
-                        .pane
-                        .doc
-                        .as_ref()
-                        .map_or(EMPTY_SELECTION, |doc| doc.selection),
-                });
-            }
-        }
 
         outputs
     }
@@ -145,15 +120,43 @@ struct Pane {
     doc: Option<Document>,
     /// The number of lines by which a scroll moves.
     scroll_amount: Rc<RefCell<Amount>>,
+    /// The length of a row.
+    row_length: Unit,
+    /// The [`Dimensions`] of the pane.
+    size: Dimensions,
+    /// If the pane is wrapping text.
+    is_wrapping: bool,
 }
 
 impl Pane {
+    /// Updates if `self` is wrapping text.
+    fn update_is_wrapping(&mut self, is_wrapping: bool, outputs: &mut Vec<Output>) {
+        if is_wrapping != self.is_wrapping {
+            self.is_wrapping = is_wrapping;
+
+            if let Some(doc) = &mut self.doc {
+                outputs.push(doc.change_output(is_wrapping));
+            }
+        }
+    }
+
+    /// Updates the size of `self` to match `dimensions`;
+    fn update_size(&mut self, dimensions: Dimensions, outputs: &mut Vec<Output>) {
+        self.size = dimensions;
+        self.scroll_amount
+            .borrow_mut()
+            .set(usize::from(dimensions.height.wrapping_div(3)));
+
+        if let Some(doc) = &mut self.doc {
+            doc.dimensions = dimensions;
+            outputs.push(doc.change_output(self.is_wrapping));
+        }
+    }
+
     /// Performs `operation` on `self`.
-    fn operate(&mut self, operation: DocOp) -> Output {
+    fn operate(&mut self, operation: &DocOp) -> Output {
         if let Some(doc) = &mut self.doc {
             match operation {
-                DocOp::Move(vector) => doc.move_selection(&vector),
-                DocOp::Delete => doc.delete_selection(),
                 DocOp::Save => doc.save(),
             }
         } else {
@@ -170,9 +173,9 @@ impl Pane {
     }
 
     /// Opens a document at `path`.
-    fn open_doc(&mut self, file: File) -> Vec<Output> {
+    fn create_doc(&mut self, file: File) -> Vec<Output> {
         let mut outputs = Vec::new();
-        let doc = self.create_doc(file);
+        let doc = Document::new(file, self.size, self.is_wrapping);
         let output = doc.open_output();
 
         if let Some(old_doc) = self.doc.replace(doc) {
@@ -183,19 +186,6 @@ impl Pane {
         outputs
     }
 
-    /// Creates a [`Document`] from `path`.
-    fn create_doc(&mut self, file: File) -> Document {
-        Document::new(file, &self.scroll_amount)
-    }
-
-    /// Updates the size of `self` to match `size`;
-    fn update_size(&mut self, size: BodySize) -> Output {
-        self.scroll_amount
-            .borrow_mut()
-            .set(usize::from(size.0.rows.wrapping_div(3)));
-        Output::Resize { size }
-    }
-
     /// Returns the [`Output`] to close the [`Document`] of `self`.
     fn close_doc(&mut self) -> Option<Output> {
         self.doc.take().map(Document::close)
@@ -204,92 +194,101 @@ impl Pane {
 
 /// A file and the user's current interactions with it.
 #[derive(Clone, Debug)]
-struct Document {
+pub(crate) struct Document {
     /// The file of the document.
     file: File,
-    /// The current user selection.
-    selection: Selection,
-    /// The number of lines that a scroll will move.
-    scroll_amount: Rc<RefCell<Amount>>,
+    /// The [`Dimensions`] of the Document.
+    dimensions: Dimensions,
     /// The version of the document.
     version: i64,
+    /// If the document is wrapping text.
+    is_wrapping: bool,
 }
 
 impl Document {
     /// Creates a new [`Document`].
-    fn new(file: File, scroll_amount: &Rc<RefCell<Amount>>) -> Self {
-        let mut selection = Selection::default();
-
-        if !file.is_empty() {
-            selection.init();
-        }
-
+    const fn new(file: File, dimensions: Dimensions, is_wrapping: bool) -> Self {
         Self {
             file,
-            selection,
-            scroll_amount: Rc::clone(scroll_amount),
+            dimensions,
             version: 0,
+            is_wrapping,
         }
     }
 
     /// Returns the [`Output`] for opening `self`.
     fn open_output(&self) -> Output {
         Output::EditDoc {
-            file: self.file.clone(),
+            doc: self.clone(),
             edit: DocEdit::Open {
                 version: self.version,
             },
         }
     }
 
+    /// Returns the [`Output`] for changing `self`.
+    fn change_output(&mut self, is_wrapping: bool) -> Output {
+        self.is_wrapping = is_wrapping;
+
+        Output::EditDoc {
+            doc: self.clone(),
+            edit: DocEdit::Update,
+        }
+    }
+
     /// Saves the document.
     fn save(&self) -> Output {
         Output::EditDoc {
-            file: self.file.clone(),
+            doc: self.clone(),
             edit: DocEdit::Save,
         }
     }
 
-    /// Deletes the text of the [`Selection`].
-    fn delete_selection(&mut self) -> Output {
-        self.file
-            .delete_selection(self.selection.start_line(), self.selection.end_line());
-        self.version = self.version.wrapping_add(1);
-        Output::EditDoc {
-            file: self.file.clone(),
-            edit: DocEdit::Change(Box::new(DocChange::new(self.selection, self.version))),
-        }
+    /// Returns the [`Purl`] of `self`.
+    pub(crate) const fn url(&self) -> &Purl {
+        self.file.url()
     }
 
-    /// Returns the number of lines in `self`.
-    fn line_count(&self) -> usize {
-        self.file.line_count()
+    /// Returns the [`LanguageId`] of `self`.
+    pub(crate) fn language_id(&self) -> Option<LanguageId> {
+        self.file.language_id()
     }
 
-    /// Moves the [`Selection`] as described by [`Vector`].
-    fn move_selection(&mut self, vector: &Vector) -> Output {
-        let amount = match vector.magnitude() {
-            Magnitude::Single => 1,
-            Magnitude::Half => self.scroll_amount.borrow().value(),
-        };
-        match vector.direction() {
-            Direction::Down => {
-                self.selection.move_down(amount, self.line_count());
-            }
-            Direction::Up => {
-                self.selection.move_up(amount);
+    /// Returns the text of `self`.
+    pub(crate) fn text(&self) -> String {
+        self.file.text().to_string()
+    }
+
+    /// Returns a [`Vec`] of the rows of `self`.
+    pub(crate) fn rows(&self) -> Vec<String> {
+        let mut rows = Vec::new();
+        let row_length = (*self.dimensions.width).into();
+
+        for line in self.file.lines() {
+            if !self.is_wrapping || line.len() <= row_length {
+                rows.push(line.to_string());
+            } else {
+                let mut line_remainder = line;
+
+                while line_remainder.len() > row_length {
+                    let (row, remainder) = line_remainder.split_at(row_length);
+                    line_remainder = remainder;
+                    rows.push(row.to_string());
+                }
+
+                rows.push(line_remainder.to_string());
             }
         }
 
-        Output::MoveSelection {
-            selection: self.selection,
-        }
+        rows.into_iter()
+            .take((*self.dimensions.height).into())
+            .collect()
     }
 
     /// Returns the output to close `self`.
     fn close(self) -> Output {
         Output::EditDoc {
-            file: self.file,
+            doc: self,
             edit: DocEdit::Close,
         }
     }
@@ -302,11 +301,6 @@ impl Document {
 struct Amount(usize);
 
 impl Amount {
-    /// Returns the value of `self`.
-    const fn value(&self) -> usize {
-        self.0
-    }
-
     /// Sets `self` to `amount`.
     fn set(&mut self, amount: usize) {
         self.0 = amount;

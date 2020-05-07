@@ -16,16 +16,14 @@ use {
     log::{trace, warn},
     lsp_types::{
         notification::{
-            DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
-            WillSaveTextDocument,
+            DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized, WillSaveTextDocument,
         },
         request::{Initialize, RegisterCapability, Request, Shutdown},
-        ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-        DidOpenTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-        MessageType, Range, ShowMessageParams, SynchronizationCapability,
-        TextDocumentClientCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+        ClientCapabilities, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+        InitializeParams, InitializeResult, InitializedParams, MessageType, ShowMessageParams,
+        SynchronizationCapability, TextDocumentClientCapabilities, TextDocumentIdentifier,
         TextDocumentItem, TextDocumentSaveReason, TextDocumentSyncCapability, TextDocumentSyncKind,
-        Url, VersionedTextDocumentIdentifier, WillSaveTextDocumentParams,
+        Url, WillSaveTextDocumentParams,
     },
     market::{
         io::{Reader, Writer},
@@ -316,46 +314,6 @@ impl Producer for LanguageClient {
                             None
                         }
                     }
-                    DocMessage::Change {
-                        version,
-                        text,
-                        range,
-                        new_text,
-                    } => {
-                        if let Some(content_changes) = match self.settings.get().notify_changes_kind
-                        {
-                            TextDocumentSyncKind::None => None,
-                            TextDocumentSyncKind::Full => {
-                                Some(vec![TextDocumentContentChangeEvent {
-                                    range: None,
-                                    range_length: None,
-                                    text: text.to_string(),
-                                }])
-                            }
-                            TextDocumentSyncKind::Incremental => {
-                                Some(vec![TextDocumentContentChangeEvent {
-                                    range: Some(*range),
-                                    range_length: None,
-                                    text: new_text.to_string(),
-                                }])
-                            }
-                        } {
-                            Some(
-                                Message::notification::<DidChangeTextDocument>(
-                                    DidChangeTextDocumentParams {
-                                        text_document: VersionedTextDocumentIdentifier::new(
-                                            configuration.url.clone(),
-                                            *version,
-                                        ),
-                                        content_changes,
-                                    },
-                                )
-                                .map_err(|error| ProduceError::Failure(error.into()))?,
-                            )
-                        } else {
-                            None
-                        }
-                    }
                 }
             }
             ClientMessage::RegisterCapability { .. }
@@ -583,9 +541,6 @@ impl TryFrom<ClientMessage> for Message {
                         text_document: TextDocumentIdentifier::new(configuration.url),
                     })?
                 }
-                DocMessage::Change { .. } => {
-                    throw!(Self::Error::Null);
-                }
             },
             ClientMessage::Initialized => Self::notification::<Initialized>(InitializedParams {})?,
             ClientMessage::Exit => Self::notification::<Exit>(())?,
@@ -641,18 +596,6 @@ pub(crate) enum DocMessage {
     /// Save a doc.
     #[display("Save")]
     Save,
-    /// Change a doc.
-    #[display("Change document to v{version}")]
-    Change {
-        /// The version.
-        version: i64,
-        /// The text.
-        text: String,
-        /// The range.
-        range: Range,
-        /// The new text.
-        new_text: String,
-    },
     /// Close a doc.
     #[display("Close")]
     Close,

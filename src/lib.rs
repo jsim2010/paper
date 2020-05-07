@@ -1,6 +1,6 @@
 //! A terminal-based text editor with goals to maximize simplicity and efficiency.
 //!
-//! # Goals
+//! # Design Goals
 //! 1) All functionality shall be able to be performed via the keys reachable from the home row. Where it makes sense, functionality may additionally be performed via the mouse and other keys.
 //! 2) All user input shall be modal, i.e. keys may implement different functionality depending on the current mode of the application.
 //! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the [Language Server Protocol].
@@ -18,17 +18,18 @@ mod logging;
 use {
     app::Processor,
     clap::ArgMatches,
+    core::option::Option,
     fehler::{throw, throws},
     io::{
         ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
     },
     log::{error, info},
-    logging::{Config, InitLoggerError},
+    logging::{InitLoggerError, LogConfig},
     market::{Consumer, Producer},
     thiserror::Error as ThisError,
 };
 
-/// A configuration of the initialization of a [`Paper`].
+/// Arguments for [`Paper`] initialization.
 ///
 /// [`Paper`]: ../struct.Paper.html
 #[derive(Clone, Debug)]
@@ -37,10 +38,10 @@ pub struct Arguments<'a> {
     ///
     /// [`None`] indicates that no file will be viewed.
     ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
+    /// [`None`]: https://doc.rust-lang.org/core/option/enum.Option.html#variant.None
     pub file: Option<&'a str>,
     /// The configuration of the logger.
-    pub log_config: Config,
+    pub log_config: LogConfig,
 }
 
 impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
@@ -48,7 +49,7 @@ impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
     fn from(value: &'a ArgMatches<'a>) -> Self {
         Self {
             file: value.value_of("file"),
-            log_config: Config::from(value),
+            log_config: LogConfig::from(value),
         }
     }
 }
@@ -58,12 +59,16 @@ impl Default for Arguments<'_> {
     fn default() -> Self {
         Self {
             file: None,
-            log_config: Config::default(),
+            log_config: LogConfig::default(),
         }
     }
 }
 
-/// An instance of the `paper` program.
+/// An instance of the `paper` application.
+///
+/// Once [`Paper`] has started running, it shall continue until it has been terminated. **Termination** occurs when the application is ordered to quit or an unrecoverable error is thrown.
+///
+/// When [`Paper`] is dropped, it shall kill all spawned processes and return the user interface to its previous state.
 ///
 /// # Examples
 ///
@@ -72,29 +77,23 @@ impl Default for Arguments<'_> {
 /// # fn main() -> Result<(), Failure> {
 ///
 /// Paper::new(&Arguments::default())?.run()?;
-/// Ok(())
+/// # Ok(())
 /// # }
 /// ```
 #[derive(Debug)]
 pub struct Paper {
-    /// The interface.
+    /// The interface with external processes.
     io: Interface,
-    /// The processor.
+    /// The application processor.
     processor: Processor,
 }
 
 impl Paper {
     /// Creates a new instance of `paper`.
-    ///
-    /// # Errors
-    ///
-    /// If any error is encountered during creation, a [`CreatePaperError`] shall be returned.
-    ///
-    /// [`CreatePaperError`]: enum.CreatePaperError.html
     #[inline]
-    #[throws(CreatePaperError)]
+    #[throws(CreateError)]
     pub fn new(arguments: &Arguments<'_>) -> Self {
-        // First step is to create logger.
+        // Logger is created first so all other parts can use it.
         logging::init(arguments.log_config)?;
 
         Self {
@@ -103,30 +102,34 @@ impl Paper {
         }
     }
 
-    /// Runs the program and logs the result.
+    /// Runs the application.
+    ///
+    /// This function shall run until `paper` has been **terminated**.
     ///
     /// # Errors
     ///
-    /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
+    /// If any unrecoverable error is thrown, a [`RunError`] shall be thrown.
+    ///
+    /// [`RunError`]: enum.RunError.html
     #[inline]
-    #[throws(RunPaperError)]
+    #[throws(RunError)]
     pub fn run(&mut self) {
         if let Err(error) = self.execute() {
-            error!("Encountered error: {}", error);
+            error!("{}", error);
             throw!(error);
         }
 
         info!("Application quitting");
     }
 
-    /// Loops through program execution until a failure occurs or the application quits.
+    /// Loops through execution until `paper` has been **terminated**.
     ///
     /// # Errors
     ///
-    /// If any error from which `paper` is unable to recover is encountered, a [`RunPaperError`] shall be returned. In case of a failure, `paper` shall make all efforts to cleanly exit (i.e. kill all processes and return the terminal to a clean state), but a clean exit shall not be guaranteed.
+    /// If any unrecoverable error is thrown, a [`RunError`] shall be thrown.
     ///
-    /// [`RunPaperError`]: enum.RunPaperError.html
-    #[throws(RunPaperError)]
+    /// [`RunError`]: enum.RunError.html
+    #[throws(RunError)]
     fn execute(&mut self) {
         loop {
             match self.io.demand() {
@@ -148,34 +151,34 @@ impl Paper {
 pub enum Failure {
     /// An error creating `paper`.
     #[error(transparent)]
-    Create(#[from] CreatePaperError),
+    Create(#[from] CreateError),
     /// An error running `paper`.
     #[error(transparent)]
-    Run(#[from] RunPaperError),
+    Run(#[from] RunError),
 }
 
 /// An error creating a [`Paper`].
 ///
 /// [`Paper`]: struct.Paper.html
 #[derive(Debug, ThisError)]
-pub enum CreatePaperError {
+pub enum CreateError {
     /// An error creating the application logger.
-    #[error("failed to initialize logger: {0}")]
+    #[error("Failed to initialize logger: {0}")]
     Logger(#[from] InitLoggerError),
-    /// An error creating an [`Interface`].
+    /// An error creating the [`Interface`].
     ///
     /// [`Interface`]: io/struct.Interface.html
-    #[error("failed to create application: {0}")]
+    #[error("Failed to create application: {0}")]
     Interface(#[from] CreateInterfaceError),
 }
 
 /// An error running `paper`.
 #[derive(Debug, ThisError)]
-pub enum RunPaperError {
+pub enum RunError {
     /// An error consuming an input.
-    #[error("failed to consume input: {0}")]
+    #[error("Failed to consume input: {0}")]
     Consume(#[from] ConsumeInputError),
     /// An error producing an output.
-    #[error("failed to produce output: {0}")]
+    #[error("Failed to produce output: {0}")]
     Produce(#[from] ProduceOutputError),
 }

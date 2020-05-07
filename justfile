@@ -56,6 +56,7 @@ fix_format: _install_format
 # - clippy::useless_attribute: allowed by Serialize
 # - clippy::missing_const_for_fn: positive on fn with match which is not stable
 # - clippy::use_self: false positive on format macro
+# - clippy::module_name_repetitions: okay for certain modules such as `error`
 # ALLOW
 # - box_pointers: box pointers are okay and useful
 # - variant_size_differences: handled by clippy::large_enum_variant
@@ -130,7 +131,8 @@ lint: _install_lint
      -D clippy::indexing_slicing\
      -D clippy::missing_inline_in_public_items\
      -D clippy::unreachable\
-     -D clippy::use_self
+     -D clippy::use_self\
+     -D clippy::module_name_repetitions
 
 # Create pull request for resolving <issue_num>
 pr issue_num:

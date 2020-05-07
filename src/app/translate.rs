@@ -4,7 +4,7 @@ use {
         config::Setting,
         fs::File,
         lsp::{ClientMessage, ServerMessage, ToolMessage},
-        ui::{BodySize, UserAction},
+        ui::{Dimensions, UserAction},
         Input,
     },
     core::fmt::{self, Debug},
@@ -17,10 +17,13 @@ use {
 /// Signifies actions that can be performed by the application.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Operation {
+    /// Updates the display to `size`.
+    Resize {
+        /// The new [`Dimensions`].
+        dimensions: Dimensions,
+    },
     /// Sends message to language server.
     SendLsp(ToolMessage<ClientMessage>),
-    /// Resizes the user interface.
-    Size(BodySize),
     /// Resets the application.
     Reset,
     /// Confirms that the action is desired.
@@ -39,8 +42,8 @@ pub(crate) enum Operation {
     Execute,
     /// An operation to edit the text or selection of the document.
     Document(DocOp),
-    /// Opens a file.
-    OpenDoc(Box<File>),
+    /// Creates a document from the file.
+    CreateDoc(File),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
@@ -79,10 +82,6 @@ pub(crate) enum Command {
 /// An operation performed on a document.
 #[derive(Debug, PartialEq)]
 pub(crate) enum DocOp {
-    /// Moves the cursor.
-    Move(Vector),
-    /// Deletes the current selection.
-    Delete,
     /// Saves the document.
     Save,
 }
@@ -93,59 +92,10 @@ impl fmt::Display for DocOp {
             f,
             "{}",
             match self {
-                Self::Move(..) => "selection movement",
-                Self::Delete => "deletion",
                 Self::Save => "save",
             }
         )
     }
-}
-
-/// A movement to the cursor.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Vector {
-    /// The direction of the movement.
-    direction: Direction,
-    /// The magnitude of the movement.
-    magnitude: Magnitude,
-}
-
-impl Vector {
-    /// Creates a new [`Vector`].
-    pub(crate) const fn new(direction: Direction, magnitude: Magnitude) -> Self {
-        Self {
-            direction,
-            magnitude,
-        }
-    }
-
-    /// Returns the direction of `self`.
-    pub(crate) const fn direction(&self) -> &Direction {
-        &self.direction
-    }
-
-    /// Returns the magnitude of `self`.
-    pub(crate) const fn magnitude(&self) -> &Magnitude {
-        &self.magnitude
-    }
-}
-
-/// Describes the direction of a movement.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Direction {
-    /// Towards the bottom.
-    Down,
-    /// Towards the top.
-    Up,
-}
-
-/// Describes the magnitude of a movement.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Magnitude {
-    /// Move a single line.
-    Single,
-    /// Move roughly half of a screen.
-    Half,
 }
 
 /// Manages interpretation for the application.
@@ -166,7 +116,7 @@ impl Interpreter {
 
         match input {
             Input::File(file) => {
-                output.add_op(Operation::OpenDoc(file));
+                output.add_op(Operation::CreateDoc(file));
             }
             Input::Glitch(glitch) => {
                 output.add_op(Operation::Alert(ShowMessageParams {
@@ -317,33 +267,6 @@ impl ViewInterpreter {
                 output.add_op(Operation::StartCommand(Command::Open));
                 output.set_mode(Mode::Collect);
             }
-            KeyCode::Char('j') => {
-                output.add_op(Operation::Document(DocOp::Move(Vector::new(
-                    Direction::Down,
-                    Magnitude::Single,
-                ))));
-            }
-            KeyCode::Char('k') => {
-                output.add_op(Operation::Document(DocOp::Move(Vector::new(
-                    Direction::Up,
-                    Magnitude::Single,
-                ))));
-            }
-            KeyCode::Char('J') => {
-                output.add_op(Operation::Document(DocOp::Move(Vector::new(
-                    Direction::Down,
-                    Magnitude::Half,
-                ))));
-            }
-            KeyCode::Char('K') => {
-                output.add_op(Operation::Document(DocOp::Move(Vector::new(
-                    Direction::Up,
-                    Magnitude::Half,
-                ))));
-            }
-            KeyCode::Char('d') => {
-                output.add_op(Operation::Document(DocOp::Delete));
-            }
             KeyCode::Backspace
             | KeyCode::Enter
             | KeyCode::Left
@@ -373,8 +296,8 @@ impl ModeInterpreter for ViewInterpreter {
             UserAction::Key { code, .. } => {
                 Self::decode_key(code, &mut output);
             }
-            UserAction::Resize(size) => {
-                output.add_op(Operation::Size(size));
+            UserAction::Resize { dimensions } => {
+                output.add_op(Operation::Resize { dimensions });
             }
             UserAction::Mouse => {}
         }
@@ -540,93 +463,6 @@ mod test {
                     modifiers: KeyModifiers::CONTROL,
                 })),
                 Some(Operation::Document(DocOp::Save))
-            );
-            assert_eq!(int.mode, Mode::View);
-        }
-
-        /// The 'j' key shall move the cursor down.
-        #[test]
-        fn move_down() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::User(UserAction::Key {
-                    code: KeyCode::Char('j'),
-                    modifiers: KeyModifiers::empty(),
-                })),
-                Some(Operation::Document(DocOp::Move(Vector::new(
-                    Direction::Down,
-                    Magnitude::Single
-                ))))
-            );
-            assert_eq!(int.mode, Mode::View);
-        }
-
-        /// The 'k' key shall move the cursor up.
-        #[test]
-        fn move_up() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::User(UserAction::Key {
-                    code: KeyCode::Char('k'),
-                    modifiers: KeyModifiers::empty(),
-                })),
-                Some(Operation::Document(DocOp::Move(Vector::new(
-                    Direction::Up,
-                    Magnitude::Single
-                ))))
-            );
-            assert_eq!(int.mode, Mode::View);
-        }
-
-        /// The 'J' key shall scroll the document down.
-        #[test]
-        fn scroll_down() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::User(UserAction::Key {
-                    code: KeyCode::Char('J'),
-                    modifiers: KeyModifiers::empty(),
-                })),
-                Some(Operation::Document(DocOp::Move(Vector::new(
-                    Direction::Down,
-                    Magnitude::Half
-                ))))
-            );
-            assert_eq!(int.mode, Mode::View);
-        }
-
-        /// The 'K' key shall scroll the document up.
-        #[test]
-        fn scroll_up() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::User(UserAction::Key {
-                    code: KeyCode::Char('K'),
-                    modifiers: KeyModifiers::empty(),
-                })),
-                Some(Operation::Document(DocOp::Move(Vector::new(
-                    Direction::Up,
-                    Magnitude::Half
-                ))))
-            );
-            assert_eq!(int.mode, Mode::View);
-        }
-
-        /// The 'd' key shall delete the current selection.
-        #[test]
-        fn delete() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::User(UserAction::Key {
-                    code: KeyCode::Char('d'),
-                    modifiers: KeyModifiers::empty(),
-                })),
-                Some(Operation::Document(DocOp::Delete))
             );
             assert_eq!(int.mode, Mode::View);
         }

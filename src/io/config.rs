@@ -1,19 +1,19 @@
 //! Implements [`Consumer`] for configs.
 use {
     core::{
-        cell::Cell,
+        cell::{Cell, RefCell},
         fmt::{self, Display},
-        time::Duration,
+        //time::Duration,
     },
-    fehler::throws,
+    fehler::{throw, throws},
     log::trace,
     market::{
         channel::StdConsumer, ClosedMarketFailure, ConsumeError, Consumer, Inspector, StripFrom,
         StrippingConsumer, VigilantConsumer,
     },
-    notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
+    notify::DebouncedEvent, /*, RecommendedWatcher, RecursiveMode, Watcher}*/
     serde::Deserialize,
-    std::{fs, io, path::PathBuf, sync::mpsc},
+    std::{fs, io, path::PathBuf /*, sync::mpsc*/},
     thiserror::Error,
 };
 
@@ -26,6 +26,9 @@ pub enum CreateSettingConsumerError {
     /// An error beginning to watch the config file.
     #[error("unable to begin watch of config file: {0}")]
     BeginWatch(#[source] notify::Error),
+    /// An error creating the configuration.
+    #[error("configuration: {0}")]
+    Config(#[from] CreateConfigurationError),
 }
 
 /// An error creating the [`Configuration`].
@@ -55,34 +58,40 @@ pub enum ConsumeSettingError {
 
 /// The Change Filter.
 pub(crate) struct SettingConsumer {
-    /// Watches for events on the config file.
-    #[allow(dead_code)] // Must keep ownership of watcher.
-    watcher: RecommendedWatcher,
-    /// The consumer of settings.
-    consumer: VigilantConsumer<
-        StrippingConsumer<StdConsumer<DebouncedEvent>, Setting>,
-        SettingDeduplicator,
-    >,
+    ///// Watches for events on the config file.
+    //#[allow(dead_code)] // Must keep ownership of watcher.
+    //watcher: RecommendedWatcher,
+    ///// The consumer of settings.
+    //consumer: VigilantConsumer<
+    //    StrippingConsumer<StdConsumer<DebouncedEvent>, Setting>,
+    //    SettingDeduplicator,
+    //>,
+    /// The current [`Configuration`].
+    config: Configuration,
+    /// If the [`Configuration`] has been updated.
+    is_updated: RefCell<bool>,
 }
 
 impl SettingConsumer {
     /// Creates a new [`SettingConsumer`].
     #[throws(CreateSettingConsumerError)]
     pub(crate) fn new(path: &PathBuf) -> Self {
-        let (event_tx, event_rx) = mpsc::channel();
-        let mut watcher = notify::watcher(event_tx, Duration::from_secs(0))
-            .map_err(CreateSettingConsumerError::CreateWatcher)?;
+        //let (event_tx, event_rx) = mpsc::channel();
+        //let mut watcher = notify::watcher(event_tx, Duration::from_secs(0))
+        //    .map_err(CreateSettingConsumerError::CreateWatcher)?;
 
-        watcher
-            .watch(path, RecursiveMode::NonRecursive)
-            .map_err(CreateSettingConsumerError::BeginWatch)?;
+        //watcher
+        //    .watch(path, RecursiveMode::NonRecursive)
+        //    .map_err(CreateSettingConsumerError::BeginWatch)?;
 
         Self {
-            watcher,
-            consumer: VigilantConsumer::new(
-                StrippingConsumer::new(StdConsumer::from(event_rx)),
-                SettingDeduplicator::new(path),
-            ),
+            //watcher,
+            //consumer: VigilantConsumer::new(
+            //    StrippingConsumer::new(StdConsumer::from(event_rx)),
+            //    SettingDeduplicator::new(path),
+            //),
+            config: Configuration::new(path)?,
+            is_updated: RefCell::new(true),
         }
     }
 }
@@ -100,7 +109,11 @@ impl Consumer for SettingConsumer {
 
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good {
-        self.consumer.consume()?
+        if self.is_updated.replace(false) {
+            Setting::Wrap(self.config.wrap)
+        } else {
+            throw!(ConsumeError::EmptyStock);
+        }
     }
 }
 
@@ -111,7 +124,7 @@ impl StripFrom<DebouncedEvent> for Setting {
 
         if let DebouncedEvent::Write(file) = good {
             if let Ok(config) = Configuration::new(file) {
-                finished_goods.push(Self::Wrap(config.wrap.0));
+                finished_goods.push(Self::Wrap(config.wrap));
             }
         }
 
@@ -126,14 +139,14 @@ pub struct SettingDeduplicator {
     config: Cell<Configuration>,
 }
 
-impl SettingDeduplicator {
-    /// Creates a new [`SettingDeduplicator`].
-    fn new(path: &PathBuf) -> Self {
-        Self {
-            config: Cell::new(Configuration::new(path).unwrap_or_default()),
-        }
-    }
-}
+//impl SettingDeduplicator {
+//    /// Creates a new [`SettingDeduplicator`].
+//    fn new(path: &PathBuf) -> Self {
+//        Self {
+//            config: Cell::new(Configuration::new(path).unwrap_or_default()),
+//        }
+//    }
+//}
 
 impl Inspector for SettingDeduplicator {
     type Good = Setting;
@@ -147,8 +160,8 @@ impl Inspector for SettingDeduplicator {
 
         match good {
             Self::Good::Wrap(wrap) => {
-                result = *wrap == config.wrap.0;
-                new_config.wrap.0 = *wrap;
+                result = *wrap == config.wrap;
+                new_config.wrap = *wrap;
             }
         }
 
@@ -159,9 +172,10 @@ impl Inspector for SettingDeduplicator {
 
 /// The configuration of the application.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
-struct Configuration {
+pub struct Configuration {
     /// If documents shall wrap.
-    wrap: Wrap,
+    #[serde(default)]
+    pub(crate) wrap: bool,
 }
 
 impl Configuration {
@@ -169,16 +183,6 @@ impl Configuration {
     #[throws(CreateConfigurationError)]
     fn new(file: &PathBuf) -> Self {
         toml::from_str(&fs::read_to_string(file)?)?
-    }
-}
-
-/// If all documents shall wrap long text.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-struct Wrap(bool);
-
-impl Default for Wrap {
-    fn default() -> Self {
-        Self(false)
     }
 }
 
