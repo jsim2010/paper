@@ -124,8 +124,8 @@ impl Interpreter {
                     message: format!("{}", glitch),
                 }));
             }
-            Input::Configuration(config) => {
-                output.add_op(Operation::UpdateSetting(Setting::Wrap(config.wrap)));
+            Input::Setting(setting) => {
+                output.add_op(Operation::UpdateSetting(setting));
             }
             Input::Lsp(ToolMessage {
                 language_id,

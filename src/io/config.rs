@@ -1,9 +1,9 @@
 //! Implements [`Consumer`] for configs.
 use {
     core::{
-        cell::{RefCell, Cell},
+        cell::{Cell, RefCell},
         fmt::{self, Display},
-        time::Duration,
+        //time::Duration,
     },
     fehler::{throw, throws},
     log::trace,
@@ -11,9 +11,9 @@ use {
         channel::StdConsumer, ClosedMarketFailure, ConsumeError, Consumer, Inspector, StripFrom,
         StrippingConsumer, VigilantConsumer,
     },
-    notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher},
+    notify::DebouncedEvent, /*, RecommendedWatcher, RecursiveMode, Watcher}*/
     serde::Deserialize,
-    std::{fs, io, path::PathBuf, sync::mpsc},
+    std::{fs, io, path::PathBuf /*, sync::mpsc*/},
     thiserror::Error,
 };
 
@@ -58,15 +58,17 @@ pub enum ConsumeSettingError {
 
 /// The Change Filter.
 pub(crate) struct SettingConsumer {
-    /// Watches for events on the config file.
-    #[allow(dead_code)] // Must keep ownership of watcher.
-    watcher: RecommendedWatcher,
-    /// The consumer of settings.
-    consumer: VigilantConsumer<
-        StrippingConsumer<StdConsumer<DebouncedEvent>, Setting>,
-        SettingDeduplicator,
-    >,
+    ///// Watches for events on the config file.
+    //#[allow(dead_code)] // Must keep ownership of watcher.
+    //watcher: RecommendedWatcher,
+    ///// The consumer of settings.
+    //consumer: VigilantConsumer<
+    //    StrippingConsumer<StdConsumer<DebouncedEvent>, Setting>,
+    //    SettingDeduplicator,
+    //>,
+    /// The current [`Configuration`].
     config: Configuration,
+    /// If the [`Configuration`] has been updated.
     is_updated: RefCell<bool>,
 }
 
@@ -74,20 +76,20 @@ impl SettingConsumer {
     /// Creates a new [`SettingConsumer`].
     #[throws(CreateSettingConsumerError)]
     pub(crate) fn new(path: &PathBuf) -> Self {
-        let (event_tx, event_rx) = mpsc::channel();
-        let mut watcher = notify::watcher(event_tx, Duration::from_secs(0))
-            .map_err(CreateSettingConsumerError::CreateWatcher)?;
+        //let (event_tx, event_rx) = mpsc::channel();
+        //let mut watcher = notify::watcher(event_tx, Duration::from_secs(0))
+        //    .map_err(CreateSettingConsumerError::CreateWatcher)?;
 
-        watcher
-            .watch(path, RecursiveMode::NonRecursive)
-            .map_err(CreateSettingConsumerError::BeginWatch)?;
+        //watcher
+        //    .watch(path, RecursiveMode::NonRecursive)
+        //    .map_err(CreateSettingConsumerError::BeginWatch)?;
 
         Self {
-            watcher,
-            consumer: VigilantConsumer::new(
-                StrippingConsumer::new(StdConsumer::from(event_rx)),
-                SettingDeduplicator::new(path),
-            ),
+            //watcher,
+            //consumer: VigilantConsumer::new(
+            //    StrippingConsumer::new(StdConsumer::from(event_rx)),
+            //    SettingDeduplicator::new(path),
+            //),
             config: Configuration::new(path)?,
             is_updated: RefCell::new(true),
         }
@@ -102,13 +104,13 @@ impl fmt::Debug for SettingConsumer {
 }
 
 impl Consumer for SettingConsumer {
-    type Good = Configuration;
+    type Good = Setting;
     type Failure = ClosedMarketFailure;
 
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good {
         if self.is_updated.replace(false) {
-            self.config.clone()
+            Setting::Wrap(self.config.wrap)
         } else {
             throw!(ConsumeError::EmptyStock);
         }
@@ -137,14 +139,14 @@ pub struct SettingDeduplicator {
     config: Cell<Configuration>,
 }
 
-impl SettingDeduplicator {
-    /// Creates a new [`SettingDeduplicator`].
-    fn new(path: &PathBuf) -> Self {
-        Self {
-            config: Cell::new(Configuration::new(path).unwrap_or_default()),
-        }
-    }
-}
+//impl SettingDeduplicator {
+//    /// Creates a new [`SettingDeduplicator`].
+//    fn new(path: &PathBuf) -> Self {
+//        Self {
+//            config: Cell::new(Configuration::new(path).unwrap_or_default()),
+//        }
+//    }
+//}
 
 impl Inspector for SettingDeduplicator {
     type Good = Setting;

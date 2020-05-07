@@ -27,7 +27,7 @@ pub enum DisplayCmdFailure {
     /// A failure writing text.
     Write(#[from] WriteFailure),
     /// A failure incrementing a row.
-    Wrap(#[from] WrapFailure),
+    End(#[from] ReachedEnd),
 }
 
 /// A failure writing to stdout.
@@ -75,6 +75,7 @@ pub(crate) struct DestroyError {
     error: ErrorKind,
 }
 
-#[derive(Debug, ThisError)]
+/// When the [`RowId`] has reached its end.
+#[derive(Clone, Copy, Debug, ThisError)]
 #[error("")]
-pub struct WrapFailure;
+pub struct ReachedEnd;

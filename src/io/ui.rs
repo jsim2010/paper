@@ -2,9 +2,7 @@
 //!
 //! Visual output is organized as follows:
 //! - A header is displayed on a single row at the top of the display. The header displays general information about the current state of the system.
-//! - All remaining space on the screen is primarily used for displaying the text of the currently viewed document.
-//! - If the application needs to alert the user, it may do so via a message box that will temporarily overlap the top rows of the document.
-//! - If the application requires input from the user, it may do so via an input box that will temporarily overlap the bottom rows of the document.
+//! - A page is displayed in the remaining space of the display. The page displays the text of the currently viewed document.
 mod error;
 
 pub use error::{CreateTerminalError, DisplayCmdFailure, UserActionFailure};
@@ -12,6 +10,7 @@ pub use error::{CreateTerminalError, DisplayCmdFailure, UserActionFailure};
 use {
     core::{
         cell::{RefCell, RefMut},
+        convert::{TryFrom, TryInto},
         ops::Deref,
         time::Duration,
     },
@@ -22,7 +21,7 @@ use {
         style::Print,
         terminal::{EnterAlternateScreen, LeaveAlternateScreen},
     },
-    error::{WrapFailure, DestroyError, InitError, PollFailure, ReadFailure, WriteFailure},
+    error::{DestroyError, InitError, PollFailure, ReachedEnd, ReadFailure, WriteFailure},
     fehler::{throw, throws},
     log::{trace, warn},
     market::{ConsumeError, Consumer, ProduceError, Producer},
@@ -73,7 +72,7 @@ impl Consumer for UserActionConsumer {
 /// Produces all [`DisplayCmd`]s via the stdout of the application.
 #[derive(Debug, Default)]
 pub(crate) struct Terminal {
-    /// Presents [`DisplayCmd`]s to the user.
+    /// The presenter.
     presenter: Presenter,
 }
 
@@ -107,18 +106,27 @@ impl Producer for Terminal {
                 let mut row = RowId(0);
 
                 for text in rows {
-                    self.presenter.single_line(row.into(), text.to_string()).map_err(|failure| ProduceError::Failure(failure.into()))?;
-                    row.step_forward().map_err(|failure| ProduceError::Failure(failure.into()))?;
+                    self.presenter
+                        .single_line(
+                            row.try_into()
+                                .map_err(|error: ReachedEnd| ProduceError::Failure(error.into()))?,
+                            text.to_string(),
+                        )
+                        .map_err(|failure| ProduceError::Failure(failure.into()))?;
+                    row.step_forward()
+                        .map_err(|failure| ProduceError::Failure(failure.into()))?;
                 }
             }
             DisplayCmd::Header { header } => {
-                self.presenter.single_line(Unit(0), header).map_err(|failure| ProduceError::Failure(failure.into()))?;
+                self.presenter
+                    .single_line(Unit(0), header)
+                    .map_err(|failure| ProduceError::Failure(failure.into()))?;
             }
         }
     }
 }
 
-/// Controls the display to the user.
+/// Manages the display to the user.
 #[derive(Debug)]
 struct Presenter {
     /// The stdout of the application.
@@ -147,7 +155,7 @@ impl Presenter {
     #[throws(WriteFailure)]
     fn single_line(&self, row: Unit, text: String) {
         trace!("Writing to {}: `{}`", row, text);
-        execute!(self.out_mut(), MoveTo(0, *Unit::from(row)), Print(text))?;
+        execute!(self.out_mut(), MoveTo(0, *row), Print(text))?;
     }
 }
 
@@ -184,8 +192,8 @@ impl From<Event> for UserAction {
         match value {
             Event::Resize(columns, rows) => Self::Resize {
                 dimensions: Dimensions {
-                    // Reserve the top row for the header.
-                    height: (rows - 1).into(),
+                    // Reserve the top row for the header. Since a display height of 0 has no available height for the page, saturating_sub() is okay.
+                    height: rows.saturating_sub(1).into(),
                     width: columns.into(),
                 },
             },
@@ -214,7 +222,9 @@ pub(crate) enum DisplayCmd {
         /// The rows to be displayed.
         rows: Vec<String>,
     },
+    /// Displays the header.
     Header {
+        /// The header text.
         header: String,
     },
 }
@@ -229,7 +239,7 @@ pub struct Dimensions {
     pub(crate) width: Unit,
 }
 
-/// The type used for quantities and indexes of cells.
+/// Represents a quantity of cells.
 #[derive(Clone, Copy, Debug, Default, Eq, ParseDisplay, PartialEq)]
 #[display("{0}")]
 pub struct Unit(u16);
@@ -237,32 +247,41 @@ pub struct Unit(u16);
 impl Deref for Unit {
     type Target = u16;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
 impl From<u16> for Unit {
+    #[inline]
     fn from(value: u16) -> Self {
         Self(value)
     }
 }
 
-impl From<RowId> for Unit {
-    fn from(value: RowId) -> Self {
+impl TryFrom<RowId> for Unit {
+    type Error = ReachedEnd;
+
+    #[throws(Self::Error)]
+    #[inline]
+    fn try_from(value: RowId) -> Self {
         // Account for header row.
-        (*value + 1).into()
+        value.0.checked_add(1).ok_or(ReachedEnd)?.into()
     }
 }
 
+/// Represents a row index.
 #[derive(Clone, Copy, Debug, ParseDisplay)]
 #[display("{0}")]
 pub(crate) struct RowId(u16);
 
 impl RowId {
-    #[throws(WrapFailure)]
+    /// Increments `self` by 1.
+    // This could be a part of a newly created Traveler trait.
+    #[throws(ReachedEnd)]
     fn step_forward(&mut self) {
-        self.0 = self.0.checked_add(1).ok_or(WrapFailure)?;
+        self.0 = self.0.checked_add(1).ok_or(ReachedEnd)?;
     }
 }
 

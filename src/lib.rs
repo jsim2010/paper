@@ -24,7 +24,7 @@ use {
         ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
     },
     log::{error, info},
-    logging::{LogConfig, InitLoggerError},
+    logging::{InitLoggerError, LogConfig},
     market::{Consumer, Producer},
     thiserror::Error as ThisError,
 };
@@ -68,7 +68,7 @@ impl Default for Arguments<'_> {
 ///
 /// Once [`Paper`] has started running, it shall continue until it has been terminated. **Termination** occurs when the application is ordered to quit or an unrecoverable error is thrown.
 ///
-/// When [`Paper`] is dropped, it shall kill all spawned processes and return the user interface to its previous state. 
+/// When [`Paper`] is dropped, it shall kill all spawned processes and return the user interface to its previous state.
 ///
 /// # Examples
 ///

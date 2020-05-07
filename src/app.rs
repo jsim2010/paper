@@ -72,9 +72,7 @@ impl Processor {
                 let prompt = command.to_string();
 
                 self.command = Some(command);
-                outputs.push(Output::Command {
-                    command: prompt,
-                });
+                outputs.push(Output::Command { command: prompt });
             }
             Operation::Collect(ch) => {
                 self.input.push(ch);
@@ -209,7 +207,7 @@ pub(crate) struct Document {
 
 impl Document {
     /// Creates a new [`Document`].
-    fn new(file: File, dimensions: Dimensions, is_wrapping: bool) -> Self {
+    const fn new(file: File, dimensions: Dimensions, is_wrapping: bool) -> Self {
         Self {
             file,
             dimensions,
@@ -282,7 +280,9 @@ impl Document {
             }
         }
 
-        rows.into_iter().take((*self.dimensions.height).into()).collect()
+        rows.into_iter()
+            .take((*self.dimensions.height).into())
+            .collect()
     }
 
     /// Returns the output to close `self`.
