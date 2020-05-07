@@ -1,12 +1,11 @@
-//! Implements the application logic of `paper`, converting an [`Input`] into a list of [`Output`]s.
+//! Implements the `paper` application logic for converting an [`Input`] into [`Output`]s.
 mod translate;
 
 use {
-    // TODO: Move everything out of ui.
     crate::io::{
         config::Setting,
         fs::{File, Purl},
-        ui::{Dimensions, Length},
+        ui::{Dimensions, Unit},
         DocEdit, Input, LanguageId, Output,
     },
     log::trace,
@@ -74,14 +73,12 @@ impl Processor {
 
                 self.command = Some(command);
                 outputs.push(Output::Command {
-                    row: self.pane.size.height,
                     command: prompt,
                 });
             }
             Operation::Collect(ch) => {
                 self.input.push(ch);
                 outputs.push(Output::Command {
-                    row: self.pane.size.height,
                     command: self.input.clone(),
                 });
             }
@@ -126,7 +123,7 @@ struct Pane {
     /// The number of lines by which a scroll moves.
     scroll_amount: Rc<RefCell<Amount>>,
     /// The length of a row.
-    row_length: Length,
+    row_length: Unit,
     /// The [`Dimensions`] of the pane.
     size: Dimensions,
     /// If the pane is wrapping text.
@@ -146,8 +143,7 @@ impl Pane {
     }
 
     /// Updates the size of `self` to match `dimensions`;
-    fn update_size(&mut self, mut dimensions: Dimensions, outputs: &mut Vec<Output>) {
-        dimensions.height -= 1;
+    fn update_size(&mut self, dimensions: Dimensions, outputs: &mut Vec<Output>) {
         self.size = dimensions;
         self.scroll_amount
             .borrow_mut()
@@ -268,7 +264,7 @@ impl Document {
     /// Returns a [`Vec`] of the rows of `self`.
     pub(crate) fn rows(&self) -> Vec<String> {
         let mut rows = Vec::new();
-        let row_length = self.dimensions.width.into();
+        let row_length = (*self.dimensions.width).into();
 
         for line in self.file.lines() {
             if !self.is_wrapping || line.len() <= row_length {
@@ -286,7 +282,7 @@ impl Document {
             }
         }
 
-        rows.into_iter().take(self.dimensions.height.into()).collect()
+        rows.into_iter().take((*self.dimensions.height).into()).collect()
     }
 
     /// Returns the output to close `self`.

@@ -1,12 +1,12 @@
 //! Implements errors thrown by the user interface.
-#![allow(clippy::module_name_repetitions)] // Okay for items to end with `Error`.
+#![allow(clippy::module_name_repetitions)] // It is appropriate for items to end with `Error`.
 use {crossterm::ErrorKind, thiserror::Error as ThisError};
 
 /// An error creating a [`Terminal`].
 #[derive(Debug, ThisError)]
+#[error(transparent)]
 pub enum CreateTerminalError {
     /// An error initializing the terminal output.
-    #[error(transparent)]
     Init(#[from] InitError),
 }
 
@@ -20,15 +20,17 @@ pub enum UserActionFailure {
     Read(#[from] ReadFailure),
 }
 
-/// An error producing terminal output.
+/// A failure producing terminal output.
 #[derive(Debug, ThisError)]
+#[error(transparent)]
 pub enum DisplayCmdFailure {
-    /// An error writing text.
-    #[error(transparent)]
+    /// A failure writing text.
     Write(#[from] WriteFailure),
+    /// A failure incrementing a row.
+    Wrap(#[from] WrapFailure),
 }
 
-/// An error writing to stdout.
+/// A failure writing to stdout.
 #[derive(Debug, ThisError)]
 #[error("writing: {error}")]
 pub struct WriteFailure {
@@ -72,3 +74,7 @@ pub(crate) struct DestroyError {
     #[from]
     error: ErrorKind,
 }
+
+#[derive(Debug, ThisError)]
+#[error("")]
+pub struct WrapFailure;

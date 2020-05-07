@@ -26,6 +26,7 @@ pub enum CreateSettingConsumerError {
     /// An error beginning to watch the config file.
     #[error("unable to begin watch of config file: {0}")]
     BeginWatch(#[source] notify::Error),
+    /// An error creating the configuration.
     #[error("configuration: {0}")]
     Config(#[from] CreateConfigurationError),
 }

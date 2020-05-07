@@ -31,7 +31,7 @@ use {
     thiserror::Error,
     toml::{value::Table, Value},
     ui::{
-        CreateTerminalError, DisplayCmd, DisplayCmdFailure, Length, Terminal, UserAction,
+        CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal, UserAction,
         UserActionConsumer, UserActionFailure,
     },
     url::Url,
@@ -225,7 +225,6 @@ impl Interface {
             DocEdit::Open { .. } => {
                 self.user_interface
                     .produce(DisplayCmd::Rows {
-                        start: 1,
                         rows: doc.rows(),
                     })
                     .map_err(|error| error.map(ProduceOutputError::from))?;
@@ -241,7 +240,6 @@ impl Interface {
             DocEdit::Update => {
                 self.user_interface
                     .produce(DisplayCmd::Rows {
-                        start: 1,
                         rows: doc.rows(),
                     })
                     .map_err(|error| error.map(ProduceOutputError::from))?;
@@ -382,30 +380,26 @@ impl Producer for Interface {
                     context.config.config = Some(config);
                 }
                 self.user_interface
-                    .produce(DisplayCmd::Rows {
-                        start: 0,
-                        rows: vec![print::get_prompt(context)],
+                    .produce(DisplayCmd::Header {
+                        header: print::get_prompt(context),
                     })
                     .map_err(|error| error.map(Self::Failure::from))?
             }
             Output::Notify { message } => self
                 .user_interface
                 .produce(DisplayCmd::Rows {
-                    start: 0,
                     rows: vec![message.message],
                 })
                 .map_err(|error| error.map(Self::Failure::from))?,
             Output::Question { request } => self
                 .user_interface
                 .produce(DisplayCmd::Rows {
-                    start: 0,
                     rows: vec![request.message],
                 })
                 .map_err(|error| error.map(Self::Failure::from))?,
-            Output::Command { row, command } => self
+            Output::Command { command } => self
                 .user_interface
                 .produce(DisplayCmd::Rows {
-                    start: row,
                     rows: vec![command],
                 })
                 .map_err(|error| error.map(Self::Failure::from))?,
@@ -519,8 +513,6 @@ pub(crate) enum Output {
     /// Adds an intake box.
     #[display("")]
     Command {
-        /// The index of the row where the command is to be displayed.
-        row: Length,
         /// The prompt of the intake box.
         command: String,
     },
