@@ -11,11 +11,11 @@ alias v := validate
 build:
     cargo build
 
-# For now, this is unused because it fails on GitHub runner (seems cargo thinks cargo-deny is not installed even though the binary has been included from cache)
+# This ideally would use some conditional functionality built into just.
 #
 # Installs everything needed for dependencies
 _install_deps:
-    cargo install --version 0.6.6 cargo-deny
+    cargo deny --version || cargo install cargo-deny
 
 # Installs everything needed for formatting
 _install_format:
