@@ -123,6 +123,7 @@ lint: _install_lint
      -F clippy::perf\
      -F clippy::cargo\
      -F clippy::nursery\
+     -D clippy::used_underscore_binding\
      -D clippy::missing_const_for_fn\
      -D clippy::useless_attribute\
      -A clippy::empty_enum\
