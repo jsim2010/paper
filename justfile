@@ -123,6 +123,7 @@ lint: _install_lint
      -F clippy::perf \
      -F clippy::cargo \
      -F clippy::nursery \
+     -D clippy::used_underscore_binding \
      -D clippy::missing_const_for_fn \
      -D clippy::useless_attribute \
      -A clippy::empty_enum \
@@ -150,7 +151,7 @@ test:
 validate: (set_rust "1.43.0") validate_format validate_deps lint build test
 
 # Validates dependencies of the project
-validate_deps:
+validate_deps: _install_deps
     cargo deny check
 
 # Validates the formatting of the project
