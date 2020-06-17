@@ -1,5 +1,5 @@
 name: Validate Project
-on: [push, pull-request]
+on: [push, pull_request]
 
 jobs:
   validate:
