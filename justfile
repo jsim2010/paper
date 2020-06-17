@@ -150,7 +150,7 @@ test:
 validate: (set_rust "1.43.0") validate_format validate_deps lint build test
 
 # Validates dependencies of the project
-validate_deps:
+validate_deps _install_deps:
     cargo deny check
 
 # Validates the formatting of the project
