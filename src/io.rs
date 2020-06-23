@@ -189,7 +189,7 @@ impl Interface {
         let mut consumers = Collector::new();
         consumers.convert_into_and_push(UserActionConsumer::new());
         consumers.convert_into_and_push(SettingConsumer::new(
-            &dirs::home_dir()
+            &home::home_dir()
                 .ok_or(CreateInterfaceError::HomeDir)?
                 .join(".config/paper.toml"),
         )?);
