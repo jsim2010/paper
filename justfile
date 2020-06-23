@@ -44,11 +44,10 @@ fix_format: _install_format
 # DENY
 # - elided_lifetimes_in_paths: allowed by Deserialize and Serialize
 # - explicit_outlives_requirements: allowed by Deserialize and Serialize
-# - redundant_semicolons: current issue with fehler
-# - unreachable_code: allowed by fehler
 # - unused_extern_crates: allowed by Deserialize and Serialize
 # - unused_qualifications: allowed by Debug
-# - unused_results: allowed by io::lsp::utils
+# - redundant_semicolons: current issue with fehler
+# - unreachable_code: allowed by fehler
 # - unused_variables: allowed by thiserror
 # - clippy::indexing_slicing: required by EnumMap
 # - clippy::missing_inline_in_public_items: current issue with fehler
@@ -57,12 +56,14 @@ fix_format: _install_format
 # - clippy::missing_const_for_fn: positive on fn with match which is not stable
 # - clippy::use_self: false positive on format macro
 # - clippy::module_name_repetitions: okay for certain modules such as `error`
+# - clippy::used_underscore_binding: allowed by thiserror
 # ALLOW
 # - box_pointers: box pointers are okay and useful
 # - variant_size_differences: handled by clippy::large_enum_variant
 # - clippy::multiple_crate_versions: not fixable when caused by dependencies
 # - clippy::empty_enum: recommended `!` type is not stable
 # - clippy::implicit_return: rust convention calls for implicit return
+# - clippy::redundant_pub_crate: conflicts with clippy::unreachable_pub
 #
 # Lints the project source code
 lint: _install_lint
@@ -88,16 +89,69 @@ lint: _install_lint
      -F trivial_numeric_casts \
      -F unreachable_pub \
      -F unsafe_code \
+     -F unstable_features \
      -D unused_extern_crates \
      -F unused_import_braces \
      -F unused_lifetimes \
      -D unused_qualifications \
-     -D unused_results \
+     -F unused_results \
      -A variant_size_differences \
-     -F warnings \
+     -F array_into_iter \
+     -F bare_trait_objects \
+     -F bindings_with_variant_name \
+     -F coherence_leak_check \
+     -F dead_code \
+     -F deprecated \
+     -F ellipsis_inclusive_range_patterns \
+     -F exported_private_dependencies \
+     -F illegal_floating_point_literal_pattern \
+     -F improper_ctypes \
+     -F incomplete_features \
+     -F inline_no_sanitize \
+     -F intra_doc_link_resolution_failure \
+     -F invalid_value \
+     -F irrefutable_let_patterns \
+     -F late_bound_lifetime_arguments \
+     -F mutable_borrow_reservation_conflict \
+     -F non_camel_case_types \
+     -F non_shorthand_field_patterns \
+     -F non_snake_case \
+     -F non_upper_case_globals \
+     -F no_mangle_generic_items \
+     -F overlapping_patterns \
+     -F path_statements \
+     -F private_in_public \
+     -F proc_macro_derive_resolution_fallback \
      -D redundant_semicolons \
+     -F renamed_and_removed_lints \
+     -F safe_packed_borrows \
+     -F stable_features \
+     -F trivial_bounds \
+     -F type_alias_bounds \
+     -F tyvar_behind_raw_pointer \
+     -F uncommon_codepoints \
+     -F unconditional_recursion \
+     -F unknown_lints \
+     -F unnameable_test_items \
      -D unreachable_code \
+     -F unreachable_patterns \
+     -F unstable_name_collisions \
+     -F unused_allocation \
+     -F unused_assignments \
+     -F unused_braces \
+     -F unused_comparisons \
+     -F unused_doc_comments \
+     -F unused_features \
+     -F unused_imports \
+     -F unused_labels \
+     -F unused_macros \
+     -F unused_must_use \
+     -F unused_mut \
+     -F unused_parens \
+     -F unused_unsafe \
      -D unused_variables \
+     -F where_clauses_object_safety \
+     -F while_true \
      -F ambiguous_associated_items \
      -F arithmetic_overflow \
      -F conflicting_repr_hints \
@@ -115,20 +169,21 @@ lint: _install_lint
      -F soft_unstable \
      -F unconditional_panic \
      -F unknown_crate_types \
-     -F clippy::correctness \
-     -F clippy::restriction \
      -F clippy::style \
-     -F clippy::pedantic \
      -F clippy::complexity \
      -F clippy::perf \
-     -F clippy::cargo \
-     -F clippy::nursery \
+     -D clippy::nursery \
+     -D clippy::restriction \
+     -D clippy::pedantic \
+     -D clippy::correctness \
+     -D clippy::cargo \
      -D clippy::used_underscore_binding \
      -D clippy::missing_const_for_fn \
      -D clippy::useless_attribute \
      -A clippy::empty_enum \
      -A clippy::multiple_crate_versions \
      -A clippy::implicit_return \
+     -A clippy::redundant_pub_crate \
      -D clippy::indexing_slicing \
      -D clippy::missing_inline_in_public_items \
      -D clippy::unreachable \
@@ -148,7 +203,7 @@ test:
     cargo test --verbose --all-features
 
 # Validates the project
-validate: (set_rust "1.43.0") validate_format validate_deps lint build test
+validate: (set_rust "1.44.0") validate_format validate_deps lint build test
 
 # Validates dependencies of the project
 validate_deps: _install_deps

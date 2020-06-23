@@ -223,11 +223,6 @@ impl ComposeFrom<u8> for Message {
             })
         });
 
-        #[allow(unused_results)] // No intent to use drained elements.
-        {
-            parts.drain(..length);
-        }
-
         message.ok_or(NonComposible)?
     }
 }

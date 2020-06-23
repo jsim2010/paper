@@ -16,7 +16,5 @@ jobs:
     - name: install just
       if: steps.cache.outputs.cache-hit != 'true'
       run: cargo install just
-    - name: update rust
-      run: rustup update 1.42.0
     - name: validate
       run: just validate
