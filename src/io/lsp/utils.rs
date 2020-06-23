@@ -252,7 +252,6 @@ impl StripFrom<Message> for u8 {
 /// A json-rpc object.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
-#[allow(dead_code)] // False positive.
 pub(crate) enum Object {
     /// A request json-rpc object.
     Request {

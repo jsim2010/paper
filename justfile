@@ -46,8 +46,17 @@ fix_format: _install_format
 # - explicit_outlives_requirements: allowed by Deserialize and Serialize
 # - unused_extern_crates: allowed by Deserialize and Serialize
 # - unused_qualifications: allowed by Debug
+# - bare_trait_objects: allowed by serde::Serialize
+# - deprecated: field marked as deprecated in lsp_types is not optional
+# - ellipsis_inclusive_range_patterns: allowed by serde::Serialize
+# - non_camel_case_types: allowed by serde::Serialize
+# - non_upper_case_globals: allowed by serde::Serialize
 # - redundant_semicolons: current issue with fehler
+# - unknown_lints: allowed by serde::Serialize
 # - unreachable_code: allowed by fehler
+# - unused_imports: allowed by thiserror
+# - unused_macros: allowed by serde::Serialize
+# - unused_must_use: allowed in cases where API does not support propogating errors
 # - unused_variables: allowed by thiserror
 # - clippy::indexing_slicing: required by EnumMap
 # - clippy::missing_inline_in_public_items: current issue with fehler
@@ -97,12 +106,12 @@ lint: _install_lint
      -F unused_results \
      -A variant_size_differences \
      -F array_into_iter \
-     -F bare_trait_objects \
+     -D bare_trait_objects \
      -F bindings_with_variant_name \
      -F coherence_leak_check \
      -F dead_code \
-     -F deprecated \
-     -F ellipsis_inclusive_range_patterns \
+     -D deprecated \
+     -D ellipsis_inclusive_range_patterns \
      -F exported_private_dependencies \
      -F illegal_floating_point_literal_pattern \
      -F improper_ctypes \
@@ -113,10 +122,10 @@ lint: _install_lint
      -F irrefutable_let_patterns \
      -F late_bound_lifetime_arguments \
      -F mutable_borrow_reservation_conflict \
-     -F non_camel_case_types \
+     -D non_camel_case_types \
      -F non_shorthand_field_patterns \
      -F non_snake_case \
-     -F non_upper_case_globals \
+     -D non_upper_case_globals \
      -F no_mangle_generic_items \
      -F overlapping_patterns \
      -F path_statements \
@@ -131,7 +140,7 @@ lint: _install_lint
      -F tyvar_behind_raw_pointer \
      -F uncommon_codepoints \
      -F unconditional_recursion \
-     -F unknown_lints \
+     -D unknown_lints \
      -F unnameable_test_items \
      -D unreachable_code \
      -F unreachable_patterns \
@@ -142,10 +151,10 @@ lint: _install_lint
      -F unused_comparisons \
      -F unused_doc_comments \
      -F unused_features \
-     -F unused_imports \
+     -D unused_imports \
      -F unused_labels \
-     -F unused_macros \
-     -F unused_must_use \
+     -D unused_macros \
+     -D unused_must_use \
      -F unused_mut \
      -F unused_parens \
      -F unused_unsafe \
