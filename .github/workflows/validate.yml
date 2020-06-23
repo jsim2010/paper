@@ -15,7 +15,6 @@ jobs:
         key: cargo-bin_2020-06-23
         restore-keys: cargo-bin_2020-04-20
     - name: install just
-      if: steps.cache.outputs.cache-hit != 'true'
-      run: cargo install just
+      run: just --version || cargo install just
     - name: validate
       run: just validate
