@@ -1,11 +1,4 @@
 pull_request_rules:
-  - name: squash ready PR
-    conditions:
-      - label=ready
-      - base=master
-    actions:
-      merge:
-        method: squash
   - name: squash dependabot PR
     conditions:
       - author~=^dependabot(|-preview)\[bot\]$
