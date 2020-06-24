@@ -172,7 +172,7 @@ impl Inspector for SettingDeduplicator {
 
 /// The configuration of the application.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
-pub struct Configuration {
+struct Configuration {
     /// If documents shall wrap.
     #[serde(default)]
     pub(crate) wrap: bool,

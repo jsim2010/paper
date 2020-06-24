@@ -3,9 +3,9 @@ mod translate;
 
 use {
     crate::io::{
-        config::Setting,
-        fs::{File, Purl},
-        ui::{Dimensions, Unit},
+        Setting,
+        File, Purl,
+        Dimensions, Unit,
         DocEdit, Input, LanguageId, Output,
     },
     log::trace,
@@ -64,9 +64,6 @@ impl Processor {
                 self.input.clear();
                 self.pane
                     .update_is_wrapping(self.pane.is_wrapping, &mut outputs);
-            }
-            Operation::Alert(message) => {
-                outputs.push(Output::Notify { message });
             }
             Operation::StartCommand(command) => {
                 let prompt = command.to_string();

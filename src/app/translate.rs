@@ -1,16 +1,16 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
     crate::io::{
-        config::Setting,
-        fs::File,
-        lsp::{ClientMessage, ServerMessage, ToolMessage},
-        ui::{Dimensions, UserAction},
+        Setting,
+        File,
+        ClientMessage, ServerMessage, ToolMessage,
+        Dimensions, UserAction,
         Input,
     },
     core::fmt::{self, Debug},
     crossterm::event::KeyCode,
     enum_map::{enum_map, Enum, EnumMap},
-    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
+    lsp_types::{MessageType, ShowMessageRequestParams},
     parse_display::Display as ParseDisplay,
 };
 
@@ -32,8 +32,6 @@ pub(crate) enum Operation {
     Quit,
     /// Updates a setting.
     UpdateSetting(Setting),
-    /// Alerts the user with a message.
-    Alert(ShowMessageParams),
     /// Open input box for a command.
     StartCommand(Command),
     /// Input to input box.
@@ -117,12 +115,6 @@ impl Interpreter {
         match input {
             Input::File(file) => {
                 output.add_op(Operation::CreateDoc(file));
-            }
-            Input::Glitch(glitch) => {
-                output.add_op(Operation::Alert(ShowMessageParams {
-                    typ: MessageType::Error,
-                    message: format!("{}", glitch),
-                }));
             }
             Input::Setting(setting) => {
                 output.add_op(Operation::UpdateSetting(setting));

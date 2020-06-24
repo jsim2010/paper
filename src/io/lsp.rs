@@ -100,7 +100,7 @@ impl From<Fault> for ShowMessageParams {
 
 /// An error creating an LSP client.
 #[derive(Debug, Error)]
-pub enum CreateLanguageClientError {
+pub(crate) enum CreateLanguageClientError {
     /// An error spawning the language server.
     #[error(transparent)]
     SpawnServer(#[from] SpawnServerError),
@@ -451,7 +451,7 @@ impl Producer for LanguageTool {
 
 /// A message from the language server.
 #[derive(Debug)]
-pub enum ServerMessage {
+pub(crate) enum ServerMessage {
     /// Initialize.
     Initialize,
     /// Shutdown.
@@ -466,7 +466,7 @@ pub enum ServerMessage {
 /// Tool message of language server.
 #[derive(Clone, Debug, ParseDisplay, PartialEq)]
 #[display("{language_id} :: {message}")]
-pub struct ToolMessage<T> {
+pub(crate) struct ToolMessage<T> {
     /// The URL that generated.
     pub(crate) language_id: LanguageId,
     /// The message.
