@@ -2,12 +2,7 @@
 mod translate;
 
 use {
-    crate::io::{
-        Setting,
-        File, Purl,
-        Dimensions, Unit,
-        DocEdit, Input, LanguageId, Output,
-    },
+    crate::io::{Dimensions, DocEdit, File, Input, LanguageId, Output, Purl, Setting, Unit},
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     std::{cell::RefCell, mem, rc::Rc},

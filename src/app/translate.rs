@@ -1,11 +1,7 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
     crate::io::{
-        Setting,
-        File,
-        ClientMessage, ServerMessage, ToolMessage,
-        Dimensions, UserAction,
-        Input,
+        ClientMessage, Dimensions, File, Input, ServerMessage, Setting, ToolMessage, UserAction,
     },
     core::fmt::{self, Debug},
     crossterm::event::KeyCode,
@@ -373,11 +369,7 @@ impl ModeInterpreter for CollectInterpreter {
 /// Testing of the translate module.
 #[cfg(test)]
 mod test {
-    use {
-        super::*,
-        crate::io::{config::Setting, Glitch},
-        crossterm::event::KeyModifiers,
-    };
+    use {super::*, crossterm::event::KeyModifiers};
 
     /// Tests decoding user input while the [`Interpreter`] is in [`Mode::View`].
     mod view {
@@ -385,21 +377,6 @@ mod test {
 
         fn view_mode() -> Interpreter {
             Interpreter::default()
-        }
-
-        /// Receiving a glitch shall display the message.
-        #[test]
-        fn glitch() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::Glitch(Glitch::WatcherConnection)),
-                Some(Operation::Alert(ShowMessageParams {
-                    typ: MessageType::Error,
-                    message: "config file watcher disconnected".to_string(),
-                }))
-            );
-            assert_eq!(int.mode, Mode::View);
         }
 
         /// A new setting shall be forwarded to the application.

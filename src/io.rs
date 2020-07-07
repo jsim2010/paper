@@ -23,9 +23,7 @@ use {
     fehler::{throw, throws},
     fs::{ConsumeFileError, FileCommand, FileError, FileSystem},
     log::error,
-    lsp::{
-        DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError,
-    },
+    lsp::{DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError},
     lsp_types::{ShowMessageParams, ShowMessageRequestParams},
     market::{ClosedMarketFailure, Collector, ConsumeError, Consumer, ProduceError, Producer},
     parse_display::Display as ParseDisplay,
@@ -37,8 +35,8 @@ use {
     thiserror::Error,
     toml::{value::Table, Value},
     ui::{
-        CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal,
-        UserActionConsumer, UserActionFailure,
+        CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal, UserActionConsumer,
+        UserActionFailure,
     },
     url::Url,
 };

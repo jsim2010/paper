@@ -25,9 +25,8 @@ use {
     core::option::Option,
     fehler::{throw, throws},
     io::{
-        CreatePurlError, Purl,
-        ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
-        RootDirError,
+        ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, CreatePurlError, Interface,
+        ProduceOutputError, Purl, RootDirError,
     },
     log::{error, info},
     logging::InitLoggerError,
