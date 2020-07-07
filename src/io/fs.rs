@@ -187,7 +187,7 @@ pub(crate) enum FileCommand {
 
 /// A struct that represents a file.
 #[derive(Clone, Debug, PartialEq)]
-pub struct File {
+pub(crate) struct File {
     /// The URL of the file.
     url: Purl,
     /// The text of a file.

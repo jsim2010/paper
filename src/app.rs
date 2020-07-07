@@ -2,12 +2,7 @@
 mod translate;
 
 use {
-    crate::io::{
-        config::Setting,
-        fs::{File, Purl},
-        ui::{Dimensions, Unit},
-        DocEdit, Input, LanguageId, Output,
-    },
+    crate::io::{Dimensions, DocEdit, File, Input, LanguageId, Output, Purl, Setting, Unit},
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     std::{cell::RefCell, mem, rc::Rc},
@@ -64,9 +59,6 @@ impl Processor {
                 self.input.clear();
                 self.pane
                     .update_is_wrapping(self.pane.is_wrapping, &mut outputs);
-            }
-            Operation::Alert(message) => {
-                outputs.push(Output::Notify { message });
             }
             Operation::StartCommand(command) => {
                 let prompt = command.to_string();

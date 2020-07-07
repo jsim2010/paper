@@ -1,25 +1,29 @@
 //! Implements the interface for all input and output to the application.
-pub mod config;
-pub mod fs;
-pub mod lsp;
-pub mod ui;
+mod config;
+mod fs;
+mod lsp;
+mod ui;
+
+pub(crate) use {
+    config::Setting,
+    fs::{CreatePurlError, File, Purl},
+    lsp::{ClientMessage, ServerMessage, ToolMessage},
+    ui::{Dimensions, Unit, UserAction},
+};
 
 use {
     crate::app::Document,
     clap::ArgMatches,
-    config::{ConsumeSettingError, CreateSettingConsumerError, Setting, SettingConsumer},
+    config::{ConsumeSettingError, CreateSettingConsumerError, SettingConsumer},
     core::{
         convert::TryFrom,
         sync::atomic::{AtomicBool, Ordering},
     },
     enum_map::Enum,
     fehler::{throw, throws},
-    fs::{ConsumeFileError, CreatePurlError, File, FileCommand, FileError, FileSystem, Purl},
+    fs::{ConsumeFileError, FileCommand, FileError, FileSystem},
     log::error,
-    lsp::{
-        ClientMessage, DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError,
-        ServerMessage, ToolMessage,
-    },
+    lsp::{DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError},
     lsp_types::{ShowMessageParams, ShowMessageRequestParams},
     market::{ClosedMarketFailure, Collector, ConsumeError, Consumer, ProduceError, Producer},
     parse_display::Display as ParseDisplay,
@@ -31,8 +35,8 @@ use {
     thiserror::Error,
     toml::{value::Table, Value},
     ui::{
-        CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal, UserAction,
-        UserActionConsumer, UserActionFailure,
+        CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal, UserActionConsumer,
+        UserActionFailure,
     },
     url::Url,
 };
@@ -85,6 +89,9 @@ pub enum ProduceOutputError {
     /// Failed to send notification.
     #[error("{0}")]
     SendNotification(#[from] SendNotificationError),
+    /// An error creating a [`Purl`].
+    #[error("")]
+    CreatePurl(#[from] CreatePurlError),
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),
@@ -107,7 +114,7 @@ pub enum CreateFileError {
 /// An error while reading a file.
 #[derive(Debug, Error)]
 #[error("failed to read `{file}`: {error:?}")]
-pub struct ReadFileError {
+struct ReadFileError {
     /// The error.
     error: ErrorKind,
     /// The path of the file being read.
@@ -118,13 +125,7 @@ pub struct ReadFileError {
 ///
 /// Until a glitch is resolved, certain functionality may not be properly completed.
 #[derive(Debug, Error)]
-pub enum Glitch {
-    /// Config file watcher disconnected.
-    #[error("config file watcher disconnected")]
-    WatcherConnection,
-    /// Unable to read config file.
-    #[error("unable to read config file: {0}")]
-    ReadConfig(#[source] io::Error),
+enum Glitch {
     /// Unable to convert config file to Config.
     #[error("config file invalid format: {0}")]
     ConfigFormat(#[from] toml::de::Error),
@@ -132,7 +133,7 @@ pub enum Glitch {
 
 /// An event that prevents [`Interface`] from consuming.
 #[derive(Debug, Error)]
-pub enum ConsumeInputIssue {
+pub(crate) enum ConsumeInputIssue {
     /// The application has quit.
     #[error("")]
     Quit,
@@ -164,6 +165,23 @@ pub enum ConsumeInputError {
     File(#[from] ConsumeFileError),
 }
 
+/// An error determining the root directory.
+#[derive(Debug, Error)]
+pub enum RootDirError {
+    /// An error determing the current working directory.
+    #[error("current working directory is invalid: {0}")]
+    GetWorkingDir(#[from] io::Error),
+    /// An error creating the root directory [`Purl`].
+    #[error("unable to create URL of root directory: {0}")]
+    Create(#[from] CreatePurlError),
+}
+
+/// Returns the root directory.
+#[throws(RootDirError)]
+pub(crate) fn root_dir() -> Purl {
+    Purl::try_from(env::current_dir()?)?
+}
+
 /// The interface between the application and all external components.
 #[derive(Debug)]
 pub(crate) struct Interface {
@@ -184,7 +202,7 @@ pub(crate) struct Interface {
 impl Interface {
     /// Creates a new interface.
     #[throws(CreateInterfaceError)]
-    pub(crate) fn new(initial_file: Option<&'_ str>) -> Self {
+    pub(crate) fn new(initial_file: Option<Purl>) -> Self {
         let root_dir = Purl::try_from(env::current_dir()?)?;
         let mut consumers = Collector::new();
         consumers.convert_into_and_push(UserActionConsumer::new());
@@ -210,12 +228,10 @@ impl Interface {
         interface
     }
 
-    /// Reads the file at `path`.
+    /// Reads the file at `url`.
     #[throws(CreateFileError)]
-    fn open_file(&self, path: &str) {
-        self.file_system.produce(FileCommand::Read {
-            url: self.root_dir.join(path)?,
-        })?
+    fn open_file(&self, url: Purl) {
+        self.file_system.produce(FileCommand::Read { url })?
     }
 
     /// Edits the doc at `url`.
@@ -350,7 +366,11 @@ impl Producer for Interface {
         match output {
             Output::SendLsp(..) => {}
             Output::OpenFile { path } => {
-                self.open_file(&path)
+                let file = self
+                    .root_dir
+                    .join(&path)
+                    .map_err(|error| ProduceError::Failure(Self::Failure::from(error)))?;
+                self.open_file(file)
                     .map_err(|error| ProduceError::Failure(Self::Failure::from(error)))?;
             }
             Output::EditDoc { doc, edit } => {
@@ -409,11 +429,11 @@ impl Producer for Interface {
 /// An error occurred while converting a directory path to a URL.
 #[derive(Debug, Error)]
 #[error("while converting `{0}` to a URL")]
-pub struct UrlError(String);
+struct UrlError(String);
 
 /// The language ids supported by `paper`.
 #[derive(Clone, Copy, Debug, Enum, Eq, Hash, ParseDisplay, PartialEq)]
-pub enum LanguageId {
+pub(crate) enum LanguageId {
     /// The rust language.
     Rust,
 }
@@ -430,15 +450,13 @@ impl LanguageId {
 
 /// An input.
 #[derive(Debug)]
-pub enum Input {
+pub(crate) enum Input {
     /// A file to be opened.
     File(File),
     /// An input from the user.
     User(UserAction),
     /// A setting.
     Setting(Setting),
-    /// A glitch.
-    Glitch(Glitch),
     /// A message from the language server.
     Lsp(ToolMessage<ServerMessage>),
 }
@@ -561,7 +579,7 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
 
 /// An error converting [`Output`] into a [`Protocol`].
 #[derive(Clone, Copy, Debug, Error)]
-pub enum TryIntoProtocolError {
+pub(crate) enum TryIntoProtocolError {
     /// Invalid [`Output`].
     #[error("")]
     InvalidOutput,
@@ -590,12 +608,4 @@ pub(crate) struct DocChange {
     new_text: String,
     /// The version.
     version: i64,
-}
-
-/// An error converting [`DocEdit`] into [`Message`].
-#[derive(Clone, Copy, Debug, Error)]
-pub enum TryIntoMessageError {
-    /// Unknown language.
-    #[error("")]
-    UnknownLanguage,
 }

@@ -7,61 +7,62 @@
 //!
 //! [Language Server Protocol]: https://microsoft.github.io/language-server-protocol/
 #![allow(
-    clippy::unreachable, // unreachable added by derive(Enum).
+    clippy::unreachable, // unreachable added by enum_map::Enum.
     clippy::use_self, // False positive on format macro.
+    clippy::trivial_regex, // Trivial regex added by thiserror::Error.
 )]
 
 mod app;
-pub mod io;
+mod io;
 mod logging;
+
+// Export so that other crates can build Arguments.
+pub use logging::LogConfig;
 
 use {
     app::Processor,
-    clap::ArgMatches,
+    // Avoid use of std Option.
     core::option::Option,
     fehler::{throw, throws},
     io::{
-        ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
+        ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, CreatePurlError, Interface,
+        ProduceOutputError, Purl, RootDirError,
     },
     log::{error, info},
-    logging::{InitLoggerError, LogConfig},
+    logging::InitLoggerError,
     market::{Consumer, Producer},
+    structopt::StructOpt,
     thiserror::Error as ThisError,
 };
+
+/// An error validating a file string.
+#[derive(Debug, ThisError)]
+pub enum InvalidFileStringError {
+    /// An error determining the root directory.
+    #[error("")]
+    RootDir(#[from] RootDirError),
+    /// An error creating a [`Purl`].
+    #[error("")]
+    CreatePurl(#[from] CreatePurlError),
+}
+
+/// Parses a string as a relative path into a [`Purl`].
+#[throws(InvalidFileStringError)]
+fn parse_file(file: &str) -> Purl {
+    io::root_dir()?.join(file)?
+}
 
 /// Arguments for [`Paper`] initialization.
 ///
 /// [`Paper`]: ../struct.Paper.html
-#[derive(Clone, Debug)]
-pub struct Arguments<'a> {
+#[derive(Clone, Debug, Default, StructOpt)]
+pub struct Arguments {
     /// The file to be viewed.
-    ///
-    /// [`None`] indicates that no file will be viewed.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/core/option/enum.Option.html#variant.None
-    pub file: Option<&'a str>,
-    /// The configuration of the logger.
-    pub log_config: LogConfig,
-}
-
-impl<'a> From<&'a ArgMatches<'a>> for Arguments<'a> {
-    #[inline]
-    fn from(value: &'a ArgMatches<'a>) -> Self {
-        Self {
-            file: value.value_of("file"),
-            log_config: LogConfig::from(value),
-        }
-    }
-}
-
-impl Default for Arguments<'_> {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            file: None,
-            log_config: LogConfig::default(),
-        }
-    }
+    #[structopt(parse(try_from_str = parse_file))]
+    file: Option<Purl>,
+    #[allow(clippy::missing_docs_in_private_items)] // Flattened structs do not allow doc comments.
+    #[structopt(flatten)]
+    log_config: LogConfig,
 }
 
 /// An instance of the `paper` application.
@@ -76,7 +77,7 @@ impl Default for Arguments<'_> {
 /// use paper::{Arguments, Failure, Paper};
 /// # fn main() -> Result<(), Failure> {
 ///
-/// Paper::new(&Arguments::default())?.run()?;
+/// Paper::new(Arguments::default())?.run()?;
 /// # Ok(())
 /// # }
 /// ```
@@ -92,7 +93,7 @@ impl Paper {
     /// Creates a new instance of `paper`.
     #[inline]
     #[throws(CreateError)]
-    pub fn new(arguments: &Arguments<'_>) -> Self {
+    pub fn new(arguments: Arguments) -> Self {
         // Logger is created first so all other parts can use it.
         logging::init(arguments.log_config)?;
 
