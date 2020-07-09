@@ -2,7 +2,7 @@
 mod translate;
 
 use {
-    crate::io::{Dimensions, DocEdit, File, Input, LanguageId, Output, Purl, Setting, Unit},
+    crate::io::{Dimensions, DocEdit, File, Input, LanguageId, Output, Purl, Unit},
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     std::{cell::RefCell, mem, rc::Rc},
@@ -45,11 +45,6 @@ impl Processor {
             Operation::Resize { dimensions } => {
                 self.pane.update_size(dimensions, &mut outputs);
             }
-            Operation::UpdateSetting(setting) => match setting {
-                Setting::Wrap(is_wrapping) => {
-                    self.pane.update_is_wrapping(is_wrapping, &mut outputs);
-                }
-            },
             Operation::Confirm(action) => {
                 outputs.push(Output::Question {
                     request: ShowMessageRequestParams::from(action),
@@ -57,8 +52,7 @@ impl Processor {
             }
             Operation::Reset => {
                 self.input.clear();
-                self.pane
-                    .update_is_wrapping(self.pane.is_wrapping, &mut outputs);
+                self.pane.update(&mut outputs);
             }
             Operation::StartCommand(command) => {
                 let prompt = command.to_string();
@@ -116,19 +110,13 @@ struct Pane {
     row_length: Unit,
     /// The [`Dimensions`] of the pane.
     size: Dimensions,
-    /// If the pane is wrapping text.
-    is_wrapping: bool,
 }
 
 impl Pane {
-    /// Updates if `self` is wrapping text.
-    fn update_is_wrapping(&mut self, is_wrapping: bool, outputs: &mut Vec<Output>) {
-        if is_wrapping != self.is_wrapping {
-            self.is_wrapping = is_wrapping;
-
-            if let Some(doc) = &mut self.doc {
-                outputs.push(doc.change_output(is_wrapping));
-            }
+    /// Updates `self`.
+    fn update(&mut self, outputs: &mut Vec<Output>) {
+        if let Some(doc) = &mut self.doc {
+            outputs.push(doc.change_output());
         }
     }
 
@@ -141,7 +129,7 @@ impl Pane {
 
         if let Some(doc) = &mut self.doc {
             doc.dimensions = dimensions;
-            outputs.push(doc.change_output(self.is_wrapping));
+            outputs.push(doc.change_output());
         }
     }
 
@@ -167,7 +155,7 @@ impl Pane {
     /// Opens a document at `path`.
     fn create_doc(&mut self, file: File) -> Vec<Output> {
         let mut outputs = Vec::new();
-        let doc = Document::new(file, self.size, self.is_wrapping);
+        let doc = Document::new(file, self.size);
         let output = doc.open_output();
 
         if let Some(old_doc) = self.doc.replace(doc) {
@@ -193,18 +181,15 @@ pub(crate) struct Document {
     dimensions: Dimensions,
     /// The version of the document.
     version: i64,
-    /// If the document is wrapping text.
-    is_wrapping: bool,
 }
 
 impl Document {
     /// Creates a new [`Document`].
-    const fn new(file: File, dimensions: Dimensions, is_wrapping: bool) -> Self {
+    const fn new(file: File, dimensions: Dimensions) -> Self {
         Self {
             file,
             dimensions,
             version: 0,
-            is_wrapping,
         }
     }
 
@@ -219,9 +204,7 @@ impl Document {
     }
 
     /// Returns the [`Output`] for changing `self`.
-    fn change_output(&mut self, is_wrapping: bool) -> Output {
-        self.is_wrapping = is_wrapping;
-
+    fn change_output(&mut self) -> Output {
         Output::EditDoc {
             doc: self.clone(),
             edit: DocEdit::Update,
@@ -257,7 +240,7 @@ impl Document {
         let row_length = (*self.dimensions.width).into();
 
         for line in self.file.lines() {
-            if !self.is_wrapping || line.len() <= row_length {
+            if line.len() <= row_length {
                 rows.push(line.to_string());
             } else {
                 let mut line_remainder = line;

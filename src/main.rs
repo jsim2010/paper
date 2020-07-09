@@ -2,6 +2,7 @@
 use {
     fehler::throws,
     paper::{Arguments, Failure, Paper},
+    // Implements from_args().
     structopt::StructOpt,
 };
 

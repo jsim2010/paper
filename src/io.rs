@@ -1,11 +1,9 @@
 //! Implements the interface for all input and output to the application.
-mod config;
 mod fs;
 mod lsp;
 mod ui;
 
 pub(crate) use {
-    config::Setting,
     fs::{CreatePurlError, File, Purl},
     lsp::{ClientMessage, ServerMessage, ToolMessage},
     ui::{Dimensions, Unit, UserAction},
@@ -14,7 +12,6 @@ pub(crate) use {
 use {
     crate::app::Document,
     clap::ArgMatches,
-    config::{ConsumeSettingError, CreateSettingConsumerError, SettingConsumer},
     core::{
         convert::TryFrom,
         sync::atomic::{AtomicBool, Ordering},
@@ -32,7 +29,7 @@ use {
         env,
         io::{self, ErrorKind},
     },
-    thiserror::Error,
+    thiserror::Error as ThisError,
     toml::{value::Table, Value},
     ui::{
         CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal, UserActionConsumer,
@@ -44,20 +41,17 @@ use {
 /// An error creating an [`Interface`].
 ///
 /// [`Interface`]: struct.Interface.html
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum CreateInterfaceError {
     /// An error determing the current working directory.
     #[error("current working directory is invalid: {0}")]
     WorkingDir(#[from] io::Error),
     /// An error creating the root directory [`Purl`].
     #[error("unable to create URL of root directory: {0}")]
-    RootDir(#[from] CreatePurlError),
+    RootDir(#[from] RootDirError),
     /// An error determining the home directory of the current user.
     #[error("home directory of current user is unknown")]
     HomeDir,
-    /// An error creating the setting consumer.
-    #[error(transparent)]
-    Config(#[from] CreateSettingConsumerError),
     /// An error creating a [`Terminal`].
     ///
     /// [`Terminal`]: ui/struct.Terminal.html
@@ -69,10 +63,13 @@ pub enum CreateInterfaceError {
     /// An error creating a file.
     #[error(transparent)]
     CreateFile(#[from] CreateFileError),
+    /// An error creating a Purl.
+    #[error(transparent)]
+    CreatePurl(#[from] CreatePurlError),
 }
 
 /// An error while writing output.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum ProduceOutputError {
     /// An error with client.
     #[error("")]
@@ -101,7 +98,7 @@ pub enum ProduceOutputError {
 }
 
 /// An error creating a file.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum CreateFileError {
     /// An error generating the [`Purl`] of the file.
     #[error(transparent)]
@@ -112,7 +109,7 @@ pub enum CreateFileError {
 }
 
 /// An error while reading a file.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 #[error("failed to read `{file}`: {error:?}")]
 struct ReadFileError {
     /// The error.
@@ -124,7 +121,7 @@ struct ReadFileError {
 /// An error in the user interface that is recoverable.
 ///
 /// Until a glitch is resolved, certain functionality may not be properly completed.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 enum Glitch {
     /// Unable to convert config file to Config.
     #[error("config file invalid format: {0}")]
@@ -132,7 +129,7 @@ enum Glitch {
 }
 
 /// An event that prevents [`Interface`] from consuming.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub(crate) enum ConsumeInputIssue {
     /// The application has quit.
     #[error("")]
@@ -143,7 +140,7 @@ pub(crate) enum ConsumeInputIssue {
 }
 
 /// An error consuming input.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum ConsumeInputError {
     /// An error reading a message from the language tool.
     #[error("")]
@@ -154,9 +151,6 @@ pub enum ConsumeInputError {
     /// An error consuming a user input.
     #[error("")]
     Ui(#[from] UserActionFailure),
-    /// An error consuming a setting.
-    #[error("{0}")]
-    Setting(#[from] ConsumeSettingError),
     /// The queue is closed.
     #[error("")]
     Closed(#[from] ClosedMarketFailure),
@@ -166,7 +160,7 @@ pub enum ConsumeInputError {
 }
 
 /// An error determining the root directory.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum RootDirError {
     /// An error determing the current working directory.
     #[error("current working directory is invalid: {0}")]
@@ -178,8 +172,25 @@ pub enum RootDirError {
 
 /// Returns the root directory.
 #[throws(RootDirError)]
-pub(crate) fn root_dir() -> Purl {
+fn root_dir() -> Purl {
     Purl::try_from(env::current_dir()?)?
+}
+
+/// An error validating a file string.
+#[derive(Debug, ThisError)]
+pub(crate) enum InvalidFileStringError {
+    /// An error determining the root directory.
+    #[error("")]
+    RootDir(#[from] RootDirError),
+    /// An error creating a [`Purl`].
+    #[error("")]
+    CreatePurl(#[from] CreatePurlError),
+}
+
+/// Parses a string as a relative path into a [`Purl`].
+#[throws(InvalidFileStringError)]
+pub(crate) fn parse_file(file: &str) -> Purl {
+    root_dir()?.join(file)?
 }
 
 /// The interface between the application and all external components.
@@ -203,14 +214,9 @@ impl Interface {
     /// Creates a new interface.
     #[throws(CreateInterfaceError)]
     pub(crate) fn new(initial_file: Option<Purl>) -> Self {
-        let root_dir = Purl::try_from(env::current_dir()?)?;
+        let root_dir = root_dir()?;
         let mut consumers = Collector::new();
         consumers.convert_into_and_push(UserActionConsumer::new());
-        consumers.convert_into_and_push(SettingConsumer::new(
-            &home::home_dir()
-                .ok_or(CreateInterfaceError::HomeDir)?
-                .join(".config/paper.toml"),
-        )?);
 
         let interface = Self {
             consumers,
@@ -427,7 +433,7 @@ impl Producer for Interface {
 }
 
 /// An error occurred while converting a directory path to a URL.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 #[error("while converting `{0}` to a URL")]
 struct UrlError(String);
 
@@ -455,8 +461,6 @@ pub(crate) enum Input {
     File(File),
     /// An input from the user.
     User(UserAction),
-    /// A setting.
-    Setting(Setting),
     /// A message from the language server.
     Lsp(ToolMessage<ServerMessage>),
 }
@@ -479,13 +483,6 @@ impl From<UserAction> for Input {
     #[inline]
     fn from(value: UserAction) -> Self {
         Self::User(value)
-    }
-}
-
-impl From<Setting> for Input {
-    #[inline]
-    fn from(value: Setting) -> Self {
-        Self::Setting(value)
     }
 }
 
@@ -578,7 +575,7 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
 }
 
 /// An error converting [`Output`] into a [`Protocol`].
-#[derive(Clone, Copy, Debug, Error)]
+#[derive(Clone, Copy, Debug, ThisError)]
 pub(crate) enum TryIntoProtocolError {
     /// Invalid [`Output`].
     #[error("")]
