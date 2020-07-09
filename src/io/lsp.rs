@@ -4,7 +4,7 @@ pub(crate) mod utils;
 pub(crate) use utils::SendNotificationError;
 
 use {
-    crate::io::{LanguageId, Purl},
+    crate::io::LanguageId,
     core::{
         cell::{Cell, RefCell},
         convert::{TryFrom, TryInto},
@@ -163,10 +163,7 @@ pub(crate) struct LanguageClient {
 impl LanguageClient {
     /// Creates a new `LanguageClient` for `language_id`.
     #[throws(CreateLanguageClientError)]
-    pub(crate) fn new<U>(language_id: LanguageId, root: U) -> Self
-    where
-        U: AsRef<Url>,
-    {
+    pub(crate) fn new(language_id: LanguageId, root: &Url) -> Self {
         let mut server = LangServer::new(language_id)?;
         let writer = Writer::new(server.stdin()?);
         let reader = Reader::new(server.stdout()?);
@@ -177,7 +174,7 @@ impl LanguageClient {
             InitializeParams {
                 process_id: Some(u64::from(process::id())),
                 root_path: None,
-                root_uri: Some(root.as_ref().clone()),
+                root_uri: Some(root.clone()),
                 initialization_options: None,
                 capabilities: ClientCapabilities {
                     workspace: None,
@@ -385,9 +382,9 @@ pub(crate) struct LanguageTool {
 impl LanguageTool {
     /// Creates a new [`LanguageTool`].
     #[throws(CreateLanguageToolError)]
-    pub(crate) fn new(root_dir: &Purl) -> Self {
+    pub(crate) fn new(root_dir: &Url) -> Self {
         let rust_server = Rc::new(RefCell::new(
-            LanguageClient::new(LanguageId::Rust, &root_dir).map_err(|error| {
+            LanguageClient::new(LanguageId::Rust, root_dir).map_err(|error| {
                 CreateLanguageToolError {
                     language_id: LanguageId::Rust,
                     error,
