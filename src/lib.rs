@@ -25,8 +25,8 @@ use {
     core::option::Option,
     fehler::{throw, throws},
     io::{
-        ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, CreatePurlError, Interface,
-        ProduceOutputError, Purl, RootDirError,
+        ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
+        Purl,
     },
     log::{error, info},
     logging::InitLoggerError,
@@ -35,30 +35,13 @@ use {
     thiserror::Error as ThisError,
 };
 
-/// An error validating a file string.
-#[derive(Debug, ThisError)]
-pub enum InvalidFileStringError {
-    /// An error determining the root directory.
-    #[error("")]
-    RootDir(#[from] RootDirError),
-    /// An error creating a [`Purl`].
-    #[error("")]
-    CreatePurl(#[from] CreatePurlError),
-}
-
-/// Parses a string as a relative path into a [`Purl`].
-#[throws(InvalidFileStringError)]
-fn parse_file(file: &str) -> Purl {
-    io::root_dir()?.join(file)?
-}
-
 /// Arguments for [`Paper`] initialization.
 ///
 /// [`Paper`]: ../struct.Paper.html
 #[derive(Clone, Debug, Default, StructOpt)]
 pub struct Arguments {
     /// The file to be viewed.
-    #[structopt(parse(try_from_str = parse_file))]
+    #[structopt(parse(try_from_str = io::parse_file))]
     file: Option<Purl>,
     #[allow(clippy::missing_docs_in_private_items)] // Flattened structs do not allow doc comments.
     #[structopt(flatten)]

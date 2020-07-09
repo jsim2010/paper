@@ -1,8 +1,6 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
-    crate::io::{
-        ClientMessage, Dimensions, File, Input, ServerMessage, Setting, ToolMessage, UserAction,
-    },
+    crate::io::{ClientMessage, Dimensions, File, Input, ServerMessage, ToolMessage, UserAction},
     core::fmt::{self, Debug},
     crossterm::event::KeyCode,
     enum_map::{enum_map, Enum, EnumMap},
@@ -26,8 +24,6 @@ pub(crate) enum Operation {
     Confirm(ConfirmAction),
     /// Quits the application.
     Quit,
-    /// Updates a setting.
-    UpdateSetting(Setting),
     /// Open input box for a command.
     StartCommand(Command),
     /// Input to input box.
@@ -111,9 +107,6 @@ impl Interpreter {
         match input {
             Input::File(file) => {
                 output.add_op(Operation::CreateDoc(file));
-            }
-            Input::Setting(setting) => {
-                output.add_op(Operation::UpdateSetting(setting));
             }
             Input::Lsp(ToolMessage {
                 language_id,
@@ -377,18 +370,6 @@ mod test {
 
         fn view_mode() -> Interpreter {
             Interpreter::default()
-        }
-
-        /// A new setting shall be forwarded to the application.
-        #[test]
-        fn setting() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::Setting(Setting::Wrap(true))),
-                Some(Operation::UpdateSetting(Setting::Wrap(true)))
-            );
-            assert_eq!(int.mode, Mode::View);
         }
 
         /// The `Ctrl-w` key shall confirm the user wants to quit.
