@@ -1,117 +1,61 @@
 //! Handles filesystem operations.
 use {
     crate::io::LanguageId,
-    core::{
-        convert::{TryFrom, TryInto},
-        fmt::{self, Display},
-    },
     fehler::throws,
     market::{ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer, UnlimitedQueue},
     parse_display::Display as ParseDisplay,
     std::{
-        ffi::OsStr,
-        fs,
+        env, fs,
         io::{self, ErrorKind},
-        path::{Path, PathBuf},
         str::Lines,
     },
-    thiserror::Error,
-    url::Url,
+    thiserror::Error as ThisError,
+    url::{ParseError, Url},
 };
 
-/// A **P**ath **URL** - a path and its appropriate URL.
-///
-/// Analysis that path converts to a valid URL is performed one time, when the `Purl` is created.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Purl {
-    /// The path.
-    path: PathBuf,
-    /// The URL of `path`.
-    url: Url,
+/// An error determining the root directory.
+#[derive(Debug, ThisError)]
+pub enum RootDirError {
+    /// An error determing the current working directory.
+    #[error("current working directory is invalid: {0}")]
+    GetWorkingDir(#[from] io::Error),
+    /// An error creating the root directory [`Purl`].
+    #[error("unable to create URL of root directory `{0}`")]
+    Create(String),
 }
 
-impl Purl {
-    /// Creates a new `Purl` by appending `child` to `self`.
-    #[throws(CreatePurlError)]
-    pub(crate) fn join(&self, child: &str) -> Self {
-        let mut path = self.path.clone();
+/// Returns the root directory.
+#[throws(RootDirError)]
+fn root_dir() -> Url {
+    let dir = env::current_dir()?;
 
-        path.push(child);
-        path.try_into()?
-    }
-
-    /// Returns the language id of `self`.
-    pub(crate) fn language_id(&self) -> Option<LanguageId> {
-        self.path
-            .extension()
-            .and_then(OsStr::to_str)
-            .and_then(|ext| match ext {
-                "rs" => Some(LanguageId::Rust),
-                _ => None,
-            })
-    }
-}
-
-impl AsRef<OsStr> for Purl {
-    #[inline]
-    #[must_use]
-    fn as_ref(&self) -> &OsStr {
-        self.path.as_ref()
-    }
-}
-
-impl AsRef<Path> for Purl {
-    #[inline]
-    #[must_use]
-    fn as_ref(&self) -> &Path {
-        self.path.as_ref()
-    }
-}
-
-impl AsRef<Url> for Purl {
-    #[inline]
-    #[must_use]
-    fn as_ref(&self) -> &Url {
-        &self.url
-    }
-}
-
-impl Display for Purl {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.url)
-    }
-}
-
-impl TryFrom<PathBuf> for Purl {
-    type Error = CreatePurlError;
-
-    #[inline]
-    #[throws(Self::Error)]
-    fn try_from(value: PathBuf) -> Self {
-        Self {
-            path: value.clone(),
-            url: Url::from_file_path(&value).map_err(|_| Self::Error::Create { path: value })?,
-        }
-    }
-}
-
-/// An error creating a [`Purl`].
-#[derive(Clone, Debug, Error)]
-pub enum CreatePurlError {
-    /// An error creating the URL from `path`.
-    #[error("`{path}` is not absolute or has an invalid prefix")]
-    Create {
-        /// The path.
-        path: PathBuf,
-    },
+    Url::from_directory_path(&dir)
+        .map_err(|_| RootDirError::Create(format!("{}", dir.display())))?
 }
 
 /// The interface to the file system.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct FileSystem {
     /// Queue of URLs to read.
-    files_to_read: UnlimitedQueue<Purl>,
+    urls_to_read: UnlimitedQueue<Url>,
+    /// The root directory of the file system.
+    root_dir: Url,
+}
+
+impl FileSystem {
+    /// Creates a new `FileSystem`.
+    #[throws(RootDirError)]
+    pub(crate) fn new() -> Self {
+        Self {
+            urls_to_read: UnlimitedQueue::new(),
+            root_dir: root_dir()?,
+        }
+    }
+
+    /// Returns the root directory.
+    pub(crate) const fn root_dir(&self) -> &Url {
+        &self.root_dir
+    }
 }
 
 impl Consumer for FileSystem {
@@ -120,13 +64,13 @@ impl Consumer for FileSystem {
 
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good {
-        let path_url = self.files_to_read.consume().map_err(|error| match error {
+        let path_url = self.urls_to_read.consume().map_err(|error| match error {
             ConsumeError::EmptyStock => ConsumeError::EmptyStock,
             ConsumeError::Failure(failure) => ConsumeError::Failure(failure.into()),
         })?;
 
         File {
-            text: fs::read_to_string(&path_url)
+            text: fs::read_to_string(&path_url.path())
                 .map_err(|error| ReadFileError {
                     file: path_url.to_string(),
                     error: error.kind(),
@@ -144,19 +88,23 @@ impl Producer for FileSystem {
     #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         match good {
-            Self::Good::Read { url } => self
-                .files_to_read
-                .produce(url)
+            Self::Good::Read { path } => self
+                .urls_to_read
+                .produce(
+                    self.root_dir
+                        .join(&path)
+                        .map_err(|error| ProduceError::Failure(error.into()))?,
+                )
                 .map_err(|error| error.map(Self::Failure::from))?,
             Self::Good::Write { url, text } => {
-                fs::write(&url, text).map_err(|error| ProduceError::Failure(error.into()))?
+                fs::write(url.path(), text).map_err(|error| ProduceError::Failure(error.into()))?
             }
         }
     }
 }
 
 /// An error executing a file command.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum FileError {
     /// The queue is closed.
     #[error(transparent)]
@@ -164,22 +112,25 @@ pub enum FileError {
     /// An IO error.
     #[error("")]
     Io(#[from] io::Error),
+    /// An error creating a [`Purl`]
+    #[error("")]
+    Create(#[from] ParseError),
 }
 
 /// Specifies a command to be executed on a file.
 #[derive(Debug, ParseDisplay)]
 pub(crate) enum FileCommand {
-    /// Reads from the file at `url`.
-    #[display("Read {url}")]
+    /// Reads from the file at `path`.
+    #[display("Read `{path}`")]
     Read {
-        /// The URL of the file to be read.
-        url: Purl,
+        /// The relative path of the file.
+        path: String,
     },
     /// Writes `text` to the file at `url`.
     #[display("Write {url}")]
     Write {
         /// The URL of the file to be written.
-        url: Purl,
+        url: Url,
         /// The text to be written.
         text: String,
     },
@@ -189,7 +140,7 @@ pub(crate) enum FileCommand {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct File {
     /// The URL of the file.
-    url: Purl,
+    url: Url,
     /// The text of a file.
     text: String,
 }
@@ -206,18 +157,22 @@ impl File {
     }
 
     /// Returns a reference to the URL of `self`.
-    pub(crate) const fn url(&self) -> &Purl {
+    pub(crate) const fn url(&self) -> &Url {
         &self.url
     }
 
     /// Returns the language id of `self`.
     pub(crate) fn language_id(&self) -> Option<LanguageId> {
-        self.url.language_id()
+        if self.url.path().ends_with(".rs") {
+            Some(LanguageId::Rust)
+        } else {
+            None
+        }
     }
 }
 
 /// An error consuming a file.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum ConsumeFileError {
     /// An error reading a file.
     #[error("")]
@@ -228,7 +183,7 @@ pub enum ConsumeFileError {
 }
 
 /// An error while reading a file.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 #[error("failed to read `{file}`: {error:?}")]
 pub struct ReadFileError {
     /// The error.

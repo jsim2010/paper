@@ -26,7 +26,6 @@ use {
     fehler::{throw, throws},
     io::{
         ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
-        Purl,
     },
     log::{error, info},
     logging::InitLoggerError,
@@ -41,8 +40,8 @@ use {
 #[derive(Clone, Debug, Default, StructOpt)]
 pub struct Arguments {
     /// The file to be viewed.
-    #[structopt(parse(try_from_str = io::parse_file))]
-    file: Option<Purl>,
+    #[structopt(value_name("FILE"))]
+    file: Option<String>,
     #[allow(clippy::missing_docs_in_private_items)] // Flattened structs do not allow doc comments.
     #[structopt(flatten)]
     log_config: LogConfig,

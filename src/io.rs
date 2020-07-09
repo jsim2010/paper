@@ -4,7 +4,7 @@ mod lsp;
 mod ui;
 
 pub(crate) use {
-    fs::{CreatePurlError, File, Purl},
+    fs::File,
     lsp::{ClientMessage, ServerMessage, ToolMessage},
     ui::{Dimensions, Unit, UserAction},
 };
@@ -18,17 +18,14 @@ use {
     },
     enum_map::Enum,
     fehler::{throw, throws},
-    fs::{ConsumeFileError, FileCommand, FileError, FileSystem},
+    fs::{ConsumeFileError, FileCommand, FileError, FileSystem, RootDirError},
     log::error,
     lsp::{DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError},
     lsp_types::{ShowMessageParams, ShowMessageRequestParams},
     market::{ClosedMarketFailure, Collector, ConsumeError, Consumer, ProduceError, Producer},
     parse_display::Display as ParseDisplay,
     starship::{context::Context, print},
-    std::{
-        env,
-        io::{self, ErrorKind},
-    },
+    std::io::{self, ErrorKind},
     thiserror::Error as ThisError,
     toml::{value::Table, Value},
     ui::{
@@ -63,9 +60,6 @@ pub enum CreateInterfaceError {
     /// An error creating a file.
     #[error(transparent)]
     CreateFile(#[from] CreateFileError),
-    /// An error creating a Purl.
-    #[error(transparent)]
-    CreatePurl(#[from] CreatePurlError),
 }
 
 /// An error while writing output.
@@ -86,9 +80,6 @@ pub enum ProduceOutputError {
     /// Failed to send notification.
     #[error("{0}")]
     SendNotification(#[from] SendNotificationError),
-    /// An error creating a [`Purl`].
-    #[error("")]
-    CreatePurl(#[from] CreatePurlError),
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),
@@ -100,9 +91,6 @@ pub enum ProduceOutputError {
 /// An error creating a file.
 #[derive(Debug, ThisError)]
 pub enum CreateFileError {
-    /// An error generating the [`Purl`] of the file.
-    #[error(transparent)]
-    Purl(#[from] CreatePurlError),
     /// An error triggering a file read.
     #[error(transparent)]
     Read(#[from] ProduceError<FileError>),
@@ -159,38 +147,12 @@ pub enum ConsumeInputError {
     File(#[from] ConsumeFileError),
 }
 
-/// An error determining the root directory.
-#[derive(Debug, ThisError)]
-pub enum RootDirError {
-    /// An error determing the current working directory.
-    #[error("current working directory is invalid: {0}")]
-    GetWorkingDir(#[from] io::Error),
-    /// An error creating the root directory [`Purl`].
-    #[error("unable to create URL of root directory: {0}")]
-    Create(#[from] CreatePurlError),
-}
-
-/// Returns the root directory.
-#[throws(RootDirError)]
-fn root_dir() -> Purl {
-    Purl::try_from(env::current_dir()?)?
-}
-
 /// An error validating a file string.
 #[derive(Debug, ThisError)]
 pub(crate) enum InvalidFileStringError {
     /// An error determining the root directory.
     #[error("")]
     RootDir(#[from] RootDirError),
-    /// An error creating a [`Purl`].
-    #[error("")]
-    CreatePurl(#[from] CreatePurlError),
-}
-
-/// Parses a string as a relative path into a [`Purl`].
-#[throws(InvalidFileStringError)]
-pub(crate) fn parse_file(file: &str) -> Purl {
-    root_dir()?.join(file)?
 }
 
 /// The interface between the application and all external components.
@@ -202,8 +164,6 @@ pub(crate) struct Interface {
     user_interface: Terminal,
     /// The interface of the application with all language servers.
     language_tool: LanguageTool,
-    /// The root directory of the application.
-    root_dir: Purl,
     /// The interface with the file system.
     file_system: FileSystem,
     /// The application has quit.
@@ -213,17 +173,16 @@ pub(crate) struct Interface {
 impl Interface {
     /// Creates a new interface.
     #[throws(CreateInterfaceError)]
-    pub(crate) fn new(initial_file: Option<Purl>) -> Self {
-        let root_dir = root_dir()?;
+    pub(crate) fn new(initial_file: Option<String>) -> Self {
         let mut consumers = Collector::new();
         consumers.convert_into_and_push(UserActionConsumer::new());
+        let file_system = FileSystem::new()?;
 
         let interface = Self {
             consumers,
             user_interface: Terminal::new()?,
-            language_tool: LanguageTool::new(&root_dir)?,
-            file_system: FileSystem::default(),
-            root_dir,
+            language_tool: LanguageTool::new(file_system.root_dir())?,
+            file_system,
             has_quit: AtomicBool::new(false),
         };
 
@@ -236,8 +195,8 @@ impl Interface {
 
     /// Reads the file at `url`.
     #[throws(CreateFileError)]
-    fn open_file(&self, url: Purl) {
-        self.file_system.produce(FileCommand::Read { url })?
+    fn open_file(&self, path: String) {
+        self.file_system.produce(FileCommand::Read { path })?
     }
 
     /// Edits the doc at `url`.
@@ -372,18 +331,15 @@ impl Producer for Interface {
         match output {
             Output::SendLsp(..) => {}
             Output::OpenFile { path } => {
-                let file = self
-                    .root_dir
-                    .join(&path)
-                    .map_err(|error| ProduceError::Failure(Self::Failure::from(error)))?;
-                self.open_file(file)
+                self.open_file(path)
                     .map_err(|error| ProduceError::Failure(Self::Failure::from(error)))?;
             }
             Output::EditDoc { doc, edit } => {
                 self.edit_doc(&doc, &edit)?;
             }
             Output::UpdateHeader => {
-                let mut context = Context::new_with_dir(ArgMatches::new(), &self.root_dir);
+                let mut context =
+                    Context::new_with_dir(ArgMatches::new(), self.file_system.root_dir().path());
 
                 // config will always be Some after Context::new_with_dir().
                 if let Some(mut config) = context.config.config.clone() {
@@ -541,7 +497,7 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
         match value {
             Output::EditDoc { doc, edit } => {
                 if let Some(language_id) = doc.language_id() {
-                    let url: &Url = doc.url().as_ref();
+                    let url: &Url = doc.url();
 
                     Self {
                         language_id,

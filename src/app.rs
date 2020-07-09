@@ -2,11 +2,12 @@
 mod translate;
 
 use {
-    crate::io::{Dimensions, DocEdit, File, Input, LanguageId, Output, Purl, Unit},
+    crate::io::{Dimensions, DocEdit, File, Input, LanguageId, Output, Unit},
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     std::{cell::RefCell, mem, rc::Rc},
     translate::{Command, DocOp, Interpreter, Operation},
+    url::Url,
 };
 
 /// The processor of the application.
@@ -220,7 +221,7 @@ impl Document {
     }
 
     /// Returns the [`Purl`] of `self`.
-    pub(crate) const fn url(&self) -> &Purl {
+    pub(crate) const fn url(&self) -> &Url {
         self.file.url()
     }
 
