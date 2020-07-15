@@ -203,10 +203,10 @@ impl Interface {
     #[throws(ProduceError<ProduceOutputError>)]
     fn edit_doc(&self, doc: &Document, edit: &DocEdit) {
         match edit {
-            DocEdit::Open { .. } => {
+            DocEdit::Open { .. } | DocEdit::Update => {
                 self.user_interface
                     .produce(DisplayCmd::Rows { rows: doc.rows() })
-                    .map_err(|error| error.map(ProduceOutputError::from))?;
+                    .map_err(ProduceError::map_into)?;
             }
             DocEdit::Save => {
                 self.file_system
@@ -214,12 +214,7 @@ impl Interface {
                         url: doc.url().clone(),
                         text: doc.text(),
                     })
-                    .map_err(|error| error.map(ProduceOutputError::from))?;
-            }
-            DocEdit::Update => {
-                self.user_interface
-                    .produce(DisplayCmd::Rows { rows: doc.rows() })
-                    .map_err(|error| error.map(ProduceOutputError::from))?;
+                    .map_err(ProduceError::map_into)?;
             }
             DocEdit::Close => {}
         }
@@ -361,26 +356,26 @@ impl Producer for Interface {
                     .produce(DisplayCmd::Header {
                         header: print::get_prompt(context),
                     })
-                    .map_err(|error| error.map(Self::Failure::from))?
+                    .map_err(ProduceError::map_into)?
             }
             Output::Notify { message } => self
                 .user_interface
                 .produce(DisplayCmd::Rows {
                     rows: vec![message.message],
                 })
-                .map_err(|error| error.map(Self::Failure::from))?,
+                .map_err(ProduceError::map_into)?,
             Output::Question { request } => self
                 .user_interface
                 .produce(DisplayCmd::Rows {
                     rows: vec![request.message],
                 })
-                .map_err(|error| error.map(Self::Failure::from))?,
+                .map_err(ProduceError::map_into)?,
             Output::Command { command } => self
                 .user_interface
                 .produce(DisplayCmd::Rows {
                     rows: vec![command],
                 })
-                .map_err(|error| error.map(Self::Failure::from))?,
+                .map_err(ProduceError::map_into)?,
             Output::Quit => {
                 self.has_quit.store(true, Ordering::Relaxed);
             }
