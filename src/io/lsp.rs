@@ -333,7 +333,7 @@ impl Producer for LanguageClient {
             trace!("Sending LSP message: {}", message);
             self.writer
                 .produce(message)
-                .map_err(|error| error.map(Self::Failure::from))?
+                .map_err(ProduceError::map_into)?
         }
     }
 }
@@ -442,7 +442,7 @@ impl Producer for LanguageTool {
         self.clients[good.language_id]
             .borrow()
             .produce(good.message)
-            .map_err(|error| error.map(Self::Failure::from))?
+            .map_err(ProduceError::map_into)?
     }
 }
 

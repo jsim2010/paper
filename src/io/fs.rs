@@ -64,20 +64,12 @@ impl Consumer for FileSystem {
 
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good {
-        let path_url = self.urls_to_read.consume().map_err(|error| match error {
-            ConsumeError::EmptyStock => ConsumeError::EmptyStock,
-            ConsumeError::Failure(failure) => ConsumeError::Failure(failure.into()),
-        })?;
+        let path_url = self
+            .urls_to_read
+            .consume()
+            .map_err(ConsumeError::map_into)?;
 
-        File {
-            text: fs::read_to_string(&path_url.path())
-                .map_err(|error| ReadFileError {
-                    file: path_url.to_string(),
-                    error: error.kind(),
-                })
-                .map_err(|error| ConsumeError::Failure(error.into()))?,
-            url: path_url,
-        }
+        File::read(path_url).map_err(Self::Failure::from)?
     }
 }
 
@@ -95,7 +87,7 @@ impl Producer for FileSystem {
                         .join(&path)
                         .map_err(|error| ProduceError::Failure(error.into()))?,
                 )
-                .map_err(|error| error.map(Self::Failure::from))?,
+                .map_err(ProduceError::map_into)?,
             Self::Good::Write { url, text } => {
                 fs::write(url.path(), text).map_err(|error| ProduceError::Failure(error.into()))?
             }
@@ -146,6 +138,18 @@ pub(crate) struct File {
 }
 
 impl File {
+    /// Creates a file from the path of `url`.
+    #[throws(ReadFileError)]
+    fn read(url: Url) -> Self {
+        Self {
+            text: fs::read_to_string(&url.path()).map_err(|error| ReadFileError {
+                file: url.to_string(),
+                error: error.kind(),
+            })?,
+            url,
+        }
+    }
+
     /// Returns the  [`Lines`] of the text.
     pub(crate) fn lines(&self) -> Lines<'_> {
         self.text.lines()
