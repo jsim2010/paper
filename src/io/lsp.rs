@@ -10,10 +10,10 @@ use {
         convert::{TryFrom, TryInto},
         fmt::{self, Display},
     },
-    enum_map::{enum_map, EnumMap},
+    enum_map::enum_map,
     fehler::{throw, throws},
     jsonrpc_core::Id,
-    log::{trace, warn},
+    log::{error, trace, warn},
     lsp_types::{
         notification::{
             DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized, WillSaveTextDocument,
@@ -36,6 +36,8 @@ use {
         io,
         process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
         rc::Rc,
+        sync::{Arc, atomic::{Ordering, AtomicBool}},
+        thread::{self, JoinHandle},
     },
     thiserror::Error,
     utils::{LspErrorProcessor, Message, RequestResponseError},
@@ -374,34 +376,77 @@ impl From<EditLanguageToolError> for ShowMessageParams {
 /// Manages the langauge servers.
 #[derive(Debug)]
 pub(crate) struct LanguageTool {
-    /// The clients to servers that have been created by the application.
-    // Require Rc due to LanguageClient not impl Copy, see https://gitlab.com/KonradBorowski/enum-map/-/merge_requests/30.
-    pub(crate) clients: EnumMap<LanguageId, Rc<RefCell<LanguageClient>>>,
+    drop: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
 }
 
 impl LanguageTool {
     /// Creates a new [`LanguageTool`].
     #[throws(CreateLanguageToolError)]
     pub(crate) fn new(root_dir: &Url) -> Self {
-        let rust_server = Rc::new(RefCell::new(
-            LanguageClient::new(LanguageId::Rust, root_dir).map_err(|error| {
-                CreateLanguageToolError {
-                    language_id: LanguageId::Rust,
-                    error,
-                }
-            })?,
-        ));
+        let is_dropping = Arc::new(AtomicBool::new(false));
+        let dir = root_dir.clone();
 
         Self {
-            clients: enum_map! {
-                LanguageId::Rust => Rc::clone(&rust_server),
-            },
-        }
-    }
+            drop: Arc::clone(&is_dropping),
+            thread: thread::spawn(move || {
+                let rust_server = Rc::new(RefCell::new(LanguageClient::new(LanguageId::Rust, &dir).unwrap()));
+                let clients = enum_map! {
+                    LanguageId::Rust => Rc::clone(&rust_server),
+                };
+                let mut can_drop = false;
 
-    /// Returns the langauge identifiers supported by `self`.
-    pub(crate) fn language_ids(&self) -> impl Iterator<Item = LanguageId> + '_ {
-        self.clients.iter().map(|(language_id, _)| language_id)
+                loop {
+                    for (_, client) in &clients {
+                        match client.borrow().consume() {
+                            Ok(message) => {
+                                match message {
+                                    ServerMessage::Initialize => client.borrow().produce(ClientMessage::Initialized).unwrap(),
+                                    ServerMessage::Request { id } => client.borrow().produce(ClientMessage::RegisterCapability(id)).unwrap(),
+                                    ServerMessage::Shutdown => {
+                                        // TODO: Update for multiple language clients.
+                                        // TODO: Recognize and resolve unexpected shutdown.
+                                        can_drop = true;
+                                    }
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                    }
+
+                    if is_dropping.load(Ordering::Relaxed) {
+                        for (language_id, client) in &clients {
+                            if let Err(error) = client.borrow().produce(ClientMessage::Shutdown) {
+                                error!(
+                                    "Failed to send shutdown message to {} language server: {}",
+                                    language_id, error
+                                );
+                            }
+                        }
+                    }
+
+                    if can_drop {
+                        for (language_id, client) in &clients {
+                            if let Err(error) = client.borrow().produce(ClientMessage::Exit) {
+                                error!(
+                                    "Failed to send exit message to {} language server: {}",
+                                    language_id, error
+                                );
+                            }
+
+                            if let Err(error) = client.borrow_mut().server.wait() {
+                                error!(
+                                    "Failed to wait for {} language server process to finish: {}",
+                                    language_id, error
+                                );
+                            }
+                        }
+
+                        break;
+                    }
+                }
+            }),
+        }
     }
 }
 
@@ -411,24 +456,12 @@ impl Consumer for LanguageTool {
 
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good {
-        for (language_id, language_client) in &self.clients {
-            let client = language_client.borrow();
-
-            match client.consume() {
-                Ok(message) => {
-                    return ToolMessage {
-                        language_id,
-                        message,
-                    }
-                }
-                Err(ConsumeError::EmptyStock) => {}
-                Err(ConsumeError::Failure(failure)) => {
-                    throw!(ConsumeError::Failure(failure.into()))
-                }
-            }
-        }
-
         throw!(ConsumeError::EmptyStock);
+    }
+}
+
+impl Drop for LanguageTool {
+    fn drop(&mut self) {
     }
 }
 
@@ -437,12 +470,7 @@ impl Producer for LanguageTool {
     type Failure = ProduceProtocolError;
 
     #[throws(ProduceError<Self::Failure>)]
-    fn produce(&self, good: Self::Good) {
-        #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is in bounds.
-        self.clients[good.language_id]
-            .borrow()
-            .produce(good.message)
-            .map_err(ProduceError::map_into)?
+    fn produce(&self, _good: Self::Good) {
     }
 }
 

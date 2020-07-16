@@ -2,6 +2,7 @@
 use {
     crate::io::LanguageId,
     fehler::throws,
+    log::debug,
     market::{ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer, UnlimitedQueue},
     parse_display::Display as ParseDisplay,
     std::{
@@ -141,8 +142,9 @@ impl File {
     /// Creates a file from the path of `url`.
     #[throws(ReadFileError)]
     fn read(url: Url) -> Self {
+        trace!("read {}", url.path());
         Self {
-            text: fs::read_to_string(&url.path()).map_err(|error| ReadFileError {
+            text: fs::read_to_string(url.to_file_path().unwrap()).map_err(|error| ReadFileError {
                 file: url.to_string(),
                 error: error.kind(),
             })?,
