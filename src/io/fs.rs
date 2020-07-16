@@ -2,7 +2,7 @@
 use {
     crate::io::LanguageId,
     fehler::throws,
-    log::debug,
+    log::trace,
     market::{ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer, UnlimitedQueue},
     parse_display::Display as ParseDisplay,
     std::{

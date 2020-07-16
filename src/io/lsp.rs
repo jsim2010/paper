@@ -171,6 +171,7 @@ impl LanguageClient {
         let reader = Reader::new(server.stdout()?);
         let settings = Cell::new(LspSettings::default());
 
+        error!("Send Initialize");
         #[allow(deprecated)] // root_path is a required field.
         writer.produce(Message::request::<Initialize>(
             InitializeParams {
@@ -395,6 +396,7 @@ impl LanguageTool {
                     LanguageId::Rust => Rc::clone(&rust_server),
                 };
                 let mut can_drop = false;
+                trace!("new thread");
 
                 loop {
                     for (_, client) in &clients {
@@ -442,6 +444,7 @@ impl LanguageTool {
                             }
                         }
 
+                        error!("Dropped LanguageTool");
                         break;
                     }
                 }
