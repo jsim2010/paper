@@ -465,6 +465,8 @@ impl Consumer for LanguageTool {
 
 impl Drop for LanguageTool {
     fn drop(&mut self) {
+        self.drop.store(true, Ordering::Relaxed);
+        self.thread.join();
     }
 }
 

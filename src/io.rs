@@ -344,7 +344,7 @@ impl LanguageId {
     #[allow(clippy::missing_const_for_fn)] // For stable rust, match is not allowed in const fn.
     fn server_cmd(&self) -> &str {
         match self {
-            Self::Rust => "rls",
+            Self::Rust => "rust-analyzer",
         }
     }
 }

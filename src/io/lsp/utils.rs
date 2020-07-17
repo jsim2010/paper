@@ -223,6 +223,7 @@ impl ComposeFrom<u8> for Message {
             })
         });
 
+        parts.drain(..length);
         message.ok_or(NonComposible)?
     }
 }
