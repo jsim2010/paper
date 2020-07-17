@@ -144,7 +144,11 @@ impl File {
     fn read(url: Url) -> Self {
         trace!("read {}", url.path());
         Self {
-            text: fs::read_to_string(url.to_file_path().unwrap()).map_err(|error| ReadFileError {
+            text: fs::read_to_string(url.to_file_path().map_err(|_| ReadFileError {
+                file: url.to_string(),
+                error: ErrorKind::NotFound,
+            })?)
+            .map_err(|error| ReadFileError {
                 file: url.to_string(),
                 error: error.kind(),
             })?,
