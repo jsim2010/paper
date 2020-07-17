@@ -171,7 +171,7 @@ impl LanguageClient {
         let reader = Reader::new(server.stdout()?);
         let settings = Cell::new(LspSettings::default());
 
-        error!("Send Initialize");
+        // TODO: Move this to use self.produce() for debug
         #[allow(deprecated)] // root_path is a required field.
         writer.produce(Message::request::<Initialize>(
             InitializeParams {
@@ -378,7 +378,7 @@ impl From<EditLanguageToolError> for ShowMessageParams {
 #[derive(Debug)]
 pub(crate) struct LanguageTool {
     drop: Arc<AtomicBool>,
-    thread: JoinHandle<()>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl LanguageTool {
@@ -390,15 +390,15 @@ impl LanguageTool {
 
         Self {
             drop: Arc::clone(&is_dropping),
-            thread: thread::spawn(move || {
+            thread: Some(thread::spawn(move || {
                 let rust_server = Rc::new(RefCell::new(LanguageClient::new(LanguageId::Rust, &dir).unwrap()));
                 let clients = enum_map! {
                     LanguageId::Rust => Rc::clone(&rust_server),
                 };
-                let mut can_drop = false;
+                let mut is_shutdown = false;
                 trace!("new thread");
 
-                loop {
+                while !is_shutdown {
                     for (_, client) in &clients {
                         match client.borrow().consume() {
                             Ok(message) => {
@@ -408,7 +408,7 @@ impl LanguageTool {
                                     ServerMessage::Shutdown => {
                                         // TODO: Update for multiple language clients.
                                         // TODO: Recognize and resolve unexpected shutdown.
-                                        can_drop = true;
+                                        is_shutdown = true;
                                     }
                                 }
                             }
@@ -425,30 +425,28 @@ impl LanguageTool {
                                 );
                             }
                         }
-                    }
 
-                    if can_drop {
-                        for (language_id, client) in &clients {
-                            if let Err(error) = client.borrow().produce(ClientMessage::Exit) {
-                                error!(
-                                    "Failed to send exit message to {} language server: {}",
-                                    language_id, error
-                                );
-                            }
-
-                            if let Err(error) = client.borrow_mut().server.wait() {
-                                error!(
-                                    "Failed to wait for {} language server process to finish: {}",
-                                    language_id, error
-                                );
-                            }
-                        }
-
-                        error!("Dropped LanguageTool");
-                        break;
+                        // Reset is_dropping so that Shutdown is only sent once.
+                        is_dropping.store(false, Ordering::Relaxed);
                     }
                 }
-            }),
+
+                for (language_id, client) in &clients {
+                    if let Err(error) = client.borrow().produce(ClientMessage::Exit) {
+                        error!(
+                            "Failed to send exit message to {} language server: {}",
+                            language_id, error
+                        );
+                    }
+
+                    if let Err(error) = client.borrow_mut().server.wait() {
+                        error!(
+                            "Failed to wait for {} language server process to finish: {}",
+                            language_id, error
+                        );
+                    }
+                }
+            })),
         }
     }
 }
@@ -465,8 +463,10 @@ impl Consumer for LanguageTool {
 
 impl Drop for LanguageTool {
     fn drop(&mut self) {
-        self.drop.store(true, Ordering::Relaxed);
-        self.thread.join();
+        if let Some(thread) = self.thread.take() {
+            self.drop.store(true, Ordering::Relaxed);
+            thread.join().unwrap();
+        }
     }
 }
 
