@@ -255,62 +255,6 @@ impl Consumer for Interface {
     }
 }
 
-impl Drop for Interface {
-    fn drop(&mut self) {
-        for language_id in self.language_tool.language_ids() {
-            if let Err(error) = self.language_tool.produce(ToolMessage {
-                language_id,
-                message: ClientMessage::Shutdown,
-            }) {
-                error!(
-                    "Failed to send shutdown message to {} language server: {}",
-                    language_id, error
-                );
-            }
-        }
-
-        loop {
-            // TODO: Need to check for reception from all clients.
-            match self.language_tool.consume() {
-                Ok(ToolMessage {
-                    message: ServerMessage::Shutdown,
-                    ..
-                }) => {
-                    break;
-                }
-                Err(error) => {
-                    error!("Error while waiting for shutdown: {}", error);
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        for language_id in self.language_tool.language_ids() {
-            if let Err(error) = self.language_tool.produce(ToolMessage {
-                language_id,
-                message: ClientMessage::Exit,
-            }) {
-                error!(
-                    "Failed to send exit message to {} language server: {}",
-                    language_id, error
-                );
-            }
-
-            // TODO: This should probably be a consume call.
-            #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is valid.
-            let server = &self.language_tool.clients[language_id];
-
-            if let Err(error) = server.borrow_mut().server.wait() {
-                error!(
-                    "Failed to wait for {} language server process to finish: {}",
-                    language_id, error
-                );
-            }
-        }
-    }
-}
-
 impl Producer for Interface {
     type Good = Output;
     type Failure = ProduceOutputError;
@@ -400,7 +344,7 @@ impl LanguageId {
     #[allow(clippy::missing_const_for_fn)] // For stable rust, match is not allowed in const fn.
     fn server_cmd(&self) -> &str {
         match self {
-            Self::Rust => "rls",
+            Self::Rust => "rust-analyzer",
         }
     }
 }
