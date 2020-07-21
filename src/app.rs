@@ -2,7 +2,8 @@
 mod translate;
 
 use {
-    crate::io::{Dimensions, DocEdit, File, Input, LanguageId, Output, Unit},
+    crate::io::{Dimensions, DocEdit, File, Input, Output, Unit},
+    docuglot::Language,
     log::trace,
     lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
     std::{cell::RefCell, mem, rc::Rc},
@@ -225,9 +226,9 @@ impl Document {
         self.file.url()
     }
 
-    /// Returns the [`LanguageId`] of `self`.
-    pub(crate) fn language_id(&self) -> Option<LanguageId> {
-        self.file.language_id()
+    /// Returns the [`Language`] of `self`.
+    pub(crate) fn language(&self) -> Option<Language> {
+        self.file.language()
     }
 
     /// Returns the text of `self`.

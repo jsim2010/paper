@@ -16,7 +16,6 @@ use {
         convert::TryFrom,
         sync::atomic::{AtomicBool, Ordering},
     },
-    enum_map::Enum,
     fehler::{throw, throws},
     fs::{ConsumeFileError, FileCommand, FileError, FileSystem, RootDirError},
     log::error,
@@ -332,23 +331,6 @@ impl Producer for Interface {
 #[error("while converting `{0}` to a URL")]
 struct UrlError(String);
 
-/// The language ids supported by `paper`.
-#[derive(Clone, Copy, Debug, Enum, Eq, Hash, ParseDisplay, PartialEq)]
-pub(crate) enum LanguageId {
-    /// The rust language.
-    Rust,
-}
-
-impl LanguageId {
-    /// Returns the server cmd for `self`.
-    #[allow(clippy::missing_const_for_fn)] // For stable rust, match is not allowed in const fn.
-    fn server_cmd(&self) -> &str {
-        match self {
-            Self::Rust => "rust-analyzer",
-        }
-    }
-}
-
 /// An input.
 #[derive(Debug)]
 pub(crate) enum Input {
@@ -435,16 +417,16 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
     fn try_from(value: Output) -> Self {
         match value {
             Output::EditDoc { doc, edit } => {
-                if let Some(language_id) = doc.language_id() {
+                if let Some(language) = doc.language() {
                     let url: &Url = doc.url();
 
                     Self {
-                        language_id,
+                        language,
                         message: ClientMessage::Doc(DocConfiguration::new(
                             url.clone(),
                             match edit {
                                 DocEdit::Open { version } => DocMessage::Open {
-                                    language_id,
+                                    language,
                                     version,
                                     text: doc.text(),
                                 },

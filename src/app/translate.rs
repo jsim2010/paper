@@ -109,7 +109,7 @@ impl Interpreter {
                 output.add_op(Operation::CreateDoc(file));
             }
             Input::Lsp(ToolMessage {
-                language_id,
+                language,
                 message,
             }) => {
                 if let Some(return_message) = match message {
@@ -118,7 +118,7 @@ impl Interpreter {
                     ServerMessage::Shutdown => None,
                 } {
                     output.add_op(Operation::SendLsp(ToolMessage {
-                        language_id,
+                        language,
                         message: return_message,
                     }));
                 }

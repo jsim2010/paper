@@ -4,12 +4,12 @@ pub(crate) mod utils;
 pub(crate) use utils::SendNotificationError;
 
 use {
-    crate::io::LanguageId,
     core::{
         cell::{Cell, RefCell},
         convert::{TryFrom, TryInto},
         fmt::{self, Display},
     },
+    docuglot::{Language, Object, Outcome},
     enum_map::enum_map,
     fehler::{throw, throws},
     jsonrpc_core::Id,
@@ -66,9 +66,9 @@ pub enum Fault {
     /// An error while killing a language server process.
     #[error("unable to kill language server process: {0}")]
     Kill(#[source] io::Error),
-    /// Language server for given language identifier is unknown.
+    /// Language server for given language is unknown.
     #[error("language server for `{0}` is unknown")]
-    LanguageId(String),
+    Language(String),
     /// Failed to send notification to language server.
     #[error("failed to send notification message: {0}")]
     SendNotification(#[from] SendNotificationError),
@@ -168,8 +168,8 @@ pub(crate) struct LanguageClient {
 impl LanguageClient {
     /// Creates a new `LanguageClient` for `language_id`.
     #[throws(CreateLanguageClientError)]
-    pub(crate) fn new(language_id: LanguageId, root: &Url) -> Self {
-        let mut server = LangServer::new(language_id)?;
+    pub(crate) fn new(language: Language, root: &Url) -> Self {
+        let mut server = LangServer::new(language)?;
         let writer = Writer::new(server.stdin()?);
         let reader = Reader::new(server.stdout()?);
         let settings = Cell::new(LspSettings::default());
@@ -257,7 +257,7 @@ impl Consumer for LanguageClient {
         match message {
             Message {
                 object:
-                    utils::Object::Request {
+                    Object::Request {
                         id: Some(request_id),
                         ..
                     },
@@ -265,8 +265,8 @@ impl Consumer for LanguageClient {
             } => ServerMessage::Request { id: request_id },
             Message {
                 object:
-                    utils::Object::Response {
-                        outcome: utils::Outcome::Result(value),
+                    Object::Response {
+                        outcome: Outcome::Result(value),
                         ..
                     },
                 ..
@@ -346,10 +346,10 @@ impl Producer for LanguageClient {
 
 /// An error creating a [`LanguageTool`].
 #[derive(Debug, Error)]
-#[error("unable to create {language_id} language server: {error}")]
+#[error("unable to create {language} language server: {error}")]
 pub struct CreateLanguageToolError {
-    /// The language identifier of the server.
-    language_id: LanguageId,
+    /// The language of the server.
+    language: Language,
     /// The error.
     #[source]
     error: CreateLanguageClientError,
@@ -389,11 +389,11 @@ enum LanguageToolError {
 #[throws(LanguageToolError)]
 fn thread(root_dir: &Url, is_dropping: &Arc<AtomicBool>) {
     let rust_server = Rc::new(RefCell::new(LanguageClient::new(
-        LanguageId::Rust,
+        Language::Rust,
         root_dir,
     )?));
     let clients = enum_map! {
-        LanguageId::Rust => Rc::clone(&rust_server),
+        Language::Rust => Rc::clone(&rust_server),
     };
     let mut is_shutdown = false;
 
@@ -530,10 +530,10 @@ pub(crate) enum ServerMessage {
 
 /// Tool message of language server.
 #[derive(Clone, Debug, ParseDisplay, PartialEq)]
-#[display("{language_id} :: {message}")]
+#[display("{language} :: {message}")]
 pub(crate) struct ToolMessage<T> {
     /// The URL that generated.
-    pub(crate) language_id: LanguageId,
+    pub(crate) language: Language,
     /// The message.
     pub(crate) message: T,
 }
@@ -584,13 +584,13 @@ impl TryFrom<ClientMessage> for Message {
         match value {
             ClientMessage::Doc(configuration) => match configuration.message {
                 DocMessage::Open {
-                    language_id,
+                    language,
                     version,
                     text,
                 } => Self::notification::<DidOpenTextDocument>(DidOpenTextDocumentParams {
                     text_document: TextDocumentItem::new(
                         configuration.url,
-                        language_id.to_string(),
+                        language.to_string(),
                         version,
                         text,
                     ),
@@ -649,10 +649,10 @@ impl DocConfiguration {
 #[derive(Clone, Debug, ParseDisplay, PartialEq)]
 pub(crate) enum DocMessage {
     /// Open a doc.
-    #[display("Open document with {language_id} at v{version}")]
+    #[display("Open document with {language} at v{version}")]
     Open {
-        /// The language identifier.
-        language_id: LanguageId,
+        /// The language.
+        language: Language,
         /// The version.
         version: i64,
         /// The text.
@@ -690,15 +690,19 @@ pub(crate) struct LangServer(Child);
 impl LangServer {
     /// Creates a new [`LangServer`].
     #[throws(SpawnServerError)]
-    fn new(language_id: LanguageId) -> Self {
+    fn new(language: Language) -> Self {
+        let server_cmd = match language {
+            Language::Rust => "rust-analyzer",
+        };
+
         Self(
-            Command::new(language_id.server_cmd())
+            Command::new(server_cmd)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|error| SpawnServerError {
-                    command: language_id.server_cmd().to_string(),
+                    command: server_cmd.to_string(),
                     error,
                 })?,
         )

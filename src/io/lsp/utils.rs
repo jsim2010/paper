@@ -1,6 +1,7 @@
 //! Implements language server utilities.
 use {
     core::fmt::{self, Display},
+    docuglot::Object,
     fehler::throws,
     jsonrpc_core::{Id, Value, Version},
     log::error,
@@ -247,108 +248,6 @@ impl StripFrom<Message> for u8 {
             .as_bytes()
             .to_vec()
         })
-    }
-}
-
-/// A json-rpc object.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-pub(crate) enum Object {
-    /// A request json-rpc object.
-    Request {
-        /// The method identifier.
-        // TODO: Convert this to &str.
-        method: String,
-        /// The parameters.
-        params: Value,
-        /// The id.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<Id>,
-    },
-    /// A response json-rpc object.
-    Response {
-        /// The outcome.
-        #[serde(flatten)]
-        outcome: Outcome,
-        /// The id.
-        id: Id,
-    },
-}
-
-impl Object {
-    /// Creates a request of type `T` with `id`.
-    #[throws(SerdeJsonError)]
-    fn request<T>(params: T::Params, id: Id) -> Self
-    where
-        T: Request,
-        <T as Request>::Params: Serialize,
-    {
-        Self::Request {
-            method: T::METHOD.to_string(),
-            params: serde_json::to_value(params)?,
-            id: Some(id),
-        }
-    }
-
-    /// Creates a notification of type `T`.
-    #[throws(SerdeJsonError)]
-    fn notification<T>(params: T::Params) -> Self
-    where
-        T: Notification,
-        <T as Notification>::Params: Serialize,
-    {
-        Self::Request {
-            method: T::METHOD.to_string(),
-            params: serde_json::to_value(params)?,
-            id: None,
-        }
-    }
-
-    /// Creates a response to a request of type `T` with `id`.
-    #[throws(SerdeJsonError)]
-    fn response<T>(result: T::Result, id: Id) -> Self
-    where
-        T: Request,
-        <T as Request>::Result: Serialize,
-    {
-        Self::Response {
-            outcome: Outcome::Result(serde_json::to_value(result)?),
-            id,
-        }
-    }
-}
-
-impl Display for Object {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} : {}",
-            match self {
-                Self::Request { id: Some(_), .. } => "Request",
-                Self::Request { .. } => "Notification",
-                Self::Response { .. } => "Response",
-            },
-            match self {
-                Self::Request { method, params, .. } => format!("{} w/ {}", method, params),
-                Self::Response { outcome, .. } => outcome.to_string(),
-            }
-        )
-    }
-}
-
-/// The outcome of the response.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Outcome {
-    /// The result was successful.
-    Result(Value),
-}
-
-impl Display for Outcome {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Result(value) => write!(f, "Success {}", value),
-        }
     }
 }
 

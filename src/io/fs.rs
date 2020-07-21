@@ -1,6 +1,6 @@
 //! Handles filesystem operations.
 use {
-    crate::io::LanguageId,
+    docuglot::Language,
     fehler::throws,
     log::trace,
     market::{ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer, UnlimitedQueue},
@@ -171,10 +171,10 @@ impl File {
         &self.url
     }
 
-    /// Returns the language id of `self`.
-    pub(crate) fn language_id(&self) -> Option<LanguageId> {
+    /// Returns the `Language` of `self`.
+    pub(crate) fn language(&self) -> Option<Language> {
         if self.url.path().ends_with(".rs") {
-            Some(LanguageId::Rust)
+            Some(Language::Rust)
         } else {
             None
         }
