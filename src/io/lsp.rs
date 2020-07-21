@@ -9,7 +9,7 @@ use {
         convert::{TryFrom, TryInto},
         fmt::{self, Display},
     },
-    docuglot::{Language, Object, Outcome},
+    docuglot::{Language, Message, Object, Outcome},
     enum_map::enum_map,
     fehler::{throw, throws},
     jsonrpc_core::Id,
@@ -43,7 +43,7 @@ use {
         thread::{self, JoinHandle},
     },
     thiserror::Error,
-    utils::{LspErrorProcessor, Message, RequestResponseError},
+    utils::{LspErrorProcessor, RequestResponseError},
 };
 
 /// An error from which the language server was unable to recover.
@@ -254,21 +254,13 @@ impl Consumer for LanguageClient {
         let message = self.reader.consume()?;
         trace!("Received LSP message: {}", message);
 
-        match message {
-            Message {
-                object:
-                    Object::Request {
-                        id: Some(request_id),
-                        ..
-                    },
+        match message.object() {
+            Object::Request {
+                id: Some(request_id),
                 ..
-            } => ServerMessage::Request { id: request_id },
-            Message {
-                object:
-                    Object::Response {
-                        outcome: Outcome::Result(value),
-                        ..
-                    },
+            } => ServerMessage::Request { id: request_id.clone() },
+            Object::Response {
+                outcome: Outcome::Result(value),
                 ..
             } => {
                 if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
