@@ -1,8 +1,9 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
-    crate::io::{ClientMessage, Dimensions, File, Input, ServerMessage, ToolMessage, UserAction},
+    crate::io::{Dimensions, File, Input, ToolMessage, UserAction},
     core::fmt::{self, Debug},
     crossterm::event::KeyCode,
+    docuglot::{ClientResponse, ClientRequest, ClientMessage, ServerMessage, ServerResponse},
     enum_map::{enum_map, Enum, EnumMap},
     lsp_types::{MessageType, ShowMessageRequestParams},
     parse_display::Display as ParseDisplay,
@@ -113,9 +114,11 @@ impl Interpreter {
                 message,
             }) => {
                 if let Some(return_message) = match message {
-                    ServerMessage::Initialize => Some(ClientMessage::Initialized),
-                    ServerMessage::Request { id } => Some(ClientMessage::RegisterCapability(id)),
-                    ServerMessage::Shutdown => None,
+                    ServerMessage::Request { id } => Some(ClientMessage::Response{id, response: ClientResponse::RegisterCapability}),
+                    ServerMessage::Response(response) => match response {
+                        ServerResponse::Initialize(_) => Some(ClientMessage::Request(ClientRequest::Initialized)),
+                        ServerResponse::Shutdown => None,
+                    }
                 } {
                     output.add_op(Operation::SendLsp(ToolMessage {
                         language,

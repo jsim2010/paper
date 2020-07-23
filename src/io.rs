@@ -5,7 +5,7 @@ mod ui;
 
 pub(crate) use {
     fs::File,
-    lsp::{ClientMessage, ServerMessage, ToolMessage},
+    lsp::ToolMessage,
     ui::{Dimensions, Unit, UserAction},
 };
 
@@ -16,11 +16,12 @@ use {
         convert::TryFrom,
         sync::atomic::{AtomicBool, Ordering},
     },
+    docuglot::{ClientMessage, ServerMessage, ClientRequest},
     fehler::{throw, throws},
     fs::{ConsumeFileError, FileCommand, FileError, FileSystem, RootDirError},
     log::error,
-    lsp::{DocConfiguration, DocMessage, Fault, LanguageTool, SendNotificationError},
-    lsp_types::{ShowMessageParams, ShowMessageRequestParams},
+    lsp::{Fault, LanguageTool, SendNotificationError},
+    lsp_types::{TextDocumentItem, TextDocumentSaveReason, DidOpenTextDocumentParams, DidCloseTextDocumentParams, WillSaveTextDocumentParams, ShowMessageParams, ShowMessageRequestParams, TextDocumentIdentifier},
     market::{ClosedMarketFailure, Collector, ConsumeError, Consumer, ProduceError, Producer},
     parse_display::Display as ParseDisplay,
     starship::{context::Context, print},
@@ -422,19 +423,12 @@ impl TryFrom<Output> for ToolMessage<ClientMessage> {
 
                     Self {
                         language,
-                        message: ClientMessage::Doc(DocConfiguration::new(
-                            url.clone(),
-                            match edit {
-                                DocEdit::Open { version } => DocMessage::Open {
-                                    language,
-                                    version,
-                                    text: doc.text(),
-                                },
-                                DocEdit::Save { .. } => DocMessage::Save,
-                                DocEdit::Close => DocMessage::Close,
-                                DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
-                            },
-                        )),
+                        message: ClientMessage::Request(match edit {
+                            DocEdit::Open { version } => ClientRequest::OpenDoc(DidOpenTextDocumentParams{text_document: TextDocumentItem::new(url.clone(), language.to_string(), version, doc.text())}),
+                            DocEdit::Save { .. } => ClientRequest::SaveDoc(WillSaveTextDocumentParams{text_document: TextDocumentIdentifier::new(url.clone()), reason: TextDocumentSaveReason::Manual}),
+                            DocEdit::Close => ClientRequest::CloseDoc(DidCloseTextDocumentParams{text_document: TextDocumentIdentifier::new(url.clone())}),
+                            DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
+                            }),
                     }
                 } else {
                     throw!(TryIntoProtocolError::InvalidOutput);

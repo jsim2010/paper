@@ -4,37 +4,23 @@ pub(crate) mod utils;
 pub(crate) use utils::SendNotificationError;
 
 use {
-    core::{
-        cell::{Cell, RefCell},
-        convert::{TryFrom, TryInto},
-        fmt::{self, Display},
-    },
-    docuglot::{Language, Message, Object, Outcome},
+    core::cell::{Cell, RefCell},
+    docuglot::{ClientResponse, ClientRequest, ClientMessage, Language, ServerResponse, ServerMessage, CreateClientError, Client},
     enum_map::enum_map,
     fehler::{throw, throws},
-    jsonrpc_core::Id,
-    log::{error, trace, warn},
+    log::error,
     lsp_types::{
-        notification::{
-            DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized, WillSaveTextDocument,
-        },
-        request::{Initialize, RegisterCapability, Request, Shutdown},
-        ClientCapabilities, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-        InitializeParams, InitializeResult, InitializedParams, MessageType, ShowMessageParams,
-        SynchronizationCapability, TextDocumentClientCapabilities, TextDocumentIdentifier,
-        TextDocumentItem, TextDocumentSaveReason, TextDocumentSyncCapability, TextDocumentSyncKind,
-        Url, WillSaveTextDocumentParams,
+        InitializeResult, MessageType, ShowMessageParams,
+        TextDocumentSyncCapability, TextDocumentSyncKind,
+        Url,
     },
     market::{
-        io::{Reader, Writer},
         ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer,
     },
     parse_display::Display as ParseDisplay,
-    serde::{de::DeserializeOwned, Serialize},
     serde_json::error::Error as SerdeJsonError,
     std::{
         io,
-        process::{self, Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
         rc::Rc,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -43,7 +29,7 @@ use {
         thread::{self, JoinHandle},
     },
     thiserror::Error,
-    utils::{LspErrorProcessor, RequestResponseError},
+    utils::RequestResponseError,
 };
 
 /// An error from which the language server was unable to recover.
@@ -151,189 +137,16 @@ impl From<&str> for AccessIoError {
 /// The client interface with a language server.
 #[derive(Debug)]
 pub(crate) struct LanguageClient {
-    /// The language server process.
-    pub(crate) server: LangServer,
-    /// Transmits messages to the language server process.
-    writer: Writer<Message>,
-    /// The current request id.
-    id: Cell<u64>,
-    /// Processes output from the stderr of the language server.
-    error_processor: LspErrorProcessor,
     /// Controls settings for the language server.
     settings: Cell<LspSettings>,
-    /// Reads messages from the language server process.
-    reader: Reader<Message>,
 }
 
 impl LanguageClient {
-    /// Creates a new `LanguageClient` for `language_id`.
-    #[throws(CreateLanguageClientError)]
-    pub(crate) fn new(language: Language, root: &Url) -> Self {
-        let mut server = LangServer::new(language)?;
-        let writer = Writer::new(server.stdin()?);
-        let reader = Reader::new(server.stdout()?);
-        let settings = Cell::new(LspSettings::default());
-
-        // TODO: Move this to use self.produce() for debug
-        #[allow(deprecated)] // root_path is a required field.
-        writer.produce(Message::request::<Initialize>(
-            InitializeParams {
-                process_id: Some(u64::from(process::id())),
-                root_path: None,
-                root_uri: Some(root.clone()),
-                initialization_options: None,
-                capabilities: ClientCapabilities {
-                    workspace: None,
-                    text_document: Some(TextDocumentClientCapabilities {
-                        synchronization: Some(SynchronizationCapability {
-                            dynamic_registration: None,
-                            will_save: Some(true),
-                            will_save_wait_until: None,
-                            did_save: None,
-                        }),
-                        completion: None,
-                        hover: None,
-                        signature_help: None,
-                        references: None,
-                        document_highlight: None,
-                        document_symbol: None,
-                        formatting: None,
-                        range_formatting: None,
-                        on_type_formatting: None,
-                        declaration: None,
-                        definition: None,
-                        type_definition: None,
-                        implementation: None,
-                        code_action: None,
-                        code_lens: None,
-                        document_link: None,
-                        color_provider: None,
-                        rename: None,
-                        publish_diagnostics: None,
-                        folding_range: None,
-                    }),
-                    window: None,
-                    experimental: None,
-                },
-                trace: None,
-                workspace_folders: None,
-                client_info: None,
-            },
-            0,
-        )?)?;
-        Self {
-            // error_processor must be created before server is moved.
-            error_processor: LspErrorProcessor::new(server.stderr()?),
-            server,
-            writer,
-            reader,
-            settings,
-            id: Cell::new(1),
-        }
-    }
-
-    /// Returns the appropriate request message.
-    #[throws(RequestResponseError)]
-    fn request<T: Request>(&self, params: T::Params) -> Message
-    where
-        T::Params: Serialize,
-        T::Result: DeserializeOwned + Default,
-    {
-        let id = self.id.get().wrapping_add(1);
-        self.id.set(id);
-        Message::request::<T>(params, id)?
-    }
-}
-
-impl Consumer for LanguageClient {
-    type Good = ServerMessage;
-    type Failure = ClosedMarketFailure;
-
-    #[throws(ConsumeError<Self::Failure>)]
-    fn consume(&self) -> Self::Good {
-        let message = self.reader.consume()?;
-        trace!("Received LSP message: {}", message);
-
-        match message.object() {
-            Object::Request {
-                id: Some(request_id),
-                ..
-            } => ServerMessage::Request { id: request_id.clone() },
-            Object::Response {
-                outcome: Outcome::Result(value),
-                ..
-            } => {
-                if let Ok(result) = serde_json::from_value::<InitializeResult>(value.clone()) {
-                    self.settings.set(LspSettings::from(result));
-                    ServerMessage::Initialize
-                } else if serde_json::from_value::<()>(value.clone()).is_ok() {
-                    ServerMessage::Shutdown
-                } else {
-                    warn!(
-                        "Received unknown response outcome from language client: {}",
-                        value
-                    );
-                    // TODO: Perhaps have a failure thrown here?
-                    throw!(ConsumeError::EmptyStock);
-                }
-            }
-            _ => throw!(ConsumeError::EmptyStock),
-        }
-    }
-}
-
-impl Producer for LanguageClient {
-    type Good = ClientMessage;
-    type Failure = Fault;
-
-    #[throws(ProduceError<Self::Failure>)]
-    fn produce(&self, good: Self::Good) {
-        if let Some(message) = match &good {
-            ClientMessage::Doc(configuration) => {
-                match &configuration.message {
-                    DocMessage::Open { .. } | DocMessage::Close => {
-                        if self.settings.get().notify_open_close {
-                            Some(good.clone().try_into().map_err(
-                                |error: TryIntoMessageError| ProduceError::Failure(error.into()),
-                            )?)
-                        } else {
-                            None
-                        }
-                    }
-                    DocMessage::Save => {
-                        if self.settings.get().notify_save {
-                            Some(good.clone().try_into().map_err(
-                                |error: TryIntoMessageError| ProduceError::Failure(error.into()),
-                            )?)
-                        } else {
-                            None
-                        }
-                    }
-                }
-            }
-            ClientMessage::RegisterCapability { .. }
-            | ClientMessage::Initialized
-            | ClientMessage::Exit => Some(
-                good.clone()
-                    .try_into()
-                    .map_err(|error: TryIntoMessageError| ProduceError::Failure(error.into()))?,
-            ),
-            ClientMessage::Shutdown => {
-                self.error_processor
-                    .terminate()
-                    .map_err(|error| ProduceError::Failure(error.into()))?;
-                Some(
-                    self.request::<Shutdown>(())
-                        .map_err(|error| ProduceError::Failure(error.into()))?,
-                )
-            }
-        } {
-            trace!("Sending LSP message: {}", message);
-            self.writer
-                .produce(message)
-                .map_err(ProduceError::map_into)?
-        }
-    }
+    ///// Creates a new `LanguageClient` for `language_id`.
+    //#[throws(CreateLanguageClientError)]
+    //pub(crate) fn new(language: Language, root: &Url) -> Self {
+    //    let settings = Cell::new(LspSettings::default());
+    //}
 }
 
 /// An error creating a [`LanguageTool`].
@@ -374,13 +187,13 @@ impl From<EditLanguageToolError> for ShowMessageParams {
 enum LanguageToolError {
     /// An error creating the language client.
     #[error(transparent)]
-    Create(#[from] CreateLanguageClientError),
+    Create(#[from] CreateClientError),
 }
 
 /// Runs the thread of the language tool.
 #[throws(LanguageToolError)]
 fn thread(root_dir: &Url, is_dropping: &Arc<AtomicBool>) {
-    let rust_server = Rc::new(RefCell::new(LanguageClient::new(
+    let rust_server = Rc::new(RefCell::new(Client::new(
         Language::Rust,
         root_dir,
     )?));
@@ -394,17 +207,19 @@ fn thread(root_dir: &Url, is_dropping: &Arc<AtomicBool>) {
             match client.borrow().consume() {
                 Ok(message) => {
                     if let Err(error) = match message {
-                        ServerMessage::Initialize => {
-                            client.borrow().produce(ClientMessage::Initialized)
-                        }
                         ServerMessage::Request { id } => client
                             .borrow()
-                            .produce(ClientMessage::RegisterCapability(id)),
-                        ServerMessage::Shutdown => {
-                            // TODO: Update for multiple language clients.
-                            // TODO: Recognize and resolve unexpected shutdown.
-                            is_shutdown = true;
-                            Ok(())
+                            .produce(ClientMessage::Response{id, response: ClientResponse::RegisterCapability}),
+                        ServerMessage::Response(response) => match response {
+                            ServerResponse::Initialize(_) => {
+                                client.borrow().produce(ClientMessage::Request(ClientRequest::Initialized))
+                            }
+                            ServerResponse::Shutdown => {
+                                // TODO: Update for multiple language clients.
+                                // TODO: Recognize and resolve unexpected shutdown.
+                                is_shutdown = true;
+                                Ok(())
+                            }
                         }
                     } {
                         error!("Failed to process message from language server: {}", error);
@@ -415,11 +230,16 @@ fn thread(root_dir: &Url, is_dropping: &Arc<AtomicBool>) {
                     error!("Failed to read message from language server: {}", failure);
                 }
             }
+
+            match client.borrow().stderr().demand() { 
+                Ok(message) => error!("lsp stderr: {}", message),
+                Err(error) => error!("error logger: {}", error),
+            }
         }
 
         if is_dropping.load(Ordering::Relaxed) {
             for (language_id, client) in &clients {
-                if let Err(error) = client.borrow().produce(ClientMessage::Shutdown) {
+                if let Err(error) = client.borrow().produce(ClientMessage::Request(ClientRequest::Shutdown)) {
                     error!(
                         "Failed to send shutdown message to {} language server: {}",
                         language_id, error
@@ -433,14 +253,14 @@ fn thread(root_dir: &Url, is_dropping: &Arc<AtomicBool>) {
     }
 
     for (language_id, client) in &clients {
-        if let Err(error) = client.borrow().produce(ClientMessage::Exit) {
+        if let Err(error) = client.borrow().produce(ClientMessage::Request(ClientRequest::Exit)) {
             error!(
                 "Failed to send exit message to {} language server: {}",
                 language_id, error
             );
         }
 
-        if let Err(error) = client.borrow_mut().server.wait() {
+        if let Err(error) = client.borrow_mut().wait() {
             error!(
                 "Failed to wait for {} language server process to finish: {}",
                 language_id, error
@@ -506,20 +326,6 @@ impl Producer for LanguageTool {
     fn produce(&self, _good: Self::Good) {}
 }
 
-/// A message from the language server.
-#[derive(Debug)]
-pub(crate) enum ServerMessage {
-    /// Initialize.
-    Initialize,
-    /// Shutdown.
-    Shutdown,
-    /// Request.
-    Request {
-        /// Id of the request.
-        id: Id,
-    },
-}
-
 /// Tool message of language server.
 #[derive(Clone, Debug, ParseDisplay, PartialEq)]
 #[display("{language} :: {message}")]
@@ -530,84 +336,20 @@ pub(crate) struct ToolMessage<T> {
     pub(crate) message: T,
 }
 
-/// Client message to language server.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ClientMessage {
-    /// Shuts down language server.
-    Shutdown,
-    /// Exits language server.
-    Exit,
-    /// Initialized.
-    Initialized,
-    /// Configures a document.
-    Doc(DocConfiguration),
-    /// Registers a capability.
-    RegisterCapability(Id),
-}
-
-impl Display for ClientMessage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::Shutdown => "Shutdown".to_string(),
-                Self::Exit => "Exit".to_string(),
-                Self::Initialized => "Initialized".to_string(),
-                Self::Doc(config) => format!("Document configuration {}", config),
-                Self::RegisterCapability(id) => format!(
-                    "Register capability {}",
-                    match id {
-                        Id::Null => "null".to_string(),
-                        Id::Num(num) => num.to_string(),
-                        Id::Str(s) => s.to_string(),
-                    }
-                ),
-            }
-        )
-    }
-}
-
-impl TryFrom<ClientMessage> for Message {
-    type Error = TryIntoMessageError;
-
-    #[throws(Self::Error)]
-    fn try_from(value: ClientMessage) -> Self {
-        match value {
-            ClientMessage::Doc(configuration) => match configuration.message {
-                DocMessage::Open {
-                    language,
-                    version,
-                    text,
-                } => Self::notification::<DidOpenTextDocument>(DidOpenTextDocumentParams {
-                    text_document: TextDocumentItem::new(
-                        configuration.url,
-                        language.to_string(),
-                        version,
-                        text,
-                    ),
-                })?,
-                DocMessage::Save => {
-                    Self::notification::<WillSaveTextDocument>(WillSaveTextDocumentParams {
-                        text_document: TextDocumentIdentifier::new(configuration.url),
-                        reason: TextDocumentSaveReason::Manual,
-                    })?
-                }
-                DocMessage::Close => {
-                    Self::notification::<DidCloseTextDocument>(DidCloseTextDocumentParams {
-                        text_document: TextDocumentIdentifier::new(configuration.url),
-                    })?
-                }
-            },
-            ClientMessage::Initialized => Self::notification::<Initialized>(InitializedParams {})?,
-            ClientMessage::Exit => Self::notification::<Exit>(())?,
-            ClientMessage::RegisterCapability(id) => Self::response::<RegisterCapability>((), id)?,
-            ClientMessage::Shutdown => {
-                throw!(Self::Error::Null);
-            }
-        }
-    }
-}
+///// Client message to language server.
+//#[derive(Clone, Debug, PartialEq)]
+//pub(crate) enum ClientMessage {
+//    /// Shuts down language server.
+//    Shutdown,
+//    /// Exits language server.
+//    Exit,
+//    /// Initialized.
+//    Initialized,
+//    /// Configures a document.
+//    Doc(DocConfiguration),
+//    /// Registers a capability.
+//    RegisterCapability(Id),
+//}
 
 /// An error converting into message.
 #[derive(Debug, Error)]
@@ -618,44 +360,6 @@ pub enum TryIntoMessageError {
     /// An error serializing.
     #[error("")]
     Serialize(#[from] SerdeJsonError),
-}
-
-/// Configuration of a document.
-#[derive(Clone, Debug, ParseDisplay, PartialEq)]
-#[display("Configure `{url}` with {message}")]
-pub(crate) struct DocConfiguration {
-    /// The URL of the doc.
-    url: Url,
-    /// The message.
-    message: DocMessage,
-}
-
-impl DocConfiguration {
-    /// Creates a new [`DocConfiguration`].
-    pub(crate) const fn new(url: Url, message: DocMessage) -> Self {
-        Self { url, message }
-    }
-}
-
-/// A message for interacting with a document.
-#[derive(Clone, Debug, ParseDisplay, PartialEq)]
-pub(crate) enum DocMessage {
-    /// Open a doc.
-    #[display("Open document with {language} at v{version}")]
-    Open {
-        /// The language.
-        language: Language,
-        /// The version.
-        version: i64,
-        /// The text.
-        text: String,
-    },
-    /// Save a doc.
-    #[display("Save")]
-    Save,
-    /// Close a doc.
-    #[display("Close")]
-    Close,
 }
 
 /// An error producing protocol.
@@ -673,65 +377,6 @@ pub enum ProduceProtocolError {
     /// Utils.
     #[error("")]
     Utils(#[from] utils::Fault),
-}
-
-/// Signifies a language server process.
-#[derive(Debug)]
-pub(crate) struct LangServer(Child);
-
-impl LangServer {
-    /// Creates a new [`LangServer`].
-    #[throws(SpawnServerError)]
-    fn new(language: Language) -> Self {
-        let server_cmd = match language {
-            Language::Rust => "rust-analyzer",
-        };
-
-        Self(
-            Command::new(server_cmd)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|error| SpawnServerError {
-                    command: server_cmd.to_string(),
-                    error,
-                })?,
-        )
-    }
-
-    /// Returns the stderr of the process.
-    #[throws(AccessIoError)]
-    fn stderr(&mut self) -> ChildStderr {
-        self.0
-            .stderr
-            .take()
-            .ok_or_else(|| AccessIoError::from("stderr"))?
-    }
-
-    /// Returns the stdin of the process.
-    #[throws(AccessIoError)]
-    fn stdin(&mut self) -> ChildStdin {
-        self.0
-            .stdin
-            .take()
-            .ok_or_else(|| AccessIoError::from("stdin"))?
-    }
-
-    /// Returns the stdout of the process.
-    #[throws(AccessIoError)]
-    fn stdout(&mut self) -> ChildStdout {
-        self.0
-            .stdout
-            .take()
-            .ok_or_else(|| AccessIoError::from("stdout"))?
-    }
-
-    /// Blocks until the proccess ends.
-    #[throws(Fault)]
-    pub(crate) fn wait(&mut self) {
-        self.0.wait().map(|_| ()).map_err(Fault::Wait)?
-    }
 }
 
 /// Settings of the language server.

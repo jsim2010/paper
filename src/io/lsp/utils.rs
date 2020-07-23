@@ -1,15 +1,11 @@
 //! Implements language server utilities.
 use {
-    fehler::throws,
-    log::error,
     serde_json::error::Error as SerdeJsonError,
     std::{
-        io::{self, BufRead, BufReader},
+        io,
         num::ParseIntError,
-        process::ChildStderr,
         str::Utf8Error,
-        sync::mpsc::{self, Sender, TryRecvError},
-        thread,
+        sync::mpsc::TryRecvError,
     },
     thiserror::Error,
 };
@@ -109,37 +105,4 @@ pub enum RequestResponseError {
     /// Write
     #[error("")]
     Write(#[from] io::Error),
-}
-
-/// Processes output from stderr.
-#[derive(Debug)]
-pub(crate) struct LspErrorProcessor(Sender<()>);
-
-impl LspErrorProcessor {
-    /// Creates a new [`LspErrorProcessor`].
-    pub(crate) fn new(stderr: ChildStderr) -> Self {
-        let (tx, rx) = mpsc::channel();
-        let _ = thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut line = String::new();
-
-            while rx.try_recv().is_err() {
-                // Rust's language server (rls) seems to send empty lines over stderr after shutdown request so skip those.
-                if reader.read_line(&mut line).is_ok() && !line.is_empty() {
-                    error!("lsp stderr: {}", line);
-                    line.clear();
-                }
-            }
-        });
-
-        Self(tx)
-    }
-
-    /// Terminates the error processor thread.
-    #[throws(Fault)]
-    pub(crate) fn terminate(&self) {
-        self.0
-            .send(())
-            .map_err(|_| Fault::Send("language server stderr".to_string()))?
-    }
 }
