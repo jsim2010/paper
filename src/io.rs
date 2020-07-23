@@ -20,7 +20,7 @@ use {
     fehler::{throw, throws},
     fs::{ConsumeFileError, FileCommand, FileError, FileSystem, RootDirError},
     log::error,
-    lsp::{Fault, LanguageTool, SendNotificationError},
+    lsp::{Fault, LanguageTool},
     lsp_types::{TextDocumentItem, TextDocumentSaveReason, DidOpenTextDocumentParams, DidCloseTextDocumentParams, WillSaveTextDocumentParams, ShowMessageParams, ShowMessageRequestParams, TextDocumentIdentifier},
     market::{ClosedMarketFailure, Collector, ConsumeError, Consumer, ProduceError, Producer},
     parse_display::Display as ParseDisplay,
@@ -77,9 +77,6 @@ pub enum ProduceOutputError {
     /// An error in the lsp.
     #[error("{0}")]
     Lsp(#[from] Fault),
-    /// Failed to send notification.
-    #[error("{0}")]
-    SendNotification(#[from] SendNotificationError),
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),

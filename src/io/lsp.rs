@@ -1,8 +1,4 @@
 //! Implements management and use of language servers.
-pub(crate) mod utils;
-
-pub(crate) use utils::SendNotificationError;
-
 use {
     core::cell::{Cell, RefCell},
     docuglot::{ClientResponse, ClientRequest, ClientMessage, Language, ServerResponse, ServerMessage, CreateClientError, Client},
@@ -29,17 +25,11 @@ use {
         thread::{self, JoinHandle},
     },
     thiserror::Error,
-    utils::RequestResponseError,
 };
 
 /// An error from which the language server was unable to recover.
 #[derive(Debug, Error)]
 pub enum Fault {
-    /// An error from [`utils`].
-    ///
-    /// [`utils`]: utils/index.html
-    #[error("{0}")]
-    Util(#[from] utils::Fault),
     /// An error while accessing an IO of the language server process.
     #[error("{0}")]
     Io(#[from] AccessIoError),
@@ -55,18 +45,9 @@ pub enum Fault {
     /// Language server for given language is unknown.
     #[error("language server for `{0}` is unknown")]
     Language(String),
-    /// Failed to send notification to language server.
-    #[error("failed to send notification message: {0}")]
-    SendNotification(#[from] SendNotificationError),
-    /// Failed to request response.
-    #[error("{0}")]
-    Request(#[from] RequestResponseError),
     /// An error while serializing a language server message.
     #[error("unable to serialize language server message: {0}")]
     Serialize(#[from] SerdeJsonError),
-    /// Util
-    #[error("")]
-    Utils(#[from] utils::SendMessageError),
     /// Conversion
     #[error("")]
     Conversion(#[from] TryIntoMessageError),
@@ -163,9 +144,6 @@ pub struct CreateLanguageToolError {
 /// An error editing language client.
 #[derive(Debug, Error)]
 pub enum EditLanguageToolError {
-    /// An error with notification.
-    #[error("")]
-    Notification(#[from] SendNotificationError),
     /// An error with fault.
     #[error("")]
     Fault(#[from] Fault),
@@ -204,7 +182,9 @@ fn thread(root_dir: &Url, is_dropping: &Arc<AtomicBool>) {
 
     while !is_shutdown {
         for (_, client) in &clients {
-            match client.borrow().consume() {
+            let lang_client = client.borrow();
+
+            match lang_client.consume() {
                 Ok(message) => {
                     if let Err(error) = match message {
                         ServerMessage::Request { id } => client
@@ -212,7 +192,7 @@ fn thread(root_dir: &Url, is_dropping: &Arc<AtomicBool>) {
                             .produce(ClientMessage::Response{id, response: ClientResponse::RegisterCapability}),
                         ServerMessage::Response(response) => match response {
                             ServerResponse::Initialize(_) => {
-                                client.borrow().produce(ClientMessage::Request(ClientRequest::Initialized))
+                                lang_client.produce(ClientMessage::Request(ClientRequest::Initialized))
                             }
                             ServerResponse::Shutdown => {
                                 // TODO: Update for multiple language clients.
@@ -231,9 +211,10 @@ fn thread(root_dir: &Url, is_dropping: &Arc<AtomicBool>) {
                 }
             }
 
-            match client.borrow().stderr().demand() { 
+            match client.borrow().stderr().consume() { 
                 Ok(message) => error!("lsp stderr: {}", message),
-                Err(error) => error!("error logger: {}", error),
+                Err(ConsumeError::Failure(failure)) => error!("error logger: {}", failure),
+                Err(_) => {}
             }
         }
 
@@ -289,7 +270,7 @@ impl LanguageTool {
             drop: Arc::clone(&is_dropping),
             thread: Some(thread::spawn(move || {
                 if let Err(error) = thread(&dir, &is_dropping) {
-                    error!("{}", error);
+                    error!("thread error {}", error);
                 }
             })),
         }
@@ -365,18 +346,9 @@ pub enum TryIntoMessageError {
 /// An error producing protocol.
 #[derive(Debug, Error)]
 pub enum ProduceProtocolError {
-    /// An error with notification.
-    #[error("")]
-    Notification(#[from] SendNotificationError),
     /// An error with fault.
     #[error("")]
     Fault(#[from] Fault),
-    /// Request.
-    #[error("")]
-    Request(#[from] RequestResponseError),
-    /// Utils.
-    #[error("")]
-    Utils(#[from] utils::Fault),
 }
 
 /// Settings of the language server.
