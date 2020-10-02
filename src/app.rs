@@ -3,11 +3,10 @@ mod translate;
 
 use {
     crate::io::{Dimensions, DocEdit, File, Input, Output, Unit},
-    docuglot::Language,
     log::trace,
-    lsp_types::{MessageType, ShowMessageParams, ShowMessageRequestParams},
+    lsp_types::{ShowMessageRequestParams, TextDocumentIdentifier, TextDocumentItem},
     std::{cell::RefCell, mem, rc::Rc},
-    translate::{Command, DocOp, Interpreter, Operation},
+    translate::{Command, Interpreter, Operation},
     url::Url,
 };
 
@@ -76,9 +75,6 @@ impl Processor {
                     outputs.push(Output::OpenFile { path });
                 }
             }
-            Operation::Document(doc_op) => {
-                outputs.push(self.pane.operate(&doc_op));
-            }
             Operation::Quit => {
                 if let Some(output) = self.pane.close_doc() {
                     outputs.push(output);
@@ -88,9 +84,6 @@ impl Processor {
             }
             Operation::CreateDoc(file) => {
                 outputs.append(&mut self.pane.create_doc(file));
-            }
-            Operation::SendLsp(message) => {
-                outputs.push(Output::SendLsp(message));
             }
         };
 
@@ -132,25 +125,6 @@ impl Pane {
         if let Some(doc) = &mut self.doc {
             doc.dimensions = dimensions;
             outputs.push(doc.change_output());
-        }
-    }
-
-    /// Performs `operation` on `self`.
-    fn operate(&mut self, operation: &DocOp) -> Output {
-        if let Some(doc) = &mut self.doc {
-            match operation {
-                DocOp::Save => doc.save(),
-            }
-        } else {
-            Output::Notify {
-                message: ShowMessageParams {
-                    typ: MessageType::Info,
-                    message: format!(
-                        "There is no open document on which to perform {}",
-                        operation
-                    ),
-                },
-            }
         }
     }
 
@@ -213,22 +187,9 @@ impl Document {
         }
     }
 
-    /// Saves the document.
-    fn save(&self) -> Output {
-        Output::EditDoc {
-            doc: self.clone(),
-            edit: DocEdit::Save,
-        }
-    }
-
     /// Returns the [`Purl`] of `self`.
     pub(crate) const fn url(&self) -> &Url {
         self.file.url()
-    }
-
-    /// Returns the [`Language`] of `self`.
-    pub(crate) fn language(&self) -> Option<Language> {
-        self.file.language()
     }
 
     /// Returns the text of `self`.
@@ -268,6 +229,25 @@ impl Document {
             doc: self,
             edit: DocEdit::Close,
         }
+    }
+}
+
+impl From<Document> for TextDocumentItem {
+    #[inline]
+    fn from(value: Document) -> Self {
+        Self::new(
+            value.url().clone(),
+            value.file.language().to_string(),
+            value.version,
+            value.text(),
+        )
+    }
+}
+
+impl From<Document> for TextDocumentIdentifier {
+    #[inline]
+    fn from(value: Document) -> Self {
+        Self::new(value.url().clone())
     }
 }
 

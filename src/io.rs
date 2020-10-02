@@ -1,11 +1,9 @@
 //! Implements the interface for all input and output to the application.
 mod fs;
-mod lsp;
 mod ui;
 
 pub(crate) use {
     fs::File,
-    lsp::ToolMessage,
     ui::{Dimensions, Unit, UserAction},
 };
 
@@ -16,13 +14,12 @@ use {
         convert::TryFrom,
         sync::atomic::{AtomicBool, Ordering},
     },
-    docuglot::{ClientMessage, ServerMessage, ClientRequest},
+    docuglot::{ClientStatement, ServerStatement, Tongue},
     fehler::{throw, throws},
     fs::{ConsumeFileError, FileCommand, FileError, FileSystem, RootDirError},
     log::error,
-    lsp::{Fault, LanguageTool},
-    lsp_types::{TextDocumentItem, TextDocumentSaveReason, DidOpenTextDocumentParams, DidCloseTextDocumentParams, WillSaveTextDocumentParams, ShowMessageParams, ShowMessageRequestParams, TextDocumentIdentifier},
-    market::{ClosedMarketFailure, Collector, ConsumeError, Consumer, ProduceError, Producer},
+    lsp_types::ShowMessageRequestParams,
+    market::{ClosedMarketError, Collector, ConsumeFailure, Consumer, ProduceFailure, Producer},
     parse_display::Display as ParseDisplay,
     starship::{context::Context, print},
     std::io::{self, ErrorKind},
@@ -32,7 +29,6 @@ use {
         CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal, UserActionConsumer,
         UserActionFailure,
     },
-    url::Url,
 };
 
 /// An error creating an [`Interface`].
@@ -54,9 +50,6 @@ pub enum CreateInterfaceError {
     /// [`Terminal`]: ui/struct.Terminal.html
     #[error(transparent)]
     Terminal(#[from] CreateTerminalError),
-    /// An error creating a [`LangaugeTool`].
-    #[error(transparent)]
-    LanguageTool(#[from] lsp::CreateLanguageToolError),
     /// An error creating a file.
     #[error(transparent)]
     CreateFile(#[from] CreateFileError),
@@ -65,18 +58,9 @@ pub enum CreateInterfaceError {
 /// An error while writing output.
 #[derive(Debug, ThisError)]
 pub enum ProduceOutputError {
-    /// An error with client.
-    #[error("")]
-    Client(#[from] lsp::ProduceProtocolError),
-    /// An error with client.
-    #[error("")]
-    OldClient(#[from] lsp::EditLanguageToolError),
     /// An error with a file.
     #[error("")]
     File(#[from] FileError),
-    /// An error in the lsp.
-    #[error("{0}")]
-    Lsp(#[from] Fault),
     /// An error while reading a file.
     #[error("{0}")]
     CreateFile(#[from] CreateFileError),
@@ -90,7 +74,7 @@ pub enum ProduceOutputError {
 pub enum CreateFileError {
     /// An error triggering a file read.
     #[error(transparent)]
-    Read(#[from] ProduceError<FileError>),
+    Read(#[from] ProduceFailure<FileError>),
 }
 
 /// An error while reading a file.
@@ -127,18 +111,12 @@ pub(crate) enum ConsumeInputIssue {
 /// An error consuming input.
 #[derive(Debug, ThisError)]
 pub enum ConsumeInputError {
-    /// An error reading a message from the language tool.
-    #[error("")]
-    Read(#[from] Fault),
-    /// An error producing a language tool protocol.
-    #[error("")]
-    Produce(#[from] lsp::ProduceProtocolError),
     /// An error consuming a user input.
     #[error("")]
     Ui(#[from] UserActionFailure),
     /// The queue is closed.
     #[error("")]
-    Closed(#[from] ClosedMarketFailure),
+    Closed(#[from] ClosedMarketError),
     /// An error consuming a file.
     #[error("")]
     File(#[from] ConsumeFileError),
@@ -160,7 +138,7 @@ pub(crate) struct Interface {
     /// Manages the user interface.
     user_interface: Terminal,
     /// The interface of the application with all language servers.
-    language_tool: LanguageTool,
+    tongue: Tongue,
     /// The interface with the file system.
     file_system: FileSystem,
     /// The application has quit.
@@ -178,7 +156,7 @@ impl Interface {
         let interface = Self {
             consumers,
             user_interface: Terminal::new()?,
-            language_tool: LanguageTool::new(file_system.root_dir())?,
+            tongue: Tongue::new(file_system.root_dir()),
             file_system,
             has_quit: AtomicBool::new(false),
         };
@@ -197,53 +175,44 @@ impl Interface {
     }
 
     /// Edits the doc at `url`.
-    #[throws(ProduceError<ProduceOutputError>)]
+    #[throws(ProduceFailure<ProduceOutputError>)]
     fn edit_doc(&self, doc: &Document, edit: &DocEdit) {
-        match edit {
-            DocEdit::Open { .. } | DocEdit::Update => {
-                self.user_interface
-                    .produce(DisplayCmd::Rows { rows: doc.rows() })
-                    .map_err(ProduceError::map_into)?;
-            }
-            DocEdit::Save => {
-                self.file_system
-                    .produce(FileCommand::Write {
-                        url: doc.url().clone(),
-                        text: doc.text(),
-                    })
-                    .map_err(ProduceError::map_into)?;
-            }
-            DocEdit::Close => {}
+        if let DocEdit::Open { .. } | DocEdit::Update = edit {
+            self.user_interface
+                .produce(DisplayCmd::Rows { rows: doc.rows() })
+                .map_err(ProduceFailure::map_into)?;
         }
+    }
+
+    /// Waits until `self.tongue` finishes.
+    pub(crate) fn join(&mut self) {
+        self.tongue.join();
     }
 }
 
 impl Consumer for Interface {
     type Good = Input;
-    type Failure = ConsumeInputIssue;
+    type Error = ConsumeInputIssue;
 
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
         match self.consumers.consume() {
             Ok(input) => input,
-            Err(ConsumeError::Failure(failure)) => {
-                throw!(ConsumeError::Failure(Self::Failure::Error(failure)))
+            Err(ConsumeFailure::Error(failure)) => {
+                throw!(ConsumeFailure::Error(Self::Error::Error(failure)))
             }
-            Err(ConsumeError::EmptyStock) => match self.language_tool.consume() {
+            Err(ConsumeFailure::EmptyStock) => match self.tongue.consume() {
                 Ok(lang_input) => lang_input.into(),
-                Err(ConsumeError::Failure(failure)) => {
-                    throw!(ConsumeError::Failure(Self::Failure::Error(failure.into())))
-                }
-                Err(ConsumeError::EmptyStock) => match self.file_system.consume() {
+                Err(_) => match self.file_system.consume() {
                     Ok(file) => file.into(),
-                    Err(ConsumeError::Failure(failure)) => {
-                        throw!(ConsumeError::Failure(Self::Failure::Error(failure.into())))
+                    Err(ConsumeFailure::Error(failure)) => {
+                        throw!(ConsumeFailure::Error(Self::Error::Error(failure.into())))
                     }
-                    Err(ConsumeError::EmptyStock) => {
+                    Err(ConsumeFailure::EmptyStock) => {
                         if self.has_quit.load(Ordering::Relaxed) {
-                            throw!(ConsumeError::Failure(Self::Failure::Quit));
+                            throw!(ConsumeFailure::Error(Self::Error::Quit));
                         } else {
-                            throw!(ConsumeError::EmptyStock);
+                            throw!(ConsumeFailure::EmptyStock);
                         }
                     }
                 },
@@ -254,21 +223,20 @@ impl Consumer for Interface {
 
 impl Producer for Interface {
     type Good = Output;
-    type Failure = ProduceOutputError;
+    type Error = ProduceOutputError;
 
-    #[throws(ProduceError<Self::Failure>)]
+    #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, output: Self::Good) {
-        if let Ok(protocol) = ToolMessage::try_from(output.clone()) {
-            if let Err(error) = self.language_tool.produce(protocol) {
+        if let Ok(procedure) = ClientStatement::try_from(output.clone()) {
+            if let Err(error) = self.tongue.produce(procedure) {
                 error!("Unable to write to language server: {}", error);
             }
         }
 
         match output {
-            Output::SendLsp(..) => {}
             Output::OpenFile { path } => {
                 self.open_file(path)
-                    .map_err(|error| ProduceError::Failure(Self::Failure::from(error)))?;
+                    .map_err(|error| ProduceFailure::Error(Self::Error::from(error)))?;
             }
             Output::EditDoc { doc, edit } => {
                 self.edit_doc(&doc, &edit)?;
@@ -297,26 +265,20 @@ impl Producer for Interface {
                     .produce(DisplayCmd::Header {
                         header: print::get_prompt(context),
                     })
-                    .map_err(ProduceError::map_into)?
+                    .map_err(ProduceFailure::map_into)?
             }
-            Output::Notify { message } => self
-                .user_interface
-                .produce(DisplayCmd::Rows {
-                    rows: vec![message.message],
-                })
-                .map_err(ProduceError::map_into)?,
             Output::Question { request } => self
                 .user_interface
                 .produce(DisplayCmd::Rows {
                     rows: vec![request.message],
                 })
-                .map_err(ProduceError::map_into)?,
+                .map_err(ProduceFailure::map_into)?,
             Output::Command { command } => self
                 .user_interface
                 .produce(DisplayCmd::Rows {
                     rows: vec![command],
                 })
-                .map_err(ProduceError::map_into)?,
+                .map_err(ProduceFailure::map_into)?,
             Output::Quit => {
                 self.has_quit.store(true, Ordering::Relaxed);
             }
@@ -337,7 +299,7 @@ pub(crate) enum Input {
     /// An input from the user.
     User(UserAction),
     /// A message from the language server.
-    Lsp(ToolMessage<ServerMessage>),
+    Lsp(ServerStatement),
 }
 
 impl From<File> for Input {
@@ -347,9 +309,9 @@ impl From<File> for Input {
     }
 }
 
-impl From<ToolMessage<ServerMessage>> for Input {
+impl From<ServerStatement> for Input {
     #[inline]
-    fn from(value: ToolMessage<ServerMessage>) -> Self {
+    fn from(value: ServerStatement) -> Self {
         Self::Lsp(value)
     }
 }
@@ -364,9 +326,6 @@ impl From<UserAction> for Input {
 /// An output.
 #[derive(Clone, Debug, ParseDisplay)]
 pub(crate) enum Output {
-    /// Sends message to language server.
-    #[display("Send to language server `{0}`")]
-    SendLsp(ToolMessage<ClientMessage>),
     /// Retrieves the URL and text of a file.
     #[display("Get file `{path}`")]
     OpenFile {
@@ -384,12 +343,6 @@ pub(crate) enum Output {
     /// Sets the header of the application.
     #[display("")]
     UpdateHeader,
-    /// Notifies the user of a message.
-    #[display("")]
-    Notify {
-        /// The message.
-        message: ShowMessageParams,
-    },
     /// Asks the user a question.
     #[display("")]
     Question {
@@ -407,35 +360,21 @@ pub(crate) enum Output {
     Quit,
 }
 
-impl TryFrom<Output> for ToolMessage<ClientMessage> {
+impl TryFrom<Output> for ClientStatement {
     type Error = TryIntoProtocolError;
 
     #[inline]
     #[throws(Self::Error)]
     fn try_from(value: Output) -> Self {
         match value {
-            Output::EditDoc { doc, edit } => {
-                if let Some(language) = doc.language() {
-                    let url: &Url = doc.url();
-
-                    Self {
-                        language,
-                        message: ClientMessage::Request(match edit {
-                            DocEdit::Open { version } => ClientRequest::OpenDoc(DidOpenTextDocumentParams{text_document: TextDocumentItem::new(url.clone(), language.to_string(), version, doc.text())}),
-                            DocEdit::Save { .. } => ClientRequest::SaveDoc(WillSaveTextDocumentParams{text_document: TextDocumentIdentifier::new(url.clone()), reason: TextDocumentSaveReason::Manual}),
-                            DocEdit::Close => ClientRequest::CloseDoc(DidCloseTextDocumentParams{text_document: TextDocumentIdentifier::new(url.clone())}),
-                            DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
-                            }),
-                    }
-                } else {
-                    throw!(TryIntoProtocolError::InvalidOutput);
-                }
-            }
-            Output::SendLsp(message) => message,
+            Output::EditDoc { doc, edit } => match edit {
+                DocEdit::Open { .. } => ClientStatement::open_doc(doc.into()),
+                DocEdit::Close => ClientStatement::close_doc(doc.into()),
+                DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
+            },
             Output::OpenFile { .. }
             | Output::Command { .. }
             | Output::UpdateHeader
-            | Output::Notify { .. }
             | Output::Question { .. }
             | Output::Quit => throw!(TryIntoProtocolError::InvalidOutput),
         }
@@ -458,8 +397,6 @@ pub(crate) enum DocEdit {
         /// The version of the document.
         version: i64,
     },
-    /// Saves the document.
-    Save,
     /// Updates the display of the document.
     Update,
     /// Closes the document.

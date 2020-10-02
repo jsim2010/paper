@@ -1,9 +1,8 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
-    crate::io::{Dimensions, File, Input, ToolMessage, UserAction},
+    crate::io::{Dimensions, File, Input, UserAction},
     core::fmt::{self, Debug},
     crossterm::event::KeyCode,
-    docuglot::{ClientResponse, ClientRequest, ClientMessage, ServerMessage, ServerResponse},
     enum_map::{enum_map, Enum, EnumMap},
     lsp_types::{MessageType, ShowMessageRequestParams},
     parse_display::Display as ParseDisplay,
@@ -17,8 +16,6 @@ pub(crate) enum Operation {
         /// The new [`Dimensions`].
         dimensions: Dimensions,
     },
-    /// Sends message to language server.
-    SendLsp(ToolMessage<ClientMessage>),
     /// Resets the application.
     Reset,
     /// Confirms that the action is desired.
@@ -31,8 +28,6 @@ pub(crate) enum Operation {
     Collect(char),
     /// Executes the current command.
     Execute,
-    /// An operation to edit the text or selection of the document.
-    Document(DocOp),
     /// Creates a document from the file.
     CreateDoc(File),
 }
@@ -109,23 +104,7 @@ impl Interpreter {
             Input::File(file) => {
                 output.add_op(Operation::CreateDoc(file));
             }
-            Input::Lsp(ToolMessage {
-                language,
-                message,
-            }) => {
-                if let Some(return_message) = match message {
-                    ServerMessage::Request { id } => Some(ClientMessage::Response{id, response: ClientResponse::RegisterCapability}),
-                    ServerMessage::Response(response) => match response {
-                        ServerResponse::Initialize(_) => Some(ClientMessage::Request(ClientRequest::Initialized)),
-                        ServerResponse::Shutdown => None,
-                    }
-                } {
-                    output.add_op(Operation::SendLsp(ToolMessage {
-                        language,
-                        message: return_message,
-                    }));
-                }
-            }
+            Input::Lsp(_statement) => {}
             Input::User(user_input) => {
                 #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is in bounds.
                 let mode_interpreter = self.map[self.mode];
@@ -243,9 +222,6 @@ impl ViewInterpreter {
             KeyCode::Char('w') => {
                 output.add_op(Operation::Confirm(ConfirmAction::Quit));
                 output.set_mode(Mode::Confirm);
-            }
-            KeyCode::Char('s') => {
-                output.add_op(Operation::Document(DocOp::Save));
             }
             KeyCode::Char('o') => {
                 output.add_op(Operation::StartCommand(Command::Open));
@@ -403,21 +379,6 @@ mod test {
                 Some(Operation::StartCommand(Command::Open))
             );
             assert_eq!(int.mode, Mode::Collect);
-        }
-
-        /// The `Ctrl-s` key shall save the document.
-        #[test]
-        fn save() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::User(UserAction::Key {
-                    code: KeyCode::Char('s'),
-                    modifiers: KeyModifiers::CONTROL,
-                })),
-                Some(Operation::Document(DocOp::Save))
-            );
-            assert_eq!(int.mode, Mode::View);
         }
     }
 

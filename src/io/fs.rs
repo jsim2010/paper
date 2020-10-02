@@ -3,7 +3,9 @@ use {
     docuglot::Language,
     fehler::throws,
     log::trace,
-    market::{ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer, UnlimitedQueue},
+    market::{
+        ClosedMarketError, ConsumeFailure, Consumer, ProduceFailure, Producer, UnlimitedQueue,
+    },
     parse_display::Display as ParseDisplay,
     std::{
         env, fs,
@@ -61,24 +63,24 @@ impl FileSystem {
 
 impl Consumer for FileSystem {
     type Good = File;
-    type Failure = ConsumeFileError;
+    type Error = ConsumeFileError;
 
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
         let path_url = self
             .urls_to_read
             .consume()
-            .map_err(ConsumeError::map_into)?;
+            .map_err(ConsumeFailure::map_into)?;
 
-        File::read(path_url).map_err(Self::Failure::from)?
+        File::read(path_url).map_err(Self::Error::from)?
     }
 }
 
 impl Producer for FileSystem {
     type Good = FileCommand;
-    type Failure = FileError;
+    type Error = FileError;
 
-    #[throws(ProduceError<Self::Failure>)]
+    #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good) {
         match good {
             Self::Good::Read { path } => self
@@ -86,12 +88,9 @@ impl Producer for FileSystem {
                 .produce(
                     self.root_dir
                         .join(&path)
-                        .map_err(|error| ProduceError::Failure(error.into()))?,
+                        .map_err(|error| ProduceFailure::Error(error.into()))?,
                 )
-                .map_err(ProduceError::map_into)?,
-            Self::Good::Write { url, text } => {
-                fs::write(url.path(), text).map_err(|error| ProduceError::Failure(error.into()))?
-            }
+                .map_err(ProduceFailure::map_into)?,
         }
     }
 }
@@ -101,7 +100,7 @@ impl Producer for FileSystem {
 pub enum FileError {
     /// The queue is closed.
     #[error(transparent)]
-    Closed(#[from] ClosedMarketFailure),
+    Closed(#[from] ClosedMarketError),
     /// An IO error.
     #[error("")]
     Io(#[from] io::Error),
@@ -118,14 +117,6 @@ pub(crate) enum FileCommand {
     Read {
         /// The relative path of the file.
         path: String,
-    },
-    /// Writes `text` to the file at `url`.
-    #[display("Write {url}")]
-    Write {
-        /// The URL of the file to be written.
-        url: Url,
-        /// The text to be written.
-        text: String,
     },
 }
 
@@ -172,11 +163,11 @@ impl File {
     }
 
     /// Returns the `Language` of `self`.
-    pub(crate) fn language(&self) -> Option<Language> {
+    pub(crate) fn language(&self) -> Language {
         if self.url.path().ends_with(".rs") {
-            Some(Language::Rust)
+            Language::Rust
         } else {
-            None
+            Language::Plaintext
         }
     }
 }
@@ -189,7 +180,7 @@ pub enum ConsumeFileError {
     Read(#[from] ReadFileError),
     /// The read queue has closed.
     #[error("")]
-    Closed(#[from] ClosedMarketFailure),
+    Closed(#[from] ClosedMarketError),
 }
 
 /// An error while reading a file.
