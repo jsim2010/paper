@@ -224,7 +224,7 @@ impl Document {
     }
 
     /// Returns the output to close `self`.
-    fn close(self) -> Output {
+    const fn close(self) -> Output {
         Output::EditDoc {
             doc: self,
             edit: DocEdit::Close,
