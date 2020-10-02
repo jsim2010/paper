@@ -17,7 +17,7 @@ docuglot = "0.1.0"
 enum-map = "0.6.2"
 fehler = "1.0.0"
 home = "0.5.3"
-jsonrpc-core = "14.0.5"
+jsonrpc-core = "15.1.0"
 log = { version = "0.4.8", features = ["serde"] }
 lsp-types = "0.77.0"
 market = "0.19.0"
