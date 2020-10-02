@@ -1,6 +1,6 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
 use {
-    crate::io::{ClientMessage, Dimensions, File, Input, ServerMessage, ToolMessage, UserAction},
+    crate::io::{Dimensions, File, Input, UserAction},
     core::fmt::{self, Debug},
     crossterm::event::KeyCode,
     enum_map::{enum_map, Enum, EnumMap},
@@ -16,8 +16,6 @@ pub(crate) enum Operation {
         /// The new [`Dimensions`].
         dimensions: Dimensions,
     },
-    /// Sends message to language server.
-    SendLsp(ToolMessage<ClientMessage>),
     /// Resets the application.
     Reset,
     /// Confirms that the action is desired.
@@ -30,8 +28,6 @@ pub(crate) enum Operation {
     Collect(char),
     /// Executes the current command.
     Execute,
-    /// An operation to edit the text or selection of the document.
-    Document(DocOp),
     /// Creates a document from the file.
     CreateDoc(File),
 }
@@ -108,21 +104,7 @@ impl Interpreter {
             Input::File(file) => {
                 output.add_op(Operation::CreateDoc(file));
             }
-            Input::Lsp(ToolMessage {
-                language_id,
-                message,
-            }) => {
-                if let Some(return_message) = match message {
-                    ServerMessage::Initialize => Some(ClientMessage::Initialized),
-                    ServerMessage::Request { id } => Some(ClientMessage::RegisterCapability(id)),
-                    ServerMessage::Shutdown => None,
-                } {
-                    output.add_op(Operation::SendLsp(ToolMessage {
-                        language_id,
-                        message: return_message,
-                    }));
-                }
-            }
+            Input::Lsp(_statement) => {}
             Input::User(user_input) => {
                 #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is in bounds.
                 let mode_interpreter = self.map[self.mode];
@@ -240,9 +222,6 @@ impl ViewInterpreter {
             KeyCode::Char('w') => {
                 output.add_op(Operation::Confirm(ConfirmAction::Quit));
                 output.set_mode(Mode::Confirm);
-            }
-            KeyCode::Char('s') => {
-                output.add_op(Operation::Document(DocOp::Save));
             }
             KeyCode::Char('o') => {
                 output.add_op(Operation::StartCommand(Command::Open));
@@ -400,21 +379,6 @@ mod test {
                 Some(Operation::StartCommand(Command::Open))
             );
             assert_eq!(int.mode, Mode::Collect);
-        }
-
-        /// The `Ctrl-s` key shall save the document.
-        #[test]
-        fn save() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::User(UserAction::Key {
-                    code: KeyCode::Char('s'),
-                    modifiers: KeyModifiers::CONTROL,
-                })),
-                Some(Operation::Document(DocOp::Save))
-            );
-            assert_eq!(int.mode, Mode::View);
         }
     }
 

@@ -24,7 +24,7 @@ use {
     error::{DestroyError, InitError, PollFailure, ReachedEnd, ReadFailure, WriteFailure},
     fehler::{throw, throws},
     log::{trace, warn},
-    market::{ConsumeError, Consumer, ProduceError, Producer},
+    market::{ConsumeFailure, Consumer, ProduceFailure, Producer},
     parse_display::Display as ParseDisplay,
     std::io::{self, Stdout, Write},
 };
@@ -57,14 +57,14 @@ impl UserActionConsumer {
 
 impl Consumer for UserActionConsumer {
     type Good = UserAction;
-    type Failure = UserActionFailure;
+    type Error = UserActionFailure;
 
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
-        if is_action_available().map_err(|error| ConsumeError::Failure(error.into()))? {
-            read_action().map_err(|error| ConsumeError::Failure(error.into()))?
+        if is_action_available().map_err(|error| ConsumeFailure::Error(error.into()))? {
+            read_action().map_err(|error| ConsumeFailure::Error(error.into()))?
         } else {
-            throw!(ConsumeError::EmptyStock);
+            throw!(ConsumeFailure::EmptyStock);
         }
     }
 }
@@ -97,9 +97,9 @@ impl Drop for Terminal {
 
 impl Producer for Terminal {
     type Good = DisplayCmd;
-    type Failure = DisplayCmdFailure;
+    type Error = DisplayCmdFailure;
 
-    #[throws(ProduceError<Self::Failure>)]
+    #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good) {
         match good {
             DisplayCmd::Rows { rows } => {
@@ -109,18 +109,18 @@ impl Producer for Terminal {
                     self.presenter
                         .single_line(
                             row.try_into()
-                                .map_err(|error: ReachedEnd| ProduceError::Failure(error.into()))?,
+                                .map_err(|error: ReachedEnd| ProduceFailure::Error(error.into()))?,
                             text.to_string(),
                         )
-                        .map_err(|failure| ProduceError::Failure(failure.into()))?;
+                        .map_err(|failure| ProduceFailure::Error(failure.into()))?;
                     row.step_forward()
-                        .map_err(|failure| ProduceError::Failure(failure.into()))?;
+                        .map_err(|failure| ProduceFailure::Error(failure.into()))?;
                 }
             }
             DisplayCmd::Header { header } => {
                 self.presenter
                     .single_line(Unit(0), header)
-                    .map_err(|failure| ProduceError::Failure(failure.into()))?;
+                    .map_err(|failure| ProduceFailure::Error(failure.into()))?;
             }
         }
     }

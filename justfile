@@ -106,7 +106,7 @@ test:
     cargo test --verbose --all-features
 
 # Validates the project
-validate: (set_rust "1.44.0") validate_format validate_deps lint build test
+validate: (set_rust "1.46.0") validate_format validate_deps lint build test
 
 # Validates dependencies of the project
 validate_deps: _install_deps

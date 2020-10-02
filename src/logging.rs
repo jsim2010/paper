@@ -14,7 +14,7 @@ use {
 };
 
 /// Parses the `LevelFilter` of the logger from the number of occurrences of the verbose flag.
-fn parse_log_level(occurrences: u64) -> LevelFilter {
+const fn parse_log_level(occurrences: u64) -> LevelFilter {
     match occurrences {
         0 => LevelFilter::Warn,
         1 => LevelFilter::Info,

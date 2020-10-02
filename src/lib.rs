@@ -126,6 +126,8 @@ impl Paper {
                 }
             }
         }
+
+        self.io.join();
     }
 }
 
