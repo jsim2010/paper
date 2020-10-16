@@ -13,7 +13,7 @@ edition = "2018"
 [dependencies]
 clap = "2.33.0"
 crossterm = "0.18.0"
-docuglot = "0.1.0"
+docuglot = "0.2.0"
 enum-map = "0.6.2"
 fehler = "1.0.0"
 home = "0.5.3"
