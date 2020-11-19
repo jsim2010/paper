@@ -4,7 +4,8 @@ use {
     fehler::throws,
     log::trace,
     market::{
-        ClosedMarketError, ConsumeFailure, Consumer, ProduceFailure, Producer, UnlimitedQueue,
+        Failure as _,
+        Consumer, ProduceFailure, Producer,
     },
     parse_display::Display as ParseDisplay,
     std::{
@@ -40,9 +41,9 @@ fn root_dir() -> Url {
 #[derive(Debug)]
 pub(crate) struct FileSystem {
     /// Queue of URLs to read.
-    urls_to_read: UnlimitedQueue<Url>,
+    channel: market::channel::Channel<market::channel::Crossbeam<Url>>,
     /// The root directory of the file system.
-    root_dir: Url,
+    root_dir: Option<Url>,
 }
 
 impl FileSystem {
@@ -50,45 +51,80 @@ impl FileSystem {
     #[throws(RootDirError)]
     pub(crate) fn new() -> Self {
         Self {
-            urls_to_read: UnlimitedQueue::new(),
-            root_dir: root_dir()?,
+            channel: market::channel::Channel::new(market::channel::Size::Infinite),
+            root_dir: Some(root_dir()?),
         }
     }
 
-    /// Returns the root directory.
-    pub(crate) const fn root_dir(&self) -> &Url {
+    #[throws(market::TakenParticipant)]
+    pub(crate) fn file_consumer(&mut self) -> FileConsumer {
+        FileConsumer::new(self.channel.consumer()?)
+    }
+
+    #[throws(market::TakenParticipant)]
+    pub(crate) fn file_command_producer(&mut self) -> FileCommandProducer {
+        FileCommandProducer::new(self.root_dir.take().unwrap(), self.channel.producer()?)
+    }
+}
+
+pub(crate) struct FileConsumer {
+    url_consumer: market::channel::CrossbeamConsumer<Url>,
+}
+
+impl FileConsumer {
+    fn new(url_consumer: market::channel::CrossbeamConsumer<Url>) -> Self {
+        Self {
+            url_consumer,
+        }
+    }
+}
+
+impl Consumer for FileConsumer {
+    type Good = File;
+    type Failure = market::ConsumeFailure<ConsumeFileError>;
+
+    #[throws(Self::Failure)]
+    fn consume(&self) -> Self::Good {
+        let path_url = self
+            .url_consumer
+            .consume()
+            .map_err(Self::Failure::map_from)?;
+
+        File::read(path_url).map_err(market::Fault::<Self::Failure>::from)?
+    }
+}
+
+pub(crate) struct FileCommandProducer {
+    root_dir: Url,
+    url_producer: market::channel::CrossbeamProducer<Url>,
+}
+
+impl FileCommandProducer {
+    fn new(root_dir: Url, url_producer: market::channel::CrossbeamProducer<Url>) -> Self {
+        Self {
+            root_dir,
+            url_producer,
+        }
+    }
+
+    pub(crate) fn root_dir(&self) -> &Url {
         &self.root_dir
     }
 }
 
-impl Consumer for FileSystem {
-    type Good = File;
-    type Error = ConsumeFileError;
-
-    #[throws(ConsumeFailure<Self::Error>)]
-    fn consume(&self) -> Self::Good {
-        let path_url = self
-            .urls_to_read
-            .consume()
-            .map_err(ConsumeFailure::map_into)?;
-
-        File::read(path_url).map_err(Self::Error::from)?
-    }
-}
-
-impl Producer for FileSystem {
+impl Producer for FileCommandProducer {
     type Good = FileCommand;
-    type Error = FileError;
+    type Failure = ProduceFailure<FileError>;
 
-    #[throws(ProduceFailure<Self::Error>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         match good {
             Self::Good::Read { path } => self
-                .urls_to_read
+                .url_producer
                 .produce(
                     self.root_dir
                         .join(&path)
-                        .map_err(|error| ProduceFailure::Error(error.into()))?,
+                        .map_err(|error| ProduceFailure::Fault(error.into()))?,
                 )
                 .map_err(ProduceFailure::map_into)?,
         }
@@ -96,17 +132,16 @@ impl Producer for FileSystem {
 }
 
 /// An error executing a file command.
-#[derive(Debug, ThisError)]
+#[derive(Debug, market::ProduceFault, ThisError)]
 pub enum FileError {
-    /// The queue is closed.
-    #[error(transparent)]
-    Closed(#[from] ClosedMarketError),
     /// An IO error.
     #[error("")]
     Io(#[from] io::Error),
     /// An error creating a [`Purl`]
     #[error("")]
     Create(#[from] ParseError),
+    #[error(transparent)]
+    Disconnected(#[from] market::channel::DisconnectedFault),
 }
 
 /// Specifies a command to be executed on a file.
@@ -173,14 +208,13 @@ impl File {
 }
 
 /// An error consuming a file.
-#[derive(Debug, ThisError)]
+#[derive(Debug, market::ConsumeFault, ThisError)]
 pub enum ConsumeFileError {
     /// An error reading a file.
     #[error("")]
     Read(#[from] ReadFileError),
-    /// The read queue has closed.
-    #[error("")]
-    Closed(#[from] ClosedMarketError),
+    #[error(transparent)]
+    Disconnected(#[from] market::channel::DisconnectedFault)
 }
 
 /// An error while reading a file.

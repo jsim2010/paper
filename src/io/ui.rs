@@ -44,31 +44,6 @@ fn read_action() -> UserAction {
     event::read().map(UserAction::from)?
 }
 
-/// Consumes all [`UserAction`]s from the user.
-#[derive(Debug, Default)]
-pub(crate) struct UserActionConsumer;
-
-impl UserActionConsumer {
-    /// Creates a new [`UserActionConsumer`].
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl Consumer for UserActionConsumer {
-    type Good = UserAction;
-    type Error = UserActionFailure;
-
-    #[throws(ConsumeFailure<Self::Error>)]
-    fn consume(&self) -> Self::Good {
-        if is_action_available().map_err(|error| ConsumeFailure::Error(error.into()))? {
-            read_action().map_err(|error| ConsumeFailure::Error(error.into()))?
-        } else {
-            throw!(ConsumeFailure::EmptyStock);
-        }
-    }
-}
-
 /// Produces all [`DisplayCmd`]s via the stdout of the application.
 #[derive(Debug, Default)]
 pub(crate) struct Terminal {
@@ -97,9 +72,9 @@ impl Drop for Terminal {
 
 impl Producer for Terminal {
     type Good = DisplayCmd;
-    type Error = DisplayCmdFailure;
+    type Failure = market::ProduceFailure<DisplayCmdFailure>;
 
-    #[throws(ProduceFailure<Self::Error>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         match good {
             DisplayCmd::Rows { rows } => {
@@ -109,19 +84,35 @@ impl Producer for Terminal {
                     self.presenter
                         .single_line(
                             row.try_into()
-                                .map_err(|error: ReachedEnd| ProduceFailure::Error(error.into()))?,
+                                .map_err(|error: ReachedEnd| ProduceFailure::Fault(error.into()))?,
                             text.to_string(),
                         )
-                        .map_err(|failure| ProduceFailure::Error(failure.into()))?;
+                        .map_err(|failure| ProduceFailure::Fault(failure.into()))?;
                     row.step_forward()
-                        .map_err(|failure| ProduceFailure::Error(failure.into()))?;
+                        .map_err(|failure| ProduceFailure::Fault(failure.into()))?;
                 }
             }
             DisplayCmd::Header { header } => {
                 self.presenter
                     .single_line(Unit(0), header)
-                    .map_err(|failure| ProduceFailure::Error(failure.into()))?;
+                    .map_err(|failure| ProduceFailure::Fault(failure.into()))?;
             }
+        }
+    }
+}
+
+pub(crate) struct UserActionConsumer;
+
+impl Consumer for UserActionConsumer {
+    type Good = UserAction;
+    type Failure = market::ConsumeFailure<UserActionFailure>;
+
+    #[throws(Self::Failure)]
+    fn consume(&self) -> Self::Good {
+        if is_action_available().map_err(|error| ConsumeFailure::Fault(error.into()))? {
+            read_action().map_err(|error| ConsumeFailure::Fault(error.into()))?
+        } else {
+            throw!(ConsumeFailure::EmptyStock);
         }
     }
 }
