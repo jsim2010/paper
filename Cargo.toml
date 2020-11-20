@@ -20,7 +20,7 @@ home = "0.5.3"
 jsonrpc-core = "14.0.5"
 log = { version = "0.4.8", features = ["serde"] }
 lsp-types = "0.77.0"
-market = "0.19.0"
+market = "0.23.0"
 notify = "4.0.12"
 parse-display = "0.2.0"
 serde = "1.0.104"
