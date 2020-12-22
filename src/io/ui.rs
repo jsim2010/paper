@@ -24,7 +24,7 @@ use {
     error::{DestroyError, InitError, PollFailure, ReachedEnd, ReadFailure, WriteFailure},
     fehler::{throw, throws},
     log::{trace, warn},
-    market::{ConsumeFailure, Consumer, ProduceFailure, Producer},
+    market::{Consumer, Producer},
     parse_display::Display as ParseDisplay,
     std::io::{self, Stdout, Write},
 };
@@ -42,31 +42,6 @@ fn is_action_available() -> bool {
 #[throws(ReadFailure)]
 fn read_action() -> UserAction {
     event::read().map(UserAction::from)?
-}
-
-/// Consumes all [`UserAction`]s from the user.
-#[derive(Debug, Default)]
-pub(crate) struct UserActionConsumer;
-
-impl UserActionConsumer {
-    /// Creates a new [`UserActionConsumer`].
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl Consumer for UserActionConsumer {
-    type Good = UserAction;
-    type Error = UserActionFailure;
-
-    #[throws(ConsumeFailure<Self::Error>)]
-    fn consume(&self) -> Self::Good {
-        if is_action_available().map_err(|error| ConsumeFailure::Error(error.into()))? {
-            read_action().map_err(|error| ConsumeFailure::Error(error.into()))?
-        } else {
-            throw!(ConsumeFailure::EmptyStock);
-        }
-    }
 }
 
 /// Produces all [`DisplayCmd`]s via the stdout of the application.
@@ -97,9 +72,9 @@ impl Drop for Terminal {
 
 impl Producer for Terminal {
     type Good = DisplayCmd;
-    type Error = DisplayCmdFailure;
+    type Failure = market::ProduceFailure<DisplayCmdFailure>;
 
-    #[throws(ProduceFailure<Self::Error>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         match good {
             DisplayCmd::Rows { rows } => {
@@ -108,20 +83,38 @@ impl Producer for Terminal {
                 for text in rows {
                     self.presenter
                         .single_line(
-                            row.try_into()
-                                .map_err(|error: ReachedEnd| ProduceFailure::Error(error.into()))?,
+                            row.try_into().map_err(|error: ReachedEnd| {
+                                market::ProduceFailure::Fault(error.into())
+                            })?,
                             text.to_string(),
                         )
-                        .map_err(|failure| ProduceFailure::Error(failure.into()))?;
+                        .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
                     row.step_forward()
-                        .map_err(|failure| ProduceFailure::Error(failure.into()))?;
+                        .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
                 }
             }
             DisplayCmd::Header { header } => {
                 self.presenter
                     .single_line(Unit(0), header)
-                    .map_err(|failure| ProduceFailure::Error(failure.into()))?;
+                    .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
             }
+        }
+    }
+}
+
+/// A Consumer of [`UserAction`]s.
+pub(crate) struct UserActionConsumer;
+
+impl Consumer for UserActionConsumer {
+    type Good = UserAction;
+    type Failure = market::ConsumeFailure<UserActionFailure>;
+
+    #[throws(Self::Failure)]
+    fn consume(&self) -> Self::Good {
+        if is_action_available().map_err(|error| market::ConsumeFailure::Fault(error.into()))? {
+            read_action().map_err(|error| market::ConsumeFailure::Fault(error.into()))?
+        } else {
+            throw!(market::ConsumeFailure::EmptyStock);
         }
     }
 }
@@ -155,7 +148,12 @@ impl Presenter {
     #[throws(WriteFailure)]
     fn single_line(&self, row: Unit, text: String) {
         trace!("Writing to {}: `{}`", row, text);
-        execute!(self.out_mut(), MoveTo(0, *row), Print(text))?;
+        execute!(
+            self.out_mut(),
+            MoveTo(0, *row),
+            Print(text),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine)
+        )?;
     }
 }
 
@@ -268,6 +266,13 @@ impl TryFrom<RowId> for Unit {
     fn try_from(value: RowId) -> Self {
         // Account for header row.
         value.0.checked_add(1).ok_or(ReachedEnd)?.into()
+    }
+}
+
+impl From<Unit> for usize {
+    #[inline]
+    fn from(unit: Unit) -> Self {
+        unit.0.into()
     }
 }
 

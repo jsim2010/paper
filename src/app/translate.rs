@@ -1,6 +1,10 @@
 //! Implements the functionality of interpreting an [`Input`] into [`Operation`]s.
+#![allow(clippy::pattern_type_mismatch)] // False positive.
 use {
-    crate::io::{Dimensions, File, Input, UserAction},
+    crate::{
+        io::{Dimensions, File, Input, UserAction},
+        orient,
+    },
     core::fmt::{self, Debug},
     crossterm::event::KeyCode,
     enum_map::{enum_map, Enum, EnumMap},
@@ -30,6 +34,8 @@ pub(crate) enum Operation {
     Execute,
     /// Creates a document from the file.
     CreateDoc(File),
+    /// Scrolls the document.
+    Scroll(orient::ScreenDirection),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
@@ -226,6 +232,12 @@ impl ViewInterpreter {
             KeyCode::Char('o') => {
                 output.add_op(Operation::StartCommand(Command::Open));
                 output.set_mode(Mode::Collect);
+            }
+            KeyCode::Char('j') => {
+                output.add_op(Operation::Scroll(orient::ScreenDirection::Down));
+            }
+            KeyCode::Char('k') => {
+                output.add_op(Operation::Scroll(orient::ScreenDirection::Up));
             }
             KeyCode::Backspace
             | KeyCode::Enter

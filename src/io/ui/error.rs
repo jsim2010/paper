@@ -11,7 +11,7 @@ pub enum CreateTerminalError {
 }
 
 /// A failure consuming a [`UserAction`].
-#[derive(Debug, ThisError)]
+#[derive(Debug, market::ConsumeFault, ThisError)]
 #[error(transparent)]
 pub enum UserActionFailure {
     /// A failure polling for a [`UserAction`].
@@ -21,7 +21,7 @@ pub enum UserActionFailure {
 }
 
 /// A failure producing terminal output.
-#[derive(Debug, ThisError)]
+#[derive(Debug, market::ProduceFault, ThisError)]
 #[error(transparent)]
 pub enum DisplayCmdFailure {
     /// A failure writing text.

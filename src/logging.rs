@@ -1,5 +1,6 @@
 //! Implements the logging functionality of `paper`.
 use {
+    chrono::Local,
     fehler::throws,
     log::{info, LevelFilter, Log, Metadata, Record, SetLoggerError},
     parse_display::FromStr as ParseFromStr,
@@ -10,7 +11,6 @@ use {
     },
     structopt::StructOpt,
     thiserror::Error,
-    time::OffsetDateTime,
 };
 
 /// Parses the `LevelFilter` of the logger from the number of occurrences of the verbose flag.
@@ -83,7 +83,7 @@ impl Log for Logger {
                     writeln!(
                         file,
                         "{} [{}]: {}",
-                        OffsetDateTime::now_local().format("%F %T"),
+                        Local::now().format("%F %T"),
                         record.level(),
                         record.args()
                     );

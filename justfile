@@ -46,30 +46,35 @@ fix_format: _install_format
 # - clippy::empty_enum: recommended `!` type is not stable
 # - clippy::multiple_crate_versions: not fixable when caused by dependencies
 # - clippy::implicit_return: rust convention calls for implicit return
-# - clippy::redundant_pub_crate: conflicts with clippy::unreachable_pub
+# - clippy::redundant_pub_crate: conflicts with unreachable_pub
+#
+# unused_crate_dependencies is only checked for lib target.
 #
 # Lints the project source code
 lint: _install_lint
     cargo clippy -- \
+     -D warnings \
      -D absolute_paths_not_starting_with_crate \
      -D anonymous_parameters \
      -A box_pointers \
      -D deprecated_in_future \
      -D elided_lifetimes_in_paths \
      -D explicit_outlives_requirements \
-     -D indirect_structural_match \
      -D keyword_idents \
      -D macro_use_extern_crate \
      -D meta_variable_misuse \
      -D missing_copy_implementations \
+     -D missing_crate_level_docs \
      -D missing_debug_implementations \
      -D missing_docs \
      -D missing_doc_code_examples \
      -D non_ascii_idents \
+     -D pointer_structural_match \
      -D private_doc_tests \
      -D single_use_lifetimes \
      -D trivial_casts \
      -D trivial_numeric_casts \
+     -D unaligned_references \
      -D unreachable_pub \
      -D unsafe_code \
      -D unstable_features \
@@ -79,19 +84,19 @@ lint: _install_lint
      -D unused_qualifications \
      -D unused_results \
      -A variant_size_differences \
-     -D warnings \
      -D clippy::correctness \
      -D clippy::restriction \
      -D clippy::style \
+     -D clippy::pedantic \
      -D clippy::complexity \
      -D clippy::perf \
      -D clippy::cargo \
-     -D clippy::pedantic \
      -D clippy::nursery \
      -A clippy::empty_enum \
      -A clippy::multiple_crate_versions \
      -A clippy::implicit_return \
-     -A clippy::redundant_pub_crate \
+     -A clippy::redundant_pub_crate
+    cargo clippy --lib -- -D unused_crate_dependencies
 
 # Create pull request for resolving <issue_num>
 pr issue_num:
@@ -106,11 +111,15 @@ test:
     cargo test --verbose --all-features
 
 # Validates the project
-validate: (set_rust "1.46.0") validate_format validate_deps lint build test
+validate: (set_rust "1.48.0") validate_format validate_deps lint build test validate_doc
 
 # Validates dependencies of the project
 validate_deps: _install_deps
     cargo deny check
+
+# Validates the documentation of the project
+validate_doc:
+    cargo rustdoc -- -D rustdoc
 
 # Validates the formatting of the project
 validate_format: _install_format
