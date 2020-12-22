@@ -3,15 +3,11 @@ use {
     docuglot::Language,
     fehler::throws,
     log::trace,
-    market::{
-        Failure as _,
-        Consumer, ProduceFailure, Producer,
-    },
+    market::{queue::Procurer, ConsumeFailure, ConsumeFault, Consumer, Failure, Producer},
     parse_display::Display as ParseDisplay,
     std::{
         env, fs,
         io::{self, ErrorKind},
-        str::Lines,
     },
     thiserror::Error as ThisError,
     url::{ParseError, Url},
@@ -33,106 +29,82 @@ pub enum RootDirError {
 fn root_dir() -> Url {
     let dir = env::current_dir()?;
 
+    #[allow(clippy::map_err_ignore)] // Url::from_directory_path() returns Result<_, Err(())>.
     Url::from_directory_path(&dir)
         .map_err(|_| RootDirError::Create(format!("{}", dir.display())))?
 }
 
-/// The interface to the file system.
-#[derive(Debug)]
-pub(crate) struct FileSystem {
-    /// Queue of URLs to read.
-    channel: market::channel::Channel<market::channel::Crossbeam<Url>>,
-    /// The root directory of the file system.
-    root_dir: Option<Url>,
+/// Create the interface to the file system.
+#[throws(RootDirError)]
+pub(crate) fn create_file_system() -> (FileCommandProducer, FileConsumer) {
+    let (url_producer, url_consumer) = market::queue::create_supply_chain();
+    (
+        FileCommandProducer {
+            root_dir: root_dir()?,
+            url_producer,
+        },
+        FileConsumer { url_consumer },
+    )
 }
 
-impl FileSystem {
-    /// Creates a new `FileSystem`.
-    #[throws(RootDirError)]
-    pub(crate) fn new() -> Self {
-        Self {
-            channel: market::channel::Channel::new(market::channel::Size::Infinite),
-            root_dir: Some(root_dir()?),
-        }
-    }
-
-    #[throws(market::TakenParticipant)]
-    pub(crate) fn file_consumer(&mut self) -> FileConsumer {
-        FileConsumer::new(self.channel.consumer()?)
-    }
-
-    #[throws(market::TakenParticipant)]
-    pub(crate) fn file_command_producer(&mut self) -> FileCommandProducer {
-        FileCommandProducer::new(self.root_dir.take().unwrap(), self.channel.producer()?)
-    }
-}
-
+/// Consumes [`Url`]s.
 pub(crate) struct FileConsumer {
-    url_consumer: market::channel::CrossbeamConsumer<Url>,
-}
-
-impl FileConsumer {
-    fn new(url_consumer: market::channel::CrossbeamConsumer<Url>) -> Self {
-        Self {
-            url_consumer,
-        }
-    }
+    /// The [`Consumer`].
+    url_consumer: Procurer<Url>,
 }
 
 impl Consumer for FileConsumer {
     type Good = File;
-    type Failure = market::ConsumeFailure<ConsumeFileError>;
+    type Failure = ConsumeFailure<ConsumeFileError>;
 
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
+        #[allow(clippy::map_err_ignore)]
+        // Currently unable to implement ConsumeFailure<T>: From<InsufficientStockFailure>.
         let path_url = self
             .url_consumer
             .consume()
-            .map_err(Self::Failure::map_from)?;
+            // consume() can throw InsufficientStockFailure
+            .map_err(|_| ConsumeFailure::EmptyStock)?;
 
-        File::read(path_url).map_err(market::Fault::<Self::Failure>::from)?
+        File::read(path_url).map_err(ConsumeFileError::from)?
     }
 }
 
+/// Produces file commands.
 pub(crate) struct FileCommandProducer {
+    /// The root directory of the application.
     root_dir: Url,
-    url_producer: market::channel::CrossbeamProducer<Url>,
+    /// Sends the [`Url`]s to the file system handler.
+    url_producer: market::queue::Supplier<Url>,
 }
 
 impl FileCommandProducer {
-    fn new(root_dir: Url, url_producer: market::channel::CrossbeamProducer<Url>) -> Self {
-        Self {
-            root_dir,
-            url_producer,
-        }
-    }
-
-    pub(crate) fn root_dir(&self) -> &Url {
+    /// Returns the root directory.
+    pub(crate) const fn root_dir(&self) -> &Url {
         &self.root_dir
     }
 }
 
 impl Producer for FileCommandProducer {
     type Good = FileCommand;
-    type Failure = ProduceFailure<FileError>;
+    type Failure = FileError;
 
+    #[allow(clippy::unwrap_in_result)] // Supplier::produce() cannot fail.
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         match good {
+            #[allow(clippy::unwrap_used)] // Supplier::produce() cannot fail.
             Self::Good::Read { path } => self
                 .url_producer
-                .produce(
-                    self.root_dir
-                        .join(&path)
-                        .map_err(|error| ProduceFailure::Fault(error.into()))?,
-                )
-                .map_err(ProduceFailure::map_into)?,
+                .produce(self.root_dir.join(&path)?)
+                .unwrap(),
         }
     }
 }
 
 /// An error executing a file command.
-#[derive(Debug, market::ProduceFault, ThisError)]
+#[derive(Debug, ThisError)]
 pub enum FileError {
     /// An IO error.
     #[error("")]
@@ -140,8 +112,10 @@ pub enum FileError {
     /// An error creating a [`Purl`]
     #[error("")]
     Create(#[from] ParseError),
-    #[error(transparent)]
-    Disconnected(#[from] market::channel::DisconnectedFault),
+}
+
+impl Failure for FileError {
+    type Fault = Self;
 }
 
 /// Specifies a command to be executed on a file.
@@ -169,6 +143,8 @@ impl File {
     #[throws(ReadFileError)]
     fn read(url: Url) -> Self {
         trace!("read {}", url.path());
+        #[allow(clippy::map_err_ignore)]
+        // Url::to_file_path() returns () as Err type so the error has no helpful information.
         Self {
             text: fs::read_to_string(url.to_file_path().map_err(|_| ReadFileError {
                 file: url.to_string(),
@@ -180,11 +156,6 @@ impl File {
             })?,
             url,
         }
-    }
-
-    /// Returns the  [`Lines`] of the text.
-    pub(crate) fn lines(&self) -> Lines<'_> {
-        self.text.lines()
     }
 
     /// Returns a reference to the text of `self`.
@@ -208,13 +179,11 @@ impl File {
 }
 
 /// An error consuming a file.
-#[derive(Debug, market::ConsumeFault, ThisError)]
+#[derive(Debug, ConsumeFault, ThisError)]
 pub enum ConsumeFileError {
     /// An error reading a file.
     #[error("")]
     Read(#[from] ReadFileError),
-    #[error(transparent)]
-    Disconnected(#[from] market::channel::DisconnectedFault)
 }
 
 /// An error while reading a file.

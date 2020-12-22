@@ -1,11 +1,14 @@
 //! Implements the `paper` application logic for converting an [`Input`] into [`Output`]s.
-mod translate;
+pub(crate) mod translate;
 
 use {
-    crate::io::{Dimensions, DocEdit, File, Input, Output, Unit},
+    crate::{
+        io::{Dimensions, DocEdit, File, Input, Output},
+        orient,
+    },
     log::trace,
     lsp_types::{ShowMessageRequestParams, TextDocumentIdentifier, TextDocumentItem},
-    std::{cell::RefCell, mem, rc::Rc},
+    std::mem,
     translate::{Command, Interpreter, Operation},
     url::Url,
 };
@@ -31,11 +34,9 @@ impl Processor {
 
     /// Processes `input` and generates [`Output`].
     pub(crate) fn process(&mut self, input: Input) -> Vec<Output> {
-        if let Some(operation) = self.interpreter.translate(input) {
-            self.operate(operation)
-        } else {
-            Vec::new()
-        }
+        self.interpreter
+            .translate(input)
+            .map_or_else(Vec::new, |operation| self.operate(operation))
     }
 
     /// Performs `operation` and returns the appropriate [`Output`]s.
@@ -85,6 +86,11 @@ impl Processor {
             Operation::CreateDoc(file) => {
                 outputs.append(&mut self.pane.create_doc(file));
             }
+            Operation::Scroll(direction) => {
+                if let Some(output) = self.pane.scroll(direction) {
+                    outputs.push(output);
+                }
+            }
         };
 
         outputs.push(Output::UpdateHeader);
@@ -99,10 +105,6 @@ impl Processor {
 struct Pane {
     /// The document in the pane.
     doc: Option<Document>,
-    /// The number of lines by which a scroll moves.
-    scroll_amount: Rc<RefCell<Amount>>,
-    /// The length of a row.
-    row_length: Unit,
     /// The [`Dimensions`] of the pane.
     size: Dimensions,
 }
@@ -110,7 +112,7 @@ struct Pane {
 impl Pane {
     /// Updates `self`.
     fn update(&mut self, outputs: &mut Vec<Output>) {
-        if let Some(doc) = &mut self.doc {
+        if let Some(doc) = self.doc.as_mut() {
             outputs.push(doc.change_output());
         }
     }
@@ -118,11 +120,8 @@ impl Pane {
     /// Updates the size of `self` to match `dimensions`;
     fn update_size(&mut self, dimensions: Dimensions, outputs: &mut Vec<Output>) {
         self.size = dimensions;
-        self.scroll_amount
-            .borrow_mut()
-            .set(usize::from(dimensions.height.wrapping_div(3)));
 
-        if let Some(doc) = &mut self.doc {
+        if let Some(doc) = self.doc.as_mut() {
             doc.dimensions = dimensions;
             outputs.push(doc.change_output());
         }
@@ -146,6 +145,14 @@ impl Pane {
     fn close_doc(&mut self) -> Option<Output> {
         self.doc.take().map(Document::close)
     }
+
+    /// Scrolls `self` towards `direction`.
+    fn scroll(&mut self, direction: orient::ScreenDirection) -> Option<Output> {
+        self.doc.as_mut().map(|doc| {
+            doc.scroll(direction);
+            Output::UpdateView { rows: doc.rows() }
+        })
+    }
 }
 
 /// A file and the user's current interactions with it.
@@ -153,19 +160,77 @@ impl Pane {
 pub(crate) struct Document {
     /// The file of the document.
     file: File,
-    /// The [`Dimensions`] of the Document.
+    /// The start and end indices within the text for each row.
+    row_indices: Vec<(usize, usize)>,
+    /// The [`Dimensions`] of the screen showing the document.
     dimensions: Dimensions,
+    /// The first row that is visible.
+    first_visible_row: usize,
+    /// The last row that is visible.
+    max_visible_row: usize,
     /// The version of the document.
     version: i64,
 }
 
 impl Document {
     /// Creates a new [`Document`].
-    const fn new(file: File, dimensions: Dimensions) -> Self {
+    fn new(file: File, dimensions: Dimensions) -> Self {
+        let max_length = usize::from(dimensions.width);
+        let mut prev_index = 0;
+        let mut row_end_index = max_length;
+        let mut row_indices = Vec::new();
+        let text = file.text();
+
+        for (index, _) in text.match_indices('\n') {
+            let mut end_index = index;
+            let before_end_index = end_index.saturating_sub(1);
+
+            if text.get(before_end_index..end_index) == Some("\r") {
+                end_index = before_end_index;
+            }
+
+            while row_end_index < end_index {
+                row_indices.push((prev_index, row_end_index));
+                prev_index = row_end_index;
+                row_end_index = row_end_index.saturating_add(max_length);
+            }
+
+            row_indices.push((prev_index, end_index));
+            prev_index = index.saturating_add(1);
+            row_end_index = prev_index.saturating_add(max_length);
+        }
+
+        let text_length = text.len();
+
+        while row_end_index < text_length {
+            row_indices.push((prev_index, row_end_index));
+            prev_index = row_end_index;
+            row_end_index = row_end_index.saturating_add(max_length);
+        }
+
+        row_indices.push((prev_index, text_length));
+
         Self {
+            max_visible_row: row_indices.len().saturating_sub(dimensions.height.into()),
             file,
+            row_indices,
             dimensions,
+            first_visible_row: 0,
             version: 0,
+        }
+    }
+
+    /// Scrolls `self` towards `direction`.
+    fn scroll(&mut self, direction: orient::ScreenDirection) {
+        if let Some(vertical_direction) = direction.vertical_direction() {
+            self.first_visible_row = match vertical_direction {
+                orient::AxialDirection::Positive => self.first_visible_row.saturating_add(5),
+                orient::AxialDirection::Negative => self.first_visible_row.saturating_sub(5),
+            };
+
+            if self.first_visible_row > self.max_visible_row {
+                self.first_visible_row = self.max_visible_row;
+            }
         }
     }
 
@@ -192,34 +257,19 @@ impl Document {
         self.file.url()
     }
 
-    /// Returns the text of `self`.
-    pub(crate) fn text(&self) -> String {
-        self.file.text().to_string()
-    }
-
     /// Returns a [`Vec`] of the rows of `self`.
     pub(crate) fn rows(&self) -> Vec<String> {
-        let mut rows = Vec::new();
-        let row_length = (*self.dimensions.width).into();
-
-        for line in self.file.lines() {
-            if line.len() <= row_length {
-                rows.push(line.to_string());
-            } else {
-                let mut line_remainder = line;
-
-                while line_remainder.len() > row_length {
-                    let (row, remainder) = line_remainder.split_at(row_length);
-                    line_remainder = remainder;
-                    rows.push(row.to_string());
-                }
-
-                rows.push(line_remainder.to_string());
-            }
-        }
-
-        rows.into_iter()
+        self.row_indices
+            .iter()
+            .skip(self.first_visible_row)
             .take((*self.dimensions.height).into())
+            .map(|&(start, end)| {
+                self.file
+                    .text()
+                    .get(start..end)
+                    .map(ToString::to_string)
+                    .unwrap_or_default()
+            })
             .collect()
     }
 
@@ -239,7 +289,7 @@ impl From<Document> for TextDocumentItem {
             value.url().clone(),
             value.file.language().to_string(),
             value.version,
-            value.text(),
+            value.file.text().to_string(),
         )
     }
 }
@@ -248,18 +298,5 @@ impl From<Document> for TextDocumentIdentifier {
     #[inline]
     fn from(value: Document) -> Self {
         Self::new(value.url().clone())
-    }
-}
-
-/// A wrapper around [`u64`].
-///
-/// Used for storing and modifying within a [`RefCell`].
-#[derive(Debug, Default)]
-struct Amount(usize);
-
-impl Amount {
-    /// Sets `self` to `amount`.
-    fn set(&mut self, amount: usize) {
-        self.0 = amount;
     }
 }

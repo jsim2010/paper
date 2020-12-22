@@ -15,6 +15,7 @@
 mod app;
 mod io;
 mod logging;
+mod orient;
 
 // Export so that other crates can build Arguments.
 pub use logging::LogConfig;

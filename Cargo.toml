@@ -1,6 +1,6 @@
 [package]
 name = "paper"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Justin Simerly <jsim2010@gmail.com>"]
 description = "A terminal-based editor with goals to maximize simplicity and efficiency."
 license = "MIT"
@@ -11,24 +11,19 @@ categories = ["command-line-utilities", "text-editors"]
 edition = "2018"
 
 [dependencies]
+chrono = "0.4.19"
 clap = "2.33.0"
-crossterm = "0.17.6"
-docuglot = "0.3.0"
+crossterm = "0.18.2"
+docuglot = "0.4.0"
 enum-map = "0.6.2"
 fehler = "1.0.0"
-home = "0.5.3"
-jsonrpc-core = "14.0.5"
 log = { version = "0.4.8", features = ["serde"] }
 lsp-types = "0.77.0"
-market = "0.23.0"
-notify = "4.0.12"
+market = "0.24.0"
 parse-display = "0.1.1"
-serde = "1.0.104"
-serde_json = "1.0"
 starship = "0.44.0"
 structopt = "0.3.15"
 thiserror = "1.0"
-time = { version = "0.2.7", features = ["std"] }
 toml = "0.5.5"
 # Required because lsp-types does not provide access to url::ParseError.
 url = "2.0.0"
