@@ -2,6 +2,7 @@
 //!
 //! Visual output is organized as follows:
 //! - A header is displayed on a single row at the top of the display. The header displays general information about the current state of the system.
+//! - A command bar is display on the row under the header. The command bar displays the current command being built by the user.
 //! - A page is displayed in the remaining space of the display. The page displays the text of the currently viewed document.
 mod error;
 
@@ -92,6 +93,11 @@ impl Producer for Terminal {
                     row.step_forward()
                         .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
                 }
+            }
+            DisplayCmd::Command { command } => {
+                self.presenter
+                    .single_line(Unit(1), command)
+                    .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
             }
             DisplayCmd::Header { header } => {
                 self.presenter
@@ -190,8 +196,8 @@ impl From<Event> for UserAction {
         match value {
             Event::Resize(columns, rows) => Self::Resize {
                 dimensions: Dimensions {
-                    // Reserve the top row for the header. Since a display height of 0 has no available height for the page, saturating_sub() is okay.
-                    height: rows.saturating_sub(1).into(),
+                    // Reserve the top 2 rows for the header and command bar.
+                    height: rows.saturating_sub(2).into(),
                     width: columns.into(),
                 },
             },
@@ -219,6 +225,11 @@ pub(crate) enum DisplayCmd {
     Rows {
         /// The rows to be displayed.
         rows: Vec<String>,
+    },
+    /// Display the command.
+    Command {
+        /// The text of the command bar.
+        command: String,
     },
     /// Displays the header.
     Header {
@@ -264,8 +275,8 @@ impl TryFrom<RowId> for Unit {
     #[throws(Self::Error)]
     #[inline]
     fn try_from(value: RowId) -> Self {
-        // Account for header row.
-        value.0.checked_add(1).ok_or(ReachedEnd)?.into()
+        // Account for header and command bar.
+        value.0.checked_add(2).ok_or(ReachedEnd)?.into()
     }
 }
 

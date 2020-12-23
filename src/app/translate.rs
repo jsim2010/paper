@@ -27,7 +27,7 @@ pub(crate) enum Operation {
     /// Quits the application.
     Quit,
     /// Open input box for a command.
-    StartCommand(Command),
+    StartCommand,
     /// Input to input box.
     Collect(char),
     /// Executes the current command.
@@ -61,14 +61,6 @@ impl From<ConfirmAction> for ShowMessageRequestParams {
             actions: None,
         }
     }
-}
-
-/// Signifies a command that a user can give to the application.
-#[derive(Debug, ParseDisplay, PartialEq)]
-pub(crate) enum Command {
-    /// Opens a given file.
-    #[display("Open <file>")]
-    Open,
 }
 
 /// An operation performed on a document.
@@ -229,8 +221,8 @@ impl ViewInterpreter {
                 output.add_op(Operation::Confirm(ConfirmAction::Quit));
                 output.set_mode(Mode::Confirm);
             }
-            KeyCode::Char('o') => {
-                output.add_op(Operation::StartCommand(Command::Open));
+            KeyCode::Char('l') => {
+                output.add_op(Operation::StartCommand);
                 output.set_mode(Mode::Collect);
             }
             KeyCode::Char('j') => {
@@ -376,21 +368,6 @@ mod test {
                 Some(Operation::Confirm(ConfirmAction::Quit))
             );
             assert_eq!(int.mode, Mode::Confirm);
-        }
-
-        /// The `Ctrl-o` key shall request the name of the document to be opened.
-        #[test]
-        fn open() {
-            let mut int = view_mode();
-
-            assert_eq!(
-                int.translate(Input::User(UserAction::Key {
-                    code: KeyCode::Char('o'),
-                    modifiers: KeyModifiers::CONTROL,
-                })),
-                Some(Operation::StartCommand(Command::Open))
-            );
-            assert_eq!(int.mode, Mode::Collect);
         }
     }
 

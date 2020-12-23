@@ -8,8 +8,7 @@ use {
     },
     log::trace,
     lsp_types::{ShowMessageRequestParams, TextDocumentIdentifier, TextDocumentItem},
-    std::mem,
-    translate::{Command, Interpreter, Operation},
+    translate::{Interpreter, Operation},
     url::Url,
 };
 
@@ -18,10 +17,8 @@ use {
 pub(crate) struct Processor {
     /// The currently visible pane.
     pane: Pane,
-    /// The input of a command.
-    input: String,
-    /// The current command to be implemented.
-    command: Option<Command>,
+    /// The current command.
+    command: String,
     /// Translates input into operations.
     interpreter: Interpreter,
 }
@@ -53,27 +50,26 @@ impl Processor {
                 });
             }
             Operation::Reset => {
-                self.input.clear();
+                self.command.clear();
                 self.pane.update(&mut outputs);
             }
-            Operation::StartCommand(command) => {
-                let prompt = command.to_string();
-
-                self.command = Some(command);
-                outputs.push(Output::Command { command: prompt });
+            Operation::StartCommand => {
+                self.command = ":".to_string();
+                outputs.push(Output::Command {
+                    command: self.command.clone(),
+                });
             }
             Operation::Collect(ch) => {
-                self.input.push(ch);
+                self.command.push(ch);
                 outputs.push(Output::Command {
-                    command: self.input.clone(),
+                    command: self.command.clone(),
                 });
             }
             Operation::Execute => {
-                if self.command.is_some() {
-                    let mut path = String::new();
-                    mem::swap(&mut path, &mut self.input);
-
-                    outputs.push(Output::OpenFile { path });
+                if let Some(path) = self.command.strip_prefix(":open ") {
+                    outputs.push(Output::OpenFile {
+                        path: path.to_string(),
+                    });
                 }
             }
             Operation::Quit => {

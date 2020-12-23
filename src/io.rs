@@ -455,9 +455,7 @@ impl TryFrom<Output> for DisplayCmd {
             Output::Question { request } => DisplayCmd::Rows {
                 rows: vec![request.message],
             },
-            Output::Command { command } => DisplayCmd::Rows {
-                rows: vec![command],
-            },
+            Output::Command { command } => DisplayCmd::Command { command },
             Output::UpdateHeader => {
                 let mut context = Context::new(ArgMatches::new());
 
