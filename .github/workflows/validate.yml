@@ -12,8 +12,8 @@ jobs:
       id: cache
       with:
         path: ~/.cargo/bin
-        key: cargo-bin_2020-06-23
-        restore-keys: cargo-bin_2020-04-20
+        key: cargo-bin_2020-12-31
+        restore-keys: cargo-bin_
     - name: install just
       run: just --version || cargo install just
     - name: validate
