@@ -165,7 +165,7 @@ pub(crate) struct Document {
     /// The last row that is visible.
     max_visible_row: usize,
     /// The version of the document.
-    version: i64,
+    version: i32,
 }
 
 impl Document {
