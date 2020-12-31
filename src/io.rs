@@ -514,7 +514,7 @@ pub(crate) enum DocEdit {
     /// Opens a document.
     Open {
         /// The version of the document.
-        version: i64,
+        version: i32,
     },
     /// Updates the display of the document.
     Update,
