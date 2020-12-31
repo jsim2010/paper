@@ -27,7 +27,7 @@ use {
     log::{trace, warn},
     market::{Consumer, Producer},
     parse_display::Display as ParseDisplay,
-    std::io::{self, Stdout, Write},
+    std::io::{self, Stdout},
 };
 
 /// A instantaneous duration of time.
