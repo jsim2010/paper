@@ -75,7 +75,7 @@ impl fmt::Display for DocOp {
         write!(
             f,
             "{}",
-            match self {
+            match *self {
                 Self::Save => "save",
             }
         )

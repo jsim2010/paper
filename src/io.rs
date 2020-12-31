@@ -426,8 +426,8 @@ impl TryFrom<Output> for ClientStatement {
     fn try_from(value: Output) -> Self {
         match value {
             Output::EditDoc { doc, edit } => match edit {
-                DocEdit::Open { .. } => ClientStatement::open_doc(doc.into()),
-                DocEdit::Close => ClientStatement::close_doc(doc.into()),
+                DocEdit::Open { .. } => Self::open_doc(doc.into()),
+                DocEdit::Close => Self::close_doc(doc.into()),
                 DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
             },
             Output::OpenFile { .. }
@@ -448,14 +448,14 @@ impl TryFrom<Output> for DisplayCmd {
     fn try_from(value: Output) -> Self {
         match value {
             Output::EditDoc { doc, edit } => match edit {
-                DocEdit::Open { .. } | DocEdit::Update => DisplayCmd::Rows { rows: doc.rows() },
+                DocEdit::Open { .. } | DocEdit::Update => Self::Rows { rows: doc.rows() },
                 DocEdit::Close => throw!(TryIntoDisplayCmdError::InvalidOutput),
             },
-            Output::UpdateView { rows } => DisplayCmd::Rows { rows },
-            Output::Question { request } => DisplayCmd::Rows {
+            Output::UpdateView { rows } => Self::Rows { rows },
+            Output::Question { request } => Self::Rows {
                 rows: vec![request.message],
             },
-            Output::Command { command } => DisplayCmd::Command { command },
+            Output::Command { command } => Self::Command { command },
             Output::UpdateHeader => {
                 let mut context = Context::new(ArgMatches::new());
 
@@ -475,7 +475,7 @@ impl TryFrom<Output> for DisplayCmd {
                     context.config.config = Some(config);
                 }
 
-                DisplayCmd::Header {
+                Self::Header {
                     header: print::get_prompt(context),
                 }
             }

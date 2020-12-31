@@ -8,8 +8,6 @@
 //! [Language Server Protocol]: https://microsoft.github.io/language-server-protocol/
 #![allow(
     clippy::unreachable, // unreachable added by enum_map::Enum.
-    clippy::use_self, // False positive on format macro.
-    clippy::trivial_regex, // Trivial regex added by thiserror::Error.
 )]
 
 mod app;

@@ -116,7 +116,7 @@ pub struct LogConfig {
 impl Default for LogConfig {
     #[inline]
     fn default() -> Self {
-        LogConfig {
+        Self {
             components: None,
             level: LevelFilter::Warn,
         }
