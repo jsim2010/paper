@@ -23,8 +23,7 @@ jobs:
         restore-keys: ${{ runner.os }}-cargo_bin-
 
     - name: install just
-      if: steps.cache-bin.outputs.cache-hit != 'true'
-      run: cargo install just
+      run: just --version || cargo install just
 
     - name: validate
       run: just validate
