@@ -169,11 +169,11 @@ impl File {
     }
 
     /// Returns the `Language` of `self`.
-    pub(crate) fn language(&self) -> Language {
+    pub(crate) fn language(&self) -> Option<Language> {
         if self.url.path().ends_with(".rs") {
-            Language::Rust
+            Some(Language::Rust)
         } else {
-            Language::Plaintext
+            None
         }
     }
 }

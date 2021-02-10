@@ -7,8 +7,9 @@ use {
     },
     core::fmt::{self, Debug},
     crossterm::event::KeyCode,
+    docuglot::Reception,
     enum_map::{enum_map, Enum, EnumMap},
-    lsp_types::{MessageType, ShowMessageRequestParams},
+    lsp_types::{DocumentSymbol, DocumentSymbolResponse, MessageType, ShowMessageRequestParams},
     parse_display::Display as ParseDisplay,
 };
 
@@ -36,6 +37,8 @@ pub(crate) enum Operation {
     CreateDoc(File),
     /// Scrolls the document.
     Scroll(orient::ScreenDirection),
+    /// Add symbols.
+    AddSymbols(Vec<DocumentSymbol>),
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
@@ -102,7 +105,16 @@ impl Interpreter {
             Input::File(file) => {
                 output.add_op(Operation::CreateDoc(file));
             }
-            Input::Lsp(_statement) => {}
+            Input::Lsp(reception) => match reception {
+                Reception::DocumentSymbols(document_symbols) => match document_symbols {
+                    DocumentSymbolResponse::Flat(..) => {
+                        log::warn!("Flat DocumentSymbol is not processed.")
+                    }
+                    DocumentSymbolResponse::Nested(symbols) => {
+                        output.add_op(Operation::AddSymbols(symbols))
+                    }
+                },
+            },
             Input::User(user_input) => {
                 #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is in bounds.
                 let mode_interpreter = self.map[self.mode];

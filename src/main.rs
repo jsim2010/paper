@@ -6,7 +6,14 @@ use {
     structopt::StructOpt,
 };
 
-#[throws(Failure)]
 fn main() {
-    Paper::new(Arguments::from_args())?.run()?;
+    if let Err(error) = exec() {
+        eprint!("{}", error);
+    }
+}
+
+/// Executes the application functionality.
+#[throws(Failure)]
+fn exec() {
+    Paper::new(Arguments::from_args())?.run()?
 }

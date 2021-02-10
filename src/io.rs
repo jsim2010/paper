@@ -15,22 +15,25 @@ use {
         convert::TryFrom,
         sync::atomic::{AtomicBool, Ordering},
     },
-    docuglot::{ClientStatement, ServerStatement, Tongue},
+    docuglot::{Reception, Tongue, TranslationError, Transmission},
     fehler::{throw, throws},
     fs::{
         create_file_system, ConsumeFileError, FileCommand, FileCommandProducer, FileConsumer,
         FileError, RootDirError,
     },
     log::error,
-    lsp_types::ShowMessageRequestParams,
+    lsp_types::{ShowMessageRequestParams, TextDocumentIdentifier},
     market::{
-        channel::{CrossbeamConsumer, CrossbeamProducer, WithdrawnDemand, WithdrawnSupply},
+        channel::{WithdrawnDemandFault, WithdrawnSupplyFault},
         vec::{Collector, Distributor},
         ConsumeFailure, ConsumeFault, Consumer, ProduceFailure, Producer,
     },
     parse_display::Display as ParseDisplay,
     starship::{context::Context, print},
-    std::io::{self, ErrorKind},
+    std::{
+        io::{self, ErrorKind},
+        rc::Rc,
+    },
     thiserror::Error as ThisError,
     toml::{value::Table, Value},
     ui::{
@@ -77,7 +80,7 @@ pub enum ProduceOutputError {
     UiProduce(#[from] DisplayCmdFailure),
     /// A thread was dropped.
     #[error(transparent)]
-    Withdrawn(#[from] WithdrawnDemand),
+    Withdrawn(#[from] WithdrawnDemandFault),
 }
 
 /// An error creating a file.
@@ -128,9 +131,12 @@ pub enum ConsumeInputError {
     /// An error consuming a file.
     #[error("")]
     File(#[from] ConsumeFileError),
+    /// An error in [`Tongue`].
+    #[error(transparent)]
+    Translation(#[from] TranslationError),
     /// A thread was dropped.
     #[error(transparent)]
-    Withdrawn(#[from] WithdrawnSupply),
+    Withdrawn(#[from] WithdrawnSupplyFault),
 }
 
 /// An error validating a file string.
@@ -167,29 +173,52 @@ impl Consumer for InternalUserActionConsumer {
     }
 }
 
-/// Implements [`CrossbeamProducer<ClientStatement>`] that can be pushed to [`Interface.producers`].
-struct InternalLspProducer(CrossbeamProducer<ClientStatement>);
+/// Implements [`CrossbeamProducer<Transmission>`] that can be pushed to [`Interface.producers`].
+struct InternalLspProducer(Rc<Tongue>);
 
 impl Producer for InternalLspProducer {
-    type Good = ClientStatement;
+    type Good = Vec<Transmission>;
     type Failure = ProduceFailure<ProduceOutputError>;
 
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
-        self.0.produce(good).map_err(ProduceFailure::map_fault)?
+        for transmission in good {
+            self.0
+                .transmitter()
+                .produce(transmission)
+                .map_err(ProduceFailure::map_fault)?
+        }
     }
 }
 
-/// Implements [`CrossbeamConsumer<ServerStatement>`] that can be pushed to [`Interface.consumers`].
-struct InternalLspConsumer(CrossbeamConsumer<ServerStatement>);
+/// Implements [`CrossbeamConsumer<Reception>`] that can be pushed to [`Interface.consumers`].
+struct InternalLspConsumer(Rc<Tongue>);
 
 impl Consumer for InternalLspConsumer {
-    type Good = ServerStatement;
+    type Good = Reception;
     type Failure = ConsumeFailure<ConsumeInputError>;
 
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        self.0.consume().map_err(ConsumeFailure::map_fault)?
+        match self.0.receiver().consume() {
+            Ok(good) => good,
+            Err(ConsumeFailure::EmptyStock) => {
+                throw!(ConsumeFailure::EmptyStock)
+            }
+            // If failure is fault, check status from thread to get more information.
+            Err(ConsumeFailure::Fault(fault)) => {
+                throw!(ConsumeInputError::from(match self.0.thread().consume() {
+                    // Ok = thread terminated without error; EmptyStock = thread still running.
+                    // TODO: Investigate if better to send indication of quitting if thread terminated.
+                    Ok(_) | Err(ConsumeFailure::EmptyStock) => {
+                        fault.into()
+                    }
+                    Err(ConsumeFailure::Fault(f)) => {
+                        f
+                    }
+                }))
+            }
+        }
     }
 }
 
@@ -229,7 +258,7 @@ pub(crate) struct Interface {
     /// A [`Distributor`] of all output [`Producer`]s.
     producers: Distributor<Output, ProduceOutputError>,
     /// The interface of the application with all language servers.
-    tongue: Tongue,
+    tongue: Rc<Tongue>,
     /// The application has quit.
     has_quit: AtomicBool,
 }
@@ -242,17 +271,17 @@ impl Interface {
         let mut consumers = Collector::new();
         let mut producers = Distributor::new();
         let (file_command_producer, file_consumer) = create_file_system()?;
-        let (lsp_producer, lsp_consumer, tongue) = docuglot::init(file_command_producer.root_dir());
+        let tongue = Rc::new(Tongue::new(file_command_producer.root_dir()));
 
         if let Some(file) = initial_file {
             file_command_producer.produce(FileCommand::Read { path: file })?
         }
 
         consumers.push(InternalUserActionConsumer(UserActionConsumer));
-        consumers.push(InternalLspConsumer(lsp_consumer));
+        consumers.push(InternalLspConsumer(Rc::clone(&tongue)));
         consumers.push(InternalFileConsumer(file_consumer));
 
-        producers.push(InternalLspProducer(lsp_producer));
+        producers.push(InternalLspProducer(Rc::clone(&tongue)));
         producers.push(user_interface);
         producers.push(InternalFileProducer(file_command_producer));
 
@@ -265,12 +294,6 @@ impl Interface {
 
         interface
     }
-
-    /// Waits until `self.tongue` finishes.
-    pub(crate) fn join(&self) {
-        // TODO: This should be a part of the consume after detecting the app is quitting.
-        self.tongue.join()
-    }
 }
 
 impl Consumer for Interface {
@@ -280,7 +303,10 @@ impl Consumer for Interface {
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         match self.consumers.consume() {
-            Ok(input) => input,
+            Ok(input) => {
+                log::trace!("INPUT: {:?}", input);
+                input
+            }
             Err(market::ConsumeFailure::Fault(failure)) => {
                 throw!(market::ConsumeFailure::Fault(ConsumeInputIssue::Error(
                     failure
@@ -303,6 +329,7 @@ impl Producer for Interface {
 
     #[throws(Self::Failure)]
     fn produce(&self, output: Self::Good) {
+        log::trace!("OUTPUT: {}", output);
         self.producers.produce(output.clone())?;
 
         // TODO: Instead of has_quit, use market::Trigger stored in producers.
@@ -333,7 +360,7 @@ pub(crate) enum Input {
     /// An input from the user.
     User(UserAction),
     /// A message from the language server.
-    Lsp(ServerStatement),
+    Lsp(Reception),
 }
 
 impl From<File> for Input {
@@ -343,9 +370,9 @@ impl From<File> for Input {
     }
 }
 
-impl From<ServerStatement> for Input {
+impl From<Reception> for Input {
     #[inline]
-    fn from(value: ServerStatement) -> Self {
+    fn from(value: Reception) -> Self {
         Self::Lsp(value)
     }
 }
@@ -366,7 +393,7 @@ pub(crate) enum Output {
         /// The relative path of the file.
         path: String,
     },
-    #[display("")]
+    #[display("Edit doc `{doc:?}`: {edit:?}")]
     /// Edits a document.
     EditDoc {
         /// The file that is edited.
@@ -375,28 +402,28 @@ pub(crate) enum Output {
         edit: DocEdit,
     },
     /// Updates the area of the document that is shown.
-    #[display("")]
+    #[display("Update view to:\n{rows:?}")]
     UpdateView {
         /// The rows of the document to be shown.
         rows: Vec<String>,
     },
     /// Sets the header of the application.
-    #[display("")]
+    #[display("Update header")]
     UpdateHeader,
     /// Asks the user a question.
-    #[display("")]
+    #[display("Ask `{request:?}`")]
     Question {
         /// The request to be answered.
         request: ShowMessageRequestParams,
     },
     /// Adds an intake box.
-    #[display("")]
+    #[display("Command `{command}`")]
     Command {
         /// The prompt of the intake box.
         command: String,
     },
     /// Quit the application.
-    #[display("")]
+    #[display("Quit")]
     Quit,
 }
 
@@ -418,7 +445,7 @@ impl TryFrom<Output> for FileCommand {
     }
 }
 
-impl TryFrom<Output> for ClientStatement {
+impl TryFrom<Output> for Vec<Transmission> {
     type Error = TryIntoProtocolError;
 
     #[inline]
@@ -426,8 +453,16 @@ impl TryFrom<Output> for ClientStatement {
     fn try_from(value: Output) -> Self {
         match value {
             Output::EditDoc { doc, edit } => match edit {
-                DocEdit::Open { .. } => Self::open_doc(doc.into()),
-                DocEdit::Close => Self::close_doc(doc.into()),
+                DocEdit::Open { .. } => {
+                    let url = doc.url().clone();
+                    vec![
+                        Transmission::OpenDoc { doc: doc.into() },
+                        Transmission::GetDocumentSymbol {
+                            doc: TextDocumentIdentifier::new(url),
+                        },
+                    ]
+                }
+                DocEdit::Close => vec![Transmission::close_doc(doc.into())],
                 DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
             },
             Output::OpenFile { .. }

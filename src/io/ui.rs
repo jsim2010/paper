@@ -24,7 +24,6 @@ use {
     },
     error::{DestroyError, InitError, PollFailure, ReachedEnd, ReadFailure, WriteFailure},
     fehler::{throw, throws},
-    log::{trace, warn},
     market::{Consumer, Producer},
     parse_display::Display as ParseDisplay,
     std::io::{self, Stdout},
@@ -66,7 +65,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if let Err(error) = self.presenter.destroy() {
-            warn!("Error while destroying user interface: {}", error);
+            log::warn!("Error while destroying user interface: {}", error);
         }
     }
 }
@@ -141,21 +140,27 @@ impl Presenter {
     /// Initializes the interface, saving the current display and hiding the cursor.
     #[throws(InitError)]
     fn init(&self) {
-        execute!(self.out_mut(), EnterAlternateScreen, Hide)?;
+        // Required to store out due to macro calling out_mut() multiple times.
+        let mut out = self.out_mut();
+        execute!(out, EnterAlternateScreen, Hide)?;
     }
 
     /// Closes out the interface display, returning to the display prior to initialization.
     #[throws(DestroyError)]
     fn destroy(&self) {
-        execute!(self.out_mut(), LeaveAlternateScreen)?;
+        // Required to store out due to macro calling out_mut() multiple times.
+        let mut out = self.out_mut();
+        execute!(out, LeaveAlternateScreen)?;
     }
 
     /// Writes `text` at `row`.
     #[throws(WriteFailure)]
     fn single_line(&self, row: Unit, text: String) {
-        trace!("Writing to {}: `{}`", row, text);
+        // Required to store out due to macro calling out_mut() multiple times.
+        let mut out = self.out_mut();
+        log::trace!("Writing to {}: `{}`", row, text);
         execute!(
-            self.out_mut(),
+            out,
             MoveTo(0, *row),
             Print(text),
             crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine)

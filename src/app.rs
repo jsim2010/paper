@@ -7,7 +7,9 @@ use {
         orient,
     },
     log::trace,
-    lsp_types::{ShowMessageRequestParams, TextDocumentIdentifier, TextDocumentItem},
+    lsp_types::{
+        DocumentSymbol, ShowMessageRequestParams, TextDocumentIdentifier, TextDocumentItem,
+    },
     translate::{Interpreter, Operation},
     url::Url,
 };
@@ -87,6 +89,9 @@ impl Processor {
                     outputs.push(output);
                 }
             }
+            Operation::AddSymbols(symbols) => {
+                self.pane.add_symbols(symbols);
+            }
         };
 
         outputs.push(Output::UpdateHeader);
@@ -137,6 +142,13 @@ impl Pane {
         outputs
     }
 
+    /// Add symbols to document.
+    fn add_symbols(&mut self, symbols: Vec<DocumentSymbol>) {
+        if let Some(ref mut doc) = self.doc {
+            doc.add_symbols(symbols);
+        }
+    }
+
     /// Returns the [`Output`] to close the [`Document`] of `self`.
     fn close_doc(&mut self) -> Option<Output> {
         self.doc.take().map(Document::close)
@@ -166,6 +178,8 @@ pub(crate) struct Document {
     max_visible_row: usize,
     /// The version of the document.
     version: i32,
+    /// The symbols of the document.
+    symbols: Vec<DocumentSymbol>,
 }
 
 impl Document {
@@ -213,6 +227,7 @@ impl Document {
             dimensions,
             first_visible_row: 0,
             version: 0,
+            symbols: Vec::new(),
         }
     }
 
@@ -276,6 +291,14 @@ impl Document {
             edit: DocEdit::Close,
         }
     }
+
+    /// Add document symbols to `self`.
+    fn add_symbols(&mut self, symbols: Vec<DocumentSymbol>) {
+        for symbol in symbols {
+            log::trace!("Symbol\n{:?}", symbol);
+            self.symbols.push(symbol);
+        }
+    }
 }
 
 impl From<Document> for TextDocumentItem {
@@ -283,7 +306,10 @@ impl From<Document> for TextDocumentItem {
     fn from(value: Document) -> Self {
         Self::new(
             value.url().clone(),
-            value.file.language().to_string(),
+            value
+                .file
+                .language()
+                .map_or(String::new(), |language| language.to_string()),
             value.version,
             value.file.text().to_string(),
         )
