@@ -36,6 +36,21 @@ pub(crate) enum Operation {
     CreateDoc(File),
     /// Scrolls the document.
     Scroll(orient::ScreenDirection),
+    /// Changes the selection.
+    ChangeSelection(SelectionMovement),
+}
+
+/// Describes the movement of a selection.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SelectionMovement {
+    /// Moves to the first child of the current selection.
+    Descend,
+    /// Moves to the parent of the current selection.
+    Ascend,
+    /// Moves to the next child of the parent of the current selection.
+    Increment,
+    /// Moves to the previous child of the parent of the current selection.
+    Decrement,
 }
 
 /// Signifies actions that require a confirmation prior to their execution.
@@ -102,7 +117,9 @@ impl Interpreter {
             Input::File(file) => {
                 output.add_op(Operation::CreateDoc(file));
             }
-            Input::Lsp(_statement) => {}
+            Input::Lsp(_reception) => {
+                // Processing of receptions to be added here.
+            }
             Input::User(user_input) => {
                 #[allow(clippy::indexing_slicing)] // EnumMap guarantees that index is in bounds.
                 let mode_interpreter = self.map[self.mode];
@@ -221,15 +238,30 @@ impl ViewInterpreter {
                 output.add_op(Operation::Confirm(ConfirmAction::Quit));
                 output.set_mode(Mode::Confirm);
             }
-            KeyCode::Char('l') => {
+            // TODO: Change this to Ctrl+L.
+            KeyCode::Char(';') => {
                 output.add_op(Operation::StartCommand);
                 output.set_mode(Mode::Collect);
             }
-            KeyCode::Char('j') => {
+            // TODO: Change this to Space.
+            KeyCode::Char('d') => {
                 output.add_op(Operation::Scroll(orient::ScreenDirection::Down));
             }
-            KeyCode::Char('k') => {
+            // TODO: Change this to Shift+Space.
+            KeyCode::Char('u') => {
                 output.add_op(Operation::Scroll(orient::ScreenDirection::Up));
+            }
+            KeyCode::Char('h') => {
+                output.add_op(Operation::ChangeSelection(SelectionMovement::Ascend));
+            }
+            KeyCode::Char('j') => {
+                output.add_op(Operation::ChangeSelection(SelectionMovement::Increment));
+            }
+            KeyCode::Char('k') => {
+                output.add_op(Operation::ChangeSelection(SelectionMovement::Decrement));
+            }
+            KeyCode::Char('l') => {
+                output.add_op(Operation::ChangeSelection(SelectionMovement::Descend));
             }
             KeyCode::Backspace
             | KeyCode::Enter

@@ -5,33 +5,35 @@ mod ui;
 
 pub(crate) use {
     fs::File,
-    ui::{Dimensions, UserAction},
+    ui::{Dimensions, RowText, Style, StyledText, Unit, UserAction},
 };
 
 use {
-    crate::app::Document,
+    crate::app::{Document, ScopeFromRangeError},
     clap::ArgMatches,
     core::{
         convert::TryFrom,
         sync::atomic::{AtomicBool, Ordering},
     },
-    docuglot::{ClientStatement, ServerStatement, Tongue},
+    docuglot::{Reception, Tongue, TranslationError, Transmission},
     fehler::{throw, throws},
     fs::{
         create_file_system, ConsumeFileError, FileCommand, FileCommandProducer, FileConsumer,
         FileError, RootDirError,
     },
     log::error,
-    lsp_types::ShowMessageRequestParams,
+    lsp_types::{ShowMessageRequestParams, TextDocumentIdentifier},
     market::{
-        channel::{CrossbeamConsumer, CrossbeamProducer, WithdrawnDemand, WithdrawnSupply},
+        channel::{WithdrawnDemandFault, WithdrawnSupplyFault},
         vec::{Collector, Distributor},
         ConsumeFailure, ConsumeFault, Consumer, ProduceFailure, Producer,
     },
     parse_display::Display as ParseDisplay,
     starship::{context::Context, print},
-    std::io::{self, ErrorKind},
-    thiserror::Error as ThisError,
+    std::{
+        io::{self, ErrorKind},
+        rc::Rc,
+    },
     toml::{value::Table, Value},
     ui::{
         CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal, UserActionConsumer,
@@ -42,7 +44,7 @@ use {
 /// An error creating an [`Interface`].
 ///
 /// [`Interface`]: struct.Interface.html
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum CreateInterfaceError {
     /// An error determing the current working directory.
     #[error("current working directory is invalid: {0}")]
@@ -64,7 +66,7 @@ pub enum CreateInterfaceError {
 }
 
 /// An error while writing output.
-#[derive(Debug, market::ProduceFault, ThisError)]
+#[derive(Debug, market::ProduceFault, thiserror::Error)]
 pub enum ProduceOutputError {
     /// An error with a file.
     #[error("")]
@@ -77,11 +79,11 @@ pub enum ProduceOutputError {
     UiProduce(#[from] DisplayCmdFailure),
     /// A thread was dropped.
     #[error(transparent)]
-    Withdrawn(#[from] WithdrawnDemand),
+    Withdrawn(#[from] WithdrawnDemandFault),
 }
 
 /// An error creating a file.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum CreateFileError {
     /// An error triggering a file read.
     #[error(transparent)]
@@ -89,7 +91,7 @@ pub enum CreateFileError {
 }
 
 /// An error while reading a file.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 #[error("failed to read `{file}`: {error:?}")]
 struct ReadFileError {
     /// The error.
@@ -101,7 +103,7 @@ struct ReadFileError {
 /// An error in the user interface that is recoverable.
 ///
 /// Until a glitch is resolved, certain functionality may not be properly completed.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 enum Glitch {
     /// Unable to convert config file to Config.
     #[error("config file invalid format: {0}")]
@@ -109,7 +111,7 @@ enum Glitch {
 }
 
 /// An event that prevents [`Interface`] from consuming.
-#[derive(Debug, ConsumeFault, ThisError)]
+#[derive(Debug, ConsumeFault, thiserror::Error)]
 pub(crate) enum ConsumeInputIssue {
     /// The application has quit.
     #[error("")]
@@ -120,7 +122,7 @@ pub(crate) enum ConsumeInputIssue {
 }
 
 /// An error consuming input.
-#[derive(Debug, ConsumeFault, ThisError)]
+#[derive(Debug, ConsumeFault, thiserror::Error)]
 pub enum ConsumeInputError {
     /// An error consuming a user input.
     #[error("")]
@@ -128,13 +130,16 @@ pub enum ConsumeInputError {
     /// An error consuming a file.
     #[error("")]
     File(#[from] ConsumeFileError),
+    /// An error in [`Tongue`].
+    #[error(transparent)]
+    Translation(#[from] TranslationError),
     /// A thread was dropped.
     #[error(transparent)]
-    Withdrawn(#[from] WithdrawnSupply),
+    Withdrawn(#[from] WithdrawnSupplyFault),
 }
 
 /// An error validating a file string.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum InvalidFileStringError {
     /// An error determining the root directory.
     #[error("")]
@@ -167,29 +172,52 @@ impl Consumer for InternalUserActionConsumer {
     }
 }
 
-/// Implements [`CrossbeamProducer<ClientStatement>`] that can be pushed to [`Interface.producers`].
-struct InternalLspProducer(CrossbeamProducer<ClientStatement>);
+/// Implements [`CrossbeamProducer<Transmission>`] that can be pushed to [`Interface.producers`].
+struct InternalLspProducer(Rc<Tongue>);
 
 impl Producer for InternalLspProducer {
-    type Good = ClientStatement;
+    type Good = Vec<Transmission>;
     type Failure = ProduceFailure<ProduceOutputError>;
 
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
-        self.0.produce(good).map_err(ProduceFailure::map_fault)?
+        for transmission in good {
+            self.0
+                .transmitter()
+                .produce(transmission)
+                .map_err(ProduceFailure::map_fault)?
+        }
     }
 }
 
-/// Implements [`CrossbeamConsumer<ServerStatement>`] that can be pushed to [`Interface.consumers`].
-struct InternalLspConsumer(CrossbeamConsumer<ServerStatement>);
+/// Implements [`CrossbeamConsumer<Reception>`] that can be pushed to [`Interface.consumers`].
+struct InternalLspConsumer(Rc<Tongue>);
 
 impl Consumer for InternalLspConsumer {
-    type Good = ServerStatement;
+    type Good = Reception;
     type Failure = ConsumeFailure<ConsumeInputError>;
 
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        self.0.consume().map_err(ConsumeFailure::map_fault)?
+        match self.0.receiver().consume() {
+            Ok(good) => good,
+            Err(ConsumeFailure::EmptyStock) => {
+                throw!(ConsumeFailure::EmptyStock)
+            }
+            // If failure is fault, check status from thread to get more information.
+            Err(ConsumeFailure::Fault(fault)) => {
+                throw!(ConsumeInputError::from(match self.0.thread().consume() {
+                    // Ok = thread terminated without error; EmptyStock = thread still running.
+                    // TODO: Investigate if better to send indication of quitting if thread terminated.
+                    Ok(_) | Err(ConsumeFailure::EmptyStock) => {
+                        fault.into()
+                    }
+                    Err(ConsumeFailure::Fault(f)) => {
+                        f
+                    }
+                }))
+            }
+        }
     }
 }
 
@@ -229,7 +257,7 @@ pub(crate) struct Interface {
     /// A [`Distributor`] of all output [`Producer`]s.
     producers: Distributor<Output, ProduceOutputError>,
     /// The interface of the application with all language servers.
-    tongue: Tongue,
+    tongue: Rc<Tongue>,
     /// The application has quit.
     has_quit: AtomicBool,
 }
@@ -242,17 +270,17 @@ impl Interface {
         let mut consumers = Collector::new();
         let mut producers = Distributor::new();
         let (file_command_producer, file_consumer) = create_file_system()?;
-        let (lsp_producer, lsp_consumer, tongue) = docuglot::init(file_command_producer.root_dir());
+        let tongue = Rc::new(Tongue::new(file_command_producer.root_dir()));
 
         if let Some(file) = initial_file {
             file_command_producer.produce(FileCommand::Read { path: file })?
         }
 
         consumers.push(InternalUserActionConsumer(UserActionConsumer));
-        consumers.push(InternalLspConsumer(lsp_consumer));
+        consumers.push(InternalLspConsumer(Rc::clone(&tongue)));
         consumers.push(InternalFileConsumer(file_consumer));
 
-        producers.push(InternalLspProducer(lsp_producer));
+        producers.push(InternalLspProducer(Rc::clone(&tongue)));
         producers.push(user_interface);
         producers.push(InternalFileProducer(file_command_producer));
 
@@ -265,12 +293,6 @@ impl Interface {
 
         interface
     }
-
-    /// Waits until `self.tongue` finishes.
-    pub(crate) fn join(&self) {
-        // TODO: This should be a part of the consume after detecting the app is quitting.
-        self.tongue.join()
-    }
 }
 
 impl Consumer for Interface {
@@ -280,7 +302,10 @@ impl Consumer for Interface {
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         match self.consumers.consume() {
-            Ok(input) => input,
+            Ok(input) => {
+                log::trace!("INPUT: {:?}", input);
+                input
+            }
             Err(market::ConsumeFailure::Fault(failure)) => {
                 throw!(market::ConsumeFailure::Fault(ConsumeInputIssue::Error(
                     failure
@@ -303,6 +328,7 @@ impl Producer for Interface {
 
     #[throws(Self::Failure)]
     fn produce(&self, output: Self::Good) {
+        log::trace!("OUTPUT: {}", output);
         self.producers.produce(output.clone())?;
 
         // TODO: Instead of has_quit, use market::Trigger stored in producers.
@@ -312,6 +338,7 @@ impl Producer for Interface {
             | Output::EditDoc { .. }
             | Output::UpdateHeader
             | Output::Question { .. }
+            | Output::CloseDoc { .. }
             | Output::Command { .. } => {}
             Output::Quit => {
                 self.has_quit.store(true, Ordering::Relaxed);
@@ -321,7 +348,7 @@ impl Producer for Interface {
 }
 
 /// An error occurred while converting a directory path to a URL.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 #[error("while converting `{0}` to a URL")]
 struct UrlError(String);
 
@@ -333,7 +360,7 @@ pub(crate) enum Input {
     /// An input from the user.
     User(UserAction),
     /// A message from the language server.
-    Lsp(ServerStatement),
+    Lsp(Reception),
 }
 
 impl From<File> for Input {
@@ -343,9 +370,9 @@ impl From<File> for Input {
     }
 }
 
-impl From<ServerStatement> for Input {
+impl From<Reception> for Input {
     #[inline]
-    fn from(value: ServerStatement) -> Self {
+    fn from(value: Reception) -> Self {
         Self::Lsp(value)
     }
 }
@@ -366,7 +393,13 @@ pub(crate) enum Output {
         /// The relative path of the file.
         path: String,
     },
-    #[display("")]
+    /// Closes a document.
+    #[display("Close doc `{doc:?}`")]
+    CloseDoc {
+        /// The document.
+        doc: TextDocumentIdentifier,
+    },
+    #[display("Edit doc `{doc:?}`: {edit:?}")]
     /// Edits a document.
     EditDoc {
         /// The file that is edited.
@@ -375,28 +408,28 @@ pub(crate) enum Output {
         edit: DocEdit,
     },
     /// Updates the area of the document that is shown.
-    #[display("")]
+    #[display("Update view to:\n{rows:?}")]
     UpdateView {
         /// The rows of the document to be shown.
-        rows: Vec<String>,
+        rows: Vec<RowText>,
     },
     /// Sets the header of the application.
-    #[display("")]
+    #[display("Update header")]
     UpdateHeader,
     /// Asks the user a question.
-    #[display("")]
+    #[display("Ask `{request:?}`")]
     Question {
         /// The request to be answered.
         request: ShowMessageRequestParams,
     },
     /// Adds an intake box.
-    #[display("")]
+    #[display("Command `{command}`")]
     Command {
         /// The prompt of the intake box.
         command: String,
     },
     /// Quit the application.
-    #[display("")]
+    #[display("Quit")]
     Quit,
 }
 
@@ -413,21 +446,22 @@ impl TryFrom<Output> for FileCommand {
             | Output::UpdateHeader
             | Output::UpdateView { .. }
             | Output::Question { .. }
+            | Output::CloseDoc { .. }
             | Output::Quit => throw!(TryIntoFileCommandError::InvalidOutput),
         }
     }
 }
 
-impl TryFrom<Output> for ClientStatement {
+impl TryFrom<Output> for Vec<Transmission> {
     type Error = TryIntoProtocolError;
 
     #[inline]
     #[throws(Self::Error)]
     fn try_from(value: Output) -> Self {
         match value {
+            Output::CloseDoc { doc } => vec![Transmission::close_doc(doc)],
             Output::EditDoc { doc, edit } => match edit {
-                DocEdit::Open { .. } => Self::open_doc(doc.into()),
-                DocEdit::Close => Self::close_doc(doc.into()),
+                DocEdit::Open { .. } => vec![Transmission::OpenDoc { doc: doc.into() }],
                 DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
             },
             Output::OpenFile { .. }
@@ -448,12 +482,14 @@ impl TryFrom<Output> for DisplayCmd {
     fn try_from(value: Output) -> Self {
         match value {
             Output::EditDoc { doc, edit } => match edit {
-                DocEdit::Open { .. } | DocEdit::Update => Self::Rows { rows: doc.rows() },
-                DocEdit::Close => throw!(TryIntoDisplayCmdError::InvalidOutput),
+                DocEdit::Open { .. } | DocEdit::Update => Self::Rows { rows: doc.rows()? },
             },
             Output::UpdateView { rows } => Self::Rows { rows },
             Output::Question { request } => Self::Rows {
-                rows: vec![request.message],
+                rows: vec![RowText::new(vec![StyledText::new(
+                    request.message,
+                    Style::Default,
+                )])],
             },
             Output::Command { command } => Self::Command { command },
             Output::UpdateHeader => {
@@ -479,29 +515,34 @@ impl TryFrom<Output> for DisplayCmd {
                     header: print::get_prompt(context),
                 }
             }
-            Output::OpenFile { .. } | Output::Quit => throw!(TryIntoDisplayCmdError::InvalidOutput),
+            Output::CloseDoc { .. } | Output::OpenFile { .. } | Output::Quit => {
+                throw!(TryIntoDisplayCmdError::InvalidOutput)
+            }
         }
     }
 }
 
 /// An error converting [`Output`] into a [`Protocol`].
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum TryIntoFileCommandError {
     /// Invalid `Output`.
     #[error("")]
     InvalidOutput,
 }
 
-/// An error converting [`Output`] into a [`Protocol`].
-#[derive(Debug, ThisError)]
+/// An error converting [`Output`] into a [`DisplayCmd`].
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum TryIntoDisplayCmdError {
     /// Invalid `Output`.
     #[error("")]
     InvalidOutput,
+    /// Conversion attempt failed due to [`ScopeFromRangeError`].
+    #[error(transparent)]
+    App(#[from] ScopeFromRangeError),
 }
 
 /// An error converting [`Output`] into a [`Protocol`].
-#[derive(Clone, Copy, Debug, ThisError)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 pub(crate) enum TryIntoProtocolError {
     /// Invalid [`Output`].
     #[error("")]
@@ -518,8 +559,6 @@ pub(crate) enum DocEdit {
     },
     /// Updates the display of the document.
     Update,
-    /// Closes the document.
-    Close,
 }
 
 /// The changes to be made to a document.
