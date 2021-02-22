@@ -19,7 +19,7 @@ mod orient;
 pub use logging::LogConfig;
 
 use {
-    app::Processor,
+    app::{Processor, ScopeFromRangeError},
     // Avoid use of std Option.
     core::option::Option,
     fehler::{throw, throws},
@@ -30,7 +30,6 @@ use {
     logging::InitLoggerError,
     market::{Consumer, Producer},
     structopt::StructOpt,
-    thiserror::Error as ThisError,
 };
 
 /// Arguments for [`Paper`] initialization.
@@ -115,7 +114,7 @@ impl Paper {
     fn execute(&mut self) {
         loop {
             match self.io.demand() {
-                Ok(input) => self.io.force_all(self.processor.process(input))?,
+                Ok(input) => self.io.force_all(self.processor.process(input)?)?,
                 Err(issue) => {
                     if let ConsumeInputIssue::Error(error) = issue {
                         throw!(error);
@@ -129,7 +128,7 @@ impl Paper {
 }
 
 /// An error from which `paper` is unable to recover.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum Failure {
     /// An error creating `paper`.
     #[error(transparent)]
@@ -142,7 +141,7 @@ pub enum Failure {
 /// An error creating a [`Paper`].
 ///
 /// [`Paper`]: struct.Paper.html
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum CreateError {
     /// An error creating the application logger.
     #[error("Failed to initialize logger: {0}")]
@@ -155,7 +154,7 @@ pub enum CreateError {
 }
 
 /// An error running `paper`.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum RunError {
     /// An error consuming an input.
     #[error("Failed to consume input: {0}")]
@@ -163,4 +162,7 @@ pub enum RunError {
     /// An error producing an output.
     #[error("Failed to produce output: {0}")]
     Produce(#[from] ProduceOutputError),
+    /// An error occurred processing an input.
+    #[error("Failed to process input: {0}")]
+    Process(#[from] ScopeFromRangeError),
 }

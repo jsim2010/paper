@@ -5,11 +5,11 @@ mod ui;
 
 pub(crate) use {
     fs::File,
-    ui::{Dimensions, UserAction},
+    ui::{Dimensions, RowText, Style, StyledText, Unit, UserAction},
 };
 
 use {
-    crate::app::Document,
+    crate::app::{Document, ScopeFromRangeError},
     clap::ArgMatches,
     core::{
         convert::TryFrom,
@@ -34,7 +34,6 @@ use {
         io::{self, ErrorKind},
         rc::Rc,
     },
-    thiserror::Error as ThisError,
     toml::{value::Table, Value},
     ui::{
         CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal, UserActionConsumer,
@@ -45,7 +44,7 @@ use {
 /// An error creating an [`Interface`].
 ///
 /// [`Interface`]: struct.Interface.html
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum CreateInterfaceError {
     /// An error determing the current working directory.
     #[error("current working directory is invalid: {0}")]
@@ -67,7 +66,7 @@ pub enum CreateInterfaceError {
 }
 
 /// An error while writing output.
-#[derive(Debug, market::ProduceFault, ThisError)]
+#[derive(Debug, market::ProduceFault, thiserror::Error)]
 pub enum ProduceOutputError {
     /// An error with a file.
     #[error("")]
@@ -84,7 +83,7 @@ pub enum ProduceOutputError {
 }
 
 /// An error creating a file.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum CreateFileError {
     /// An error triggering a file read.
     #[error(transparent)]
@@ -92,7 +91,7 @@ pub enum CreateFileError {
 }
 
 /// An error while reading a file.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 #[error("failed to read `{file}`: {error:?}")]
 struct ReadFileError {
     /// The error.
@@ -104,7 +103,7 @@ struct ReadFileError {
 /// An error in the user interface that is recoverable.
 ///
 /// Until a glitch is resolved, certain functionality may not be properly completed.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 enum Glitch {
     /// Unable to convert config file to Config.
     #[error("config file invalid format: {0}")]
@@ -112,7 +111,7 @@ enum Glitch {
 }
 
 /// An event that prevents [`Interface`] from consuming.
-#[derive(Debug, ConsumeFault, ThisError)]
+#[derive(Debug, ConsumeFault, thiserror::Error)]
 pub(crate) enum ConsumeInputIssue {
     /// The application has quit.
     #[error("")]
@@ -123,7 +122,7 @@ pub(crate) enum ConsumeInputIssue {
 }
 
 /// An error consuming input.
-#[derive(Debug, ConsumeFault, ThisError)]
+#[derive(Debug, ConsumeFault, thiserror::Error)]
 pub enum ConsumeInputError {
     /// An error consuming a user input.
     #[error("")]
@@ -140,7 +139,7 @@ pub enum ConsumeInputError {
 }
 
 /// An error validating a file string.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum InvalidFileStringError {
     /// An error determining the root directory.
     #[error("")]
@@ -339,6 +338,7 @@ impl Producer for Interface {
             | Output::EditDoc { .. }
             | Output::UpdateHeader
             | Output::Question { .. }
+            | Output::CloseDoc { .. }
             | Output::Command { .. } => {}
             Output::Quit => {
                 self.has_quit.store(true, Ordering::Relaxed);
@@ -348,7 +348,7 @@ impl Producer for Interface {
 }
 
 /// An error occurred while converting a directory path to a URL.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 #[error("while converting `{0}` to a URL")]
 struct UrlError(String);
 
@@ -393,6 +393,12 @@ pub(crate) enum Output {
         /// The relative path of the file.
         path: String,
     },
+    /// Closes a document.
+    #[display("Close doc `{doc:?}`")]
+    CloseDoc {
+        /// The document.
+        doc: TextDocumentIdentifier,
+    },
     #[display("Edit doc `{doc:?}`: {edit:?}")]
     /// Edits a document.
     EditDoc {
@@ -405,7 +411,7 @@ pub(crate) enum Output {
     #[display("Update view to:\n{rows:?}")]
     UpdateView {
         /// The rows of the document to be shown.
-        rows: Vec<String>,
+        rows: Vec<RowText>,
     },
     /// Sets the header of the application.
     #[display("Update header")]
@@ -440,6 +446,7 @@ impl TryFrom<Output> for FileCommand {
             | Output::UpdateHeader
             | Output::UpdateView { .. }
             | Output::Question { .. }
+            | Output::CloseDoc { .. }
             | Output::Quit => throw!(TryIntoFileCommandError::InvalidOutput),
         }
     }
@@ -452,17 +459,9 @@ impl TryFrom<Output> for Vec<Transmission> {
     #[throws(Self::Error)]
     fn try_from(value: Output) -> Self {
         match value {
+            Output::CloseDoc { doc } => vec![Transmission::close_doc(doc)],
             Output::EditDoc { doc, edit } => match edit {
-                DocEdit::Open { .. } => {
-                    let url = doc.url().clone();
-                    vec![
-                        Transmission::OpenDoc { doc: doc.into() },
-                        Transmission::GetDocumentSymbol {
-                            doc: TextDocumentIdentifier::new(url),
-                        },
-                    ]
-                }
-                DocEdit::Close => vec![Transmission::close_doc(doc.into())],
+                DocEdit::Open { .. } => vec![Transmission::OpenDoc { doc: doc.into() }],
                 DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
             },
             Output::OpenFile { .. }
@@ -483,12 +482,14 @@ impl TryFrom<Output> for DisplayCmd {
     fn try_from(value: Output) -> Self {
         match value {
             Output::EditDoc { doc, edit } => match edit {
-                DocEdit::Open { .. } | DocEdit::Update => Self::Rows { rows: doc.rows() },
-                DocEdit::Close => throw!(TryIntoDisplayCmdError::InvalidOutput),
+                DocEdit::Open { .. } | DocEdit::Update => Self::Rows { rows: doc.rows()? },
             },
             Output::UpdateView { rows } => Self::Rows { rows },
             Output::Question { request } => Self::Rows {
-                rows: vec![request.message],
+                rows: vec![RowText::new(vec![StyledText::new(
+                    request.message,
+                    Style::Default,
+                )])],
             },
             Output::Command { command } => Self::Command { command },
             Output::UpdateHeader => {
@@ -514,29 +515,34 @@ impl TryFrom<Output> for DisplayCmd {
                     header: print::get_prompt(context),
                 }
             }
-            Output::OpenFile { .. } | Output::Quit => throw!(TryIntoDisplayCmdError::InvalidOutput),
+            Output::CloseDoc { .. } | Output::OpenFile { .. } | Output::Quit => {
+                throw!(TryIntoDisplayCmdError::InvalidOutput)
+            }
         }
     }
 }
 
 /// An error converting [`Output`] into a [`Protocol`].
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum TryIntoFileCommandError {
     /// Invalid `Output`.
     #[error("")]
     InvalidOutput,
 }
 
-/// An error converting [`Output`] into a [`Protocol`].
-#[derive(Debug, ThisError)]
+/// An error converting [`Output`] into a [`DisplayCmd`].
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum TryIntoDisplayCmdError {
     /// Invalid `Output`.
     #[error("")]
     InvalidOutput,
+    /// Conversion attempt failed due to [`ScopeFromRangeError`].
+    #[error(transparent)]
+    App(#[from] ScopeFromRangeError),
 }
 
 /// An error converting [`Output`] into a [`Protocol`].
-#[derive(Clone, Copy, Debug, ThisError)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 pub(crate) enum TryIntoProtocolError {
     /// Invalid [`Output`].
     #[error("")]
@@ -553,8 +559,6 @@ pub(crate) enum DocEdit {
     },
     /// Updates the display of the document.
     Update,
-    /// Closes the document.
-    Close,
 }
 
 /// The changes to be made to a document.

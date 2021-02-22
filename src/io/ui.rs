@@ -11,20 +11,20 @@ pub(crate) use error::{CreateTerminalError, DisplayCmdFailure, UserActionFailure
 use {
     core::{
         cell::{RefCell, RefMut},
-        convert::{TryFrom, TryInto},
+        convert::TryFrom,
         ops::Deref,
         time::Duration,
     },
     crossterm::{
         cursor::{Hide, MoveTo},
         event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-        execute,
-        style::Print,
-        terminal::{EnterAlternateScreen, LeaveAlternateScreen},
+        execute, queue,
+        style::{Color, Print, ResetColor, SetBackgroundColor},
+        terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     },
     error::{DestroyError, InitError, PollFailure, ReachedEnd, ReadFailure, WriteFailure},
     fehler::{throw, throws},
-    market::{Consumer, Producer},
+    market::{Consumer, ProduceFailure, Producer},
     parse_display::Display as ParseDisplay,
     std::io::{self, Stdout},
 };
@@ -72,35 +72,33 @@ impl Drop for Terminal {
 
 impl Producer for Terminal {
     type Good = DisplayCmd;
-    type Failure = market::ProduceFailure<DisplayCmdFailure>;
+    type Failure = ProduceFailure<DisplayCmdFailure>;
 
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         match good {
             DisplayCmd::Rows { rows } => {
-                let mut row = RowId(0);
+                // The top 2 rows are reserved for the header and command bar.
+                let mut row_id = Unit(2);
 
-                for text in rows {
+                for row in rows {
                     self.presenter
-                        .single_line(
-                            row.try_into().map_err(|error: ReachedEnd| {
-                                market::ProduceFailure::Fault(error.into())
-                            })?,
-                            text.to_string(),
-                        )
+                        .single_line(row_id, row.texts)
                         .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
-                    row.step_forward()
-                        .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
+
+                    row_id = row_id
+                        .forward_checked(1)
+                        .ok_or_else(|| ProduceFailure::Fault(ReachedEnd.into()))?;
                 }
             }
             DisplayCmd::Command { command } => {
                 self.presenter
-                    .single_line(Unit(1), command)
+                    .single_line(Unit(1), vec![StyledText::new(command, Style::Default)])
                     .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
             }
             DisplayCmd::Header { header } => {
                 self.presenter
-                    .single_line(Unit(0), header)
+                    .single_line(Unit(0), vec![StyledText::new(header, Style::Default)])
                     .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
             }
         }
@@ -155,16 +153,20 @@ impl Presenter {
 
     /// Writes `text` at `row`.
     #[throws(WriteFailure)]
-    fn single_line(&self, row: Unit, text: String) {
+    fn single_line(&self, row: Unit, styled_texts: Vec<StyledText>) {
         // Required to store out due to macro calling out_mut() multiple times.
         let mut out = self.out_mut();
-        log::trace!("Writing to {}: `{}`", row, text);
-        execute!(
-            out,
-            MoveTo(0, *row),
-            Print(text),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine)
-        )?;
+        queue!(out, MoveTo(0, *row),)?;
+
+        for styled_text in styled_texts {
+            queue!(
+                out,
+                SetBackgroundColor(styled_text.background()),
+                Print(styled_text.text),
+            )?;
+        }
+
+        execute!(out, ResetColor, Clear(ClearType::UntilNewLine))?;
     }
 }
 
@@ -229,7 +231,7 @@ pub(crate) enum DisplayCmd {
     /// Display rows of text.
     Rows {
         /// The rows to be displayed.
-        rows: Vec<String>,
+        rows: Vec<RowText>,
     },
     /// Display the command.
     Command {
@@ -241,6 +243,53 @@ pub(crate) enum DisplayCmd {
         /// The header text.
         header: String,
     },
+}
+
+/// Describes the style of a text.
+#[derive(Clone, Debug)]
+pub(crate) enum Style {
+    /// Text is default.
+    Default,
+    /// Text is selected by the user.
+    Selection,
+}
+
+/// Describes a text with a given [`Style`].
+#[derive(Clone, Debug)]
+pub(crate) struct StyledText {
+    /// The text.
+    text: String,
+    /// The [`Style`] of the text.
+    style: Style,
+}
+
+impl StyledText {
+    /// Creates a new [`StyledText`].
+    pub(crate) const fn new(text: String, style: Style) -> Self {
+        Self { text, style }
+    }
+
+    /// Returns the background color of `self`.
+    const fn background(&self) -> Color {
+        match self.style {
+            Style::Default => Color::Reset,
+            Style::Selection => Color::DarkGrey,
+        }
+    }
+}
+
+/// Describes the texts that make up a row.
+#[derive(Clone, Debug)]
+pub(crate) struct RowText {
+    /// The [`StyledText`]s that make up a row.
+    texts: Vec<StyledText>,
+}
+
+impl RowText {
+    /// Creates a new [`RowText`].
+    pub(crate) fn new(texts: Vec<StyledText>) -> Self {
+        Self { texts }
+    }
 }
 
 /// The dimensions of a grid.
@@ -258,6 +307,15 @@ pub(crate) struct Dimensions {
 #[display("{0}")]
 pub(crate) struct Unit(u16);
 
+impl Unit {
+    /// Moves `self` forward by `count`.
+    fn forward_checked(self, count: usize) -> Option<Self> {
+        u16::try_from(count)
+            .ok()
+            .and_then(|increment| self.0.checked_add(increment).map(Self::from))
+    }
+}
+
 impl Deref for Unit {
     type Target = u16;
 
@@ -274,17 +332,6 @@ impl From<u16> for Unit {
     }
 }
 
-impl TryFrom<RowId> for Unit {
-    type Error = ReachedEnd;
-
-    #[throws(Self::Error)]
-    #[inline]
-    fn try_from(value: RowId) -> Self {
-        // Account for header and command bar.
-        value.0.checked_add(2).ok_or(ReachedEnd)?.into()
-    }
-}
-
 impl From<Unit> for usize {
     #[inline]
     fn from(unit: Unit) -> Self {
@@ -292,24 +339,23 @@ impl From<Unit> for usize {
     }
 }
 
-/// Represents a row index.
-#[derive(Clone, Copy, Debug, ParseDisplay)]
-#[display("{0}")]
-pub(crate) struct RowId(u16);
-
-impl RowId {
-    /// Increments `self` by 1.
-    // This could be a part of a newly created Traveler trait.
-    #[throws(ReachedEnd)]
-    fn step_forward(&mut self) {
-        self.0 = self.0.checked_add(1).ok_or(ReachedEnd)?;
+impl From<Unit> for u16 {
+    #[inline]
+    fn from(unit: Unit) -> Self {
+        unit.0
     }
 }
 
-impl Deref for RowId {
-    type Target = u16;
+impl From<Unit> for u32 {
+    #[inline]
+    fn from(unit: Unit) -> Self {
+        unit.0.into()
+    }
+}
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl From<Unit> for u64 {
+    #[inline]
+    fn from(unit: Unit) -> Self {
+        unit.0.into()
     }
 }
