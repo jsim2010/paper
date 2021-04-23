@@ -21,7 +21,7 @@ log = { version = "0.4.8", features = ["serde"] }
 lsp-types = "0.88.0"
 market = "0.26.0"
 parse-display = "0.4.1"
-starship = "0.51.0"
+starship = "0.52.1"
 structopt = "0.3.15"
 thiserror = "1.0"
 toml = "0.5.5"
