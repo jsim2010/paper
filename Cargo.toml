@@ -19,7 +19,7 @@ enum-map = "0.6.2"
 fehler = "1.0.0"
 log = { version = "0.4.8", features = ["serde"] }
 lsp-types = "0.88.0"
-market = "0.26.0"
+market = "0.27.1"
 parse-display = "0.5.0"
 starship = "0.51.0"
 structopt = "0.3.15"
