@@ -1,26 +1,27 @@
 //! Handles filesystem operations.
 use {
+    core::fmt::{self, Display, Formatter},
     docuglot::Language,
     fehler::throws,
     log::trace,
-    market::{queue::Procurer, ConsumeFailure, ConsumeFault, Consumer, Failure, Producer},
+    market::{EmptyStock, Agent, Consumer, Flawless, ProduceFault, EmptyStockFailure, Return, Flaws, Producer},
+    markets::queue::{self, Supplier, Procurer},
     parse_display::Display as ParseDisplay,
     std::{
         env, fs,
         io::{self, ErrorKind},
     },
-    thiserror::Error as ThisError,
     url::{ParseError, Url},
 };
 
 /// An error determining the root directory.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum RootDirError {
     /// An error determing the current working directory.
-    #[error("current working directory is invalid: {0}")]
+    #[error("find valid current working directory: {0}")]
     GetWorkingDir(#[from] io::Error),
     /// An error creating the root directory [`Purl`].
-    #[error("unable to create URL of root directory `{0}`")]
+    #[error("create URL of root directory `{0}`")]
     Create(String),
 }
 
@@ -37,7 +38,7 @@ fn root_dir() -> Url {
 /// Create the interface to the file system.
 #[throws(RootDirError)]
 pub(crate) fn create_file_system() -> (FileCommandProducer, FileConsumer) {
-    let (url_producer, url_consumer) = market::queue::create_supply_chain();
+    let (url_producer, url_consumer) = queue::create();
     (
         FileCommandProducer {
             root_dir: root_dir()?,
@@ -53,21 +54,22 @@ pub(crate) struct FileConsumer {
     url_consumer: Procurer<Url>,
 }
 
+impl Agent for FileConsumer {
+    type Good = Result<File, ReadFileGlitch>;
+}
+
 impl Consumer for FileConsumer {
-    type Good = File;
-    type Failure = ConsumeFailure<ConsumeFileError>;
+    type Flaws = EmptyStock;
 
-    #[throws(Self::Failure)]
+    #[throws(Failure<Self::Flaws>)]
     fn consume(&self) -> Self::Good {
-        #[allow(clippy::map_err_ignore)]
-        // Currently unable to implement ConsumeFailure<T>: From<InsufficientStockFailure>.
-        let path_url = self
-            .url_consumer
-            .consume()
-            // consume() can throw InsufficientStockFailure
-            .map_err(|_| ConsumeFailure::EmptyStock)?;
+        File::read(self.url_consumer.consume()?)
+    }
+}
 
-        File::read(path_url).map_err(ConsumeFileError::from)?
+impl Display for FileConsumer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "File Consumer")
     }
 }
 
@@ -76,7 +78,7 @@ pub(crate) struct FileCommandProducer {
     /// The root directory of the application.
     root_dir: Url,
     /// Sends the [`Url`]s to the file system handler.
-    url_producer: market::queue::Supplier<Url>,
+    url_producer: Supplier<Url>,
 }
 
 impl FileCommandProducer {
@@ -86,36 +88,43 @@ impl FileCommandProducer {
     }
 }
 
-impl Producer for FileCommandProducer {
+impl Agent for FileCommandProducer {
     type Good = FileCommand;
-    type Failure = FileError;
+}
+
+impl Display for FileCommandProducer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "File Command Producer")
+    }
+}
+
+impl Producer for FileCommandProducer {
+    type Flaws = FileError;
 
     #[allow(clippy::unwrap_in_result)] // Supplier::produce() cannot fail.
-    #[throws(Self::Failure)]
+    #[throws(Return<Self::Good, Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         match good {
             #[allow(clippy::unwrap_used)] // Supplier::produce() cannot fail.
             Self::Good::Read { path } => self
                 .url_producer
-                .produce(self.root_dir.join(&path)?)
+                .produce(self.root_dir.join(&path).map_err(|err| Return::new(Self::Good::Read { path}, err.into()))?)
                 .unwrap(),
         }
     }
 }
 
 /// An error executing a file command.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum FileError {
-    /// An IO error.
-    #[error("")]
-    Io(#[from] io::Error),
-    /// An error creating a [`Purl`]
-    #[error("")]
+    /// An error parsing a [`Url`]
+    #[error("parse URL: {0}")]
     Create(#[from] ParseError),
 }
 
-impl Failure for FileError {
-    type Fault = Self;
+impl Flaws for FileError {
+    type Insufficiency = Flawless;
+    type Defect = Self;
 }
 
 /// Specifies a command to be executed on a file.
@@ -140,17 +149,17 @@ pub(crate) struct File {
 
 impl File {
     /// Creates a file from the path of `url`.
-    #[throws(ReadFileError)]
+    #[throws(ReadFileGlitch)]
     fn read(url: Url) -> Self {
         trace!("read {}", url.path());
         #[allow(clippy::map_err_ignore)]
         // Url::to_file_path() returns () as Err type so the error has no helpful information.
         Self {
-            text: fs::read_to_string(url.to_file_path().map_err(|_| ReadFileError {
+            text: fs::read_to_string(url.to_file_path().map_err(|_| ReadFileGlitch {
                 file: url.to_string(),
                 error: ErrorKind::NotFound,
             })?)
-            .map_err(|error| ReadFileError {
+            .map_err(|error| ReadFileGlitch {
                 file: url.to_string(),
                 error: error.kind(),
             })?,
@@ -178,18 +187,10 @@ impl File {
     }
 }
 
-/// An error consuming a file.
-#[derive(Debug, ConsumeFault, ThisError)]
-pub enum ConsumeFileError {
-    /// An error reading a file.
-    #[error("")]
-    Read(#[from] ReadFileError),
-}
-
 /// An error while reading a file.
-#[derive(Debug, ThisError)]
-#[error("failed to read `{file}`: {error:?}")]
-pub struct ReadFileError {
+#[derive(Debug, thiserror::Error)]
+#[error("Failed to read `{file}`: {error:?}")]
+pub struct ReadFileGlitch {
     /// The error.
     error: ErrorKind,
     /// The path of the file being read.

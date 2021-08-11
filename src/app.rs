@@ -3,7 +3,7 @@ pub(crate) mod translate;
 
 use {
     crate::{
-        io::{Dimensions, DocEdit, File, Input, Output, RowText, Style, StyledText, Unit},
+        io::{Dimensions, File, Input, Output, RowText, Style, StyledText, Unit},
         orient,
     },
     core::{
@@ -53,7 +53,7 @@ impl Processor {
 
         match operation {
             Operation::Resize { dimensions } => {
-                self.pane.update_size(dimensions, &mut outputs);
+                self.pane.update_size(dimensions, &mut outputs)?;
             }
             Operation::Confirm(action) => {
                 outputs.push(Output::Question {
@@ -62,7 +62,7 @@ impl Processor {
             }
             Operation::Reset => {
                 self.command.clear();
-                self.pane.update(&mut outputs);
+                self.pane.update(&mut outputs)?;
             }
             Operation::StartCommand => {
                 self.command = ":".to_string();
@@ -78,7 +78,7 @@ impl Processor {
             }
             Operation::Execute => {
                 if let Some(path) = self.command.strip_prefix(":open ") {
-                    outputs.push(Output::OpenFile {
+                    outputs.push(Output::ReadFile {
                         path: path.to_string(),
                     });
                 }
@@ -123,34 +123,38 @@ struct Pane {
 
 impl Pane {
     /// Updates `self`.
+    #[throws(ScopeFromRangeError)]
     fn update(&mut self, outputs: &mut Vec<Output>) {
         if let Some(doc) = self.doc.as_mut() {
-            outputs.push(doc.change_output());
+            outputs.push(doc.change_output()?);
         }
     }
 
     /// Updates the size of `self` to match `dimensions`;
+    #[throws(ScopeFromRangeError)]
     fn update_size(&mut self, dimensions: Dimensions, outputs: &mut Vec<Output>) {
         self.size = dimensions;
 
         if let Some(doc) = self.doc.as_mut() {
             doc.dimensions = dimensions;
-            outputs.push(doc.change_output());
+            outputs.push(doc.change_output()?);
         }
     }
 
     /// Opens a document at `path`.
-    #[throws(OverflowError)]
+    #[throws(ScopeFromRangeError)]
     fn create_doc(&mut self, file: File) -> Vec<Output> {
         let mut outputs = Vec::new();
-        let doc = Document::new(file, self.size)?;
-        let output = doc.open_output();
+        let mut doc = Document::new(file, self.size)?;
+        let open_output = doc.open_output()?;
+        let view_output = doc.change_output()?;
 
         if let Some(old_doc) = self.doc.replace(doc) {
             outputs.push(old_doc.close());
         }
 
-        outputs.push(output);
+        outputs.push(open_output);
+        outputs.push(view_output);
         outputs
     }
 
@@ -361,20 +365,18 @@ impl Document {
     }
 
     /// Returns the [`Output`] for opening `self`.
+    #[throws(ScopeFromRangeError)]
     fn open_output(&self) -> Output {
-        Output::EditDoc {
-            doc: self.clone(),
-            edit: DocEdit::Open {
-                version: self.version,
-            },
+        Output::OpenDoc {
+            doc: self.clone().into(),
         }
     }
 
     /// Returns the [`Output`] for changing `self`.
+    #[throws(ScopeFromRangeError)]
     fn change_output(&mut self) -> Output {
-        Output::EditDoc {
-            doc: self.clone(),
-            edit: DocEdit::Update,
+        Output::UpdateView {
+            rows: self.rows()?,
         }
     }
 

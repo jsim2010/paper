@@ -9,95 +9,138 @@ pub(crate) use {
 };
 
 use {
-    crate::app::{Document, ScopeFromRangeError},
     clap::ArgMatches,
     core::{
         convert::TryFrom,
-        sync::atomic::{AtomicBool, Ordering},
+        fmt::{self, Display, Formatter},
     },
-    docuglot::{Reception, Tongue, TranslationError, Transmission},
+    docuglot::{Reception, Tongue, Transmission},
     fehler::{throw, throws},
     fs::{
-        create_file_system, ConsumeFileError, FileCommand, FileCommandProducer, FileConsumer,
+        create_file_system, ReadFileGlitch, FileCommand,
         FileError, RootDirError,
     },
-    log::error,
-    lsp_types::{ShowMessageRequestParams, TextDocumentIdentifier},
+    lsp_types::{TextDocumentItem, ShowMessageRequestParams, TextDocumentIdentifier},
     market::{
-        channel::{WithdrawnDemandFault, WithdrawnSupplyFault},
-        vec::{Collector, Distributor},
-        ConsumeFailure, ConsumeFault, Consumer, ProduceFailure, Producer,
+        Agent, Consumer, Failure, ConsumptionFlaws, Recall, ProductionFlaws, Producer, channel::{WithdrawnDemand, WithdrawnSupply},
     },
-    parse_display::Display as ParseDisplay,
+    markets::{channel_std::StdFiniteChannel, convert::SpecificationFlaws, collections::{Collector, Distributor}},
     starship::{context::Context, print},
-    std::{
-        io::{self, ErrorKind},
-        rc::Rc,
-    },
     toml::{value::Table, Value},
     ui::{
-        CreateTerminalError, DisplayCmd, DisplayCmdFailure, Terminal, UserActionConsumer,
-        UserActionFailure,
+        InitTerminalError, DisplayCmd, DisplayCmdFailure, 
+        ConsumeActionFault,
     },
 };
 
 /// An error creating an [`Interface`].
-///
-/// [`Interface`]: struct.Interface.html
 #[derive(Debug, thiserror::Error)]
+#[error(transparent)]
 pub enum CreateInterfaceError {
-    /// An error determing the current working directory.
-    #[error("current working directory is invalid: {0}")]
-    WorkingDir(#[from] io::Error),
-    /// An error creating the root directory [`Purl`].
-    #[error("unable to create URL of root directory: {0}")]
-    RootDir(#[from] RootDirError),
-    /// An error determining the home directory of the current user.
-    #[error("home directory of current user is unknown")]
-    HomeDir,
     /// An error creating a [`Terminal`].
-    ///
-    /// [`Terminal`]: ui/struct.Terminal.html
-    #[error(transparent)]
-    Terminal(#[from] CreateTerminalError),
-    /// An error creating a file.
-    #[error(transparent)]
-    CreateFile(#[from] FileError),
+    Terminal(#[from] InitTerminalError),
+    /// An error generating the root directory [`Url`].
+    RootDir(#[from] RootDirError),
+    /// An error triggering the read of a file.
+    ReadFile(#[from] FileError),
+}
+
+#[throws(CreateInterfaceError)]
+pub(crate) fn create(initial_file: Option<String>) -> (InputConsumer, OutputProducer) {
+    let (presenter, listener) = ui::init()?;
+    let mut consumers: Collector<Input, ConsumeInputFault> = Collector::new("InputCollector");
+    //let mut producers: Distributor<Output, ProduceOutputFault> = Distributor::new();
+    let (file_command_producer, file_consumer) = create_file_system()?;
+    let (transmitter, receiver, tongue) = docuglot::create_tongue(file_command_producer.root_dir());
+    let (quitter, quit_consumer) = StdFiniteChannel::establish("Quitter", 1);
+
+    if let Some(file) = initial_file {
+        file_command_producer.produce(FileCommand::Read { path: file })?
+    }
+
+    consumers.push(listener);
+    consumers.push(receiver);
+    consumers.push(file_consumer);
+    consumers.push(quit_consumer);
+
+    //producers.push(transmitter);
+    //producers.push(presenter);
+    //producers.push(file_command_producer);
+    //producers.push(quitter);
+}
+
+pub(crate) struct InputConsumer {
+    /// All [`Consumer`]s.
+    consumers: Collector<Input, ConsumeInputFault>,
+}
+
+impl Agent for InputConsumer {
+    type Good = Input;
+}
+
+impl Consumer for InputConsumer {
+    type Flaws = ConsumptionFlaws<ConsumeInputFault>;
+
+    #[throws(Failure<Self::Flaws>)]
+    fn consume(&self) -> Self::Good {
+        let input = self.consumers.consume()?;
+
+        log::trace!("INPUT: {:?}", input);
+        input
+    }
+}
+
+impl Display for InputConsumer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "Input Consumer")
+    }
+}
+
+pub(crate) struct OutputProducer {
+    /// All [`Producer`]s.
+    producers: Distributor<OutputKind, Output, ProduceOutputFault>,
+}
+
+impl Agent for OutputProducer {
+    type Good = Output;
+}
+
+impl Display for OutputProducer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "Output Producer")
+    }
+}
+
+impl Producer for OutputProducer {
+    type Flaws = SpecificationFlaws<ProductionFlaws<ProduceOutputFault>>;
+
+    #[throws(Recall<Self::Flaws, Self::Good>)]
+    fn produce(&self, output: Self::Good) {
+        log::trace!("OUTPUT: {}", output);
+        self.producers.produce(output)?;
+    }
+}
+
+/// An error consuming input.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub enum ConsumeInputFault {
+    /// An error consuming a user input.
+    Ui(#[from] ConsumeActionFault),
+    Withdrawn(#[from] WithdrawnSupply),
 }
 
 /// An error while writing output.
-#[derive(Debug, market::ProduceFault, thiserror::Error)]
-pub enum ProduceOutputError {
+#[derive(Debug, thiserror::Error)]
+pub enum ProduceOutputFault {
     /// An error with a file.
     #[error("")]
     File(#[from] FileError),
-    /// An error while reading a file.
-    #[error("{0}")]
-    CreateFile(#[from] CreateFileError),
     /// Produce error from ui.
     #[error("{0}")]
     UiProduce(#[from] DisplayCmdFailure),
-    /// A thread was dropped.
     #[error(transparent)]
-    Withdrawn(#[from] WithdrawnDemandFault),
-}
-
-/// An error creating a file.
-#[derive(Debug, thiserror::Error)]
-pub enum CreateFileError {
-    /// An error triggering a file read.
-    #[error(transparent)]
-    Read(#[from] ProduceFailure<FileError>),
-}
-
-/// An error while reading a file.
-#[derive(Debug, thiserror::Error)]
-#[error("failed to read `{file}`: {error:?}")]
-struct ReadFileError {
-    /// The error.
-    error: ErrorKind,
-    /// The path of the file being read.
-    file: String,
+    WithdrawnLanguage(#[from] WithdrawnDemand),
 }
 
 /// An error in the user interface that is recoverable.
@@ -110,34 +153,6 @@ enum Glitch {
     ConfigFormat(#[from] toml::de::Error),
 }
 
-/// An event that prevents [`Interface`] from consuming.
-#[derive(Debug, ConsumeFault, thiserror::Error)]
-pub(crate) enum ConsumeInputIssue {
-    /// The application has quit.
-    #[error("")]
-    Quit,
-    /// The application has encountered an error while consuming.
-    #[error("")]
-    Error(#[from] ConsumeInputError),
-}
-
-/// An error consuming input.
-#[derive(Debug, ConsumeFault, thiserror::Error)]
-pub enum ConsumeInputError {
-    /// An error consuming a user input.
-    #[error("")]
-    Ui(#[from] UserActionFailure),
-    /// An error consuming a file.
-    #[error("")]
-    File(#[from] ConsumeFileError),
-    /// An error in [`Tongue`].
-    #[error(transparent)]
-    Translation(#[from] TranslationError),
-    /// A thread was dropped.
-    #[error(transparent)]
-    Withdrawn(#[from] WithdrawnSupplyFault),
-}
-
 /// An error validating a file string.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum InvalidFileStringError {
@@ -146,205 +161,54 @@ pub(crate) enum InvalidFileStringError {
     RootDir(#[from] RootDirError),
 }
 
-/// Implements [`Terminal`] that can be pushed to [`Interface.producers`].
-struct InternalTerminal(Terminal);
-
-impl Producer for InternalTerminal {
-    type Good = DisplayCmd;
-    type Failure = ProduceFailure<ProduceOutputError>;
-
-    #[throws(Self::Failure)]
-    fn produce(&self, good: Self::Good) {
-        self.0.produce(good).map_err(ProduceFailure::map_fault)?
-    }
+#[derive(Eq, Hash, PartialEq)]
+enum OutputKind {
 }
 
-/// Implements [`UserActionConsumer`] that can be pushed to [`Interface.consumers`].
-struct InternalUserActionConsumer(UserActionConsumer);
-
-impl Consumer for InternalUserActionConsumer {
-    type Good = UserAction;
-    type Failure = ConsumeFailure<ConsumeInputError>;
-
-    #[throws(Self::Failure)]
-    fn consume(&self) -> Self::Good {
-        self.0.consume().map_err(ConsumeFailure::map_fault)?
-    }
-}
-
-/// Implements [`CrossbeamProducer<Transmission>`] that can be pushed to [`Interface.producers`].
-struct InternalLspProducer(Rc<Tongue>);
-
-impl Producer for InternalLspProducer {
-    type Good = Vec<Transmission>;
-    type Failure = ProduceFailure<ProduceOutputError>;
-
-    #[throws(Self::Failure)]
-    fn produce(&self, good: Self::Good) {
-        for transmission in good {
-            self.0
-                .transmitter()
-                .produce(transmission)
-                .map_err(ProduceFailure::map_fault)?
-        }
-    }
-}
-
-/// Implements [`CrossbeamConsumer<Reception>`] that can be pushed to [`Interface.consumers`].
-struct InternalLspConsumer(Rc<Tongue>);
-
-impl Consumer for InternalLspConsumer {
-    type Good = Reception;
-    type Failure = ConsumeFailure<ConsumeInputError>;
-
-    #[throws(Self::Failure)]
-    fn consume(&self) -> Self::Good {
-        match self.0.receiver().consume() {
-            Ok(good) => good,
-            Err(ConsumeFailure::EmptyStock) => {
-                throw!(ConsumeFailure::EmptyStock)
-            }
-            // If failure is fault, check status from thread to get more information.
-            Err(ConsumeFailure::Fault(fault)) => {
-                throw!(ConsumeInputError::from(match self.0.thread().consume() {
-                    // Ok = thread terminated without error; EmptyStock = thread still running.
-                    // TODO: Investigate if better to send indication of quitting if thread terminated.
-                    Ok(_) | Err(ConsumeFailure::EmptyStock) => {
-                        fault.into()
-                    }
-                    Err(ConsumeFailure::Fault(f)) => {
-                        f
-                    }
-                }))
-            }
-        }
-    }
-}
-
-/// Implements [`FileCommandProducer`] that can be pushed to [`Interface.producers`].
-struct InternalFileProducer(FileCommandProducer);
-
-impl Producer for InternalFileProducer {
-    type Good = FileCommand;
-    type Failure = ProduceFailure<ProduceOutputError>;
-
-    #[throws(Self::Failure)]
-    fn produce(&self, good: Self::Good) {
-        self.0
-            .produce(good)
-            .map_err(|error| ProduceFailure::Fault(error.into()))?
-    }
-}
-
-/// Implements [`FileConsumer`] that can be pushed to [`Interface.consumers`].
-struct InternalFileConsumer(FileConsumer);
-
-impl Consumer for InternalFileConsumer {
-    type Good = File;
-    type Failure = ConsumeFailure<ConsumeInputError>;
-
-    #[throws(Self::Failure)]
-    fn consume(&self) -> Self::Good {
-        self.0.consume().map_err(ConsumeFailure::map_fault)?
-    }
-}
-
-/// The interface between the application and all external components.
+/// The interface between the application and all external processes.
 #[derive(Debug)]
 pub(crate) struct Interface {
-    /// A [`Collector`] of all input [`Consumer`]s.
-    consumers: Collector<Input, ConsumeInputError>,
-    /// A [`Distributor`] of all output [`Producer`]s.
-    producers: Distributor<Output, ProduceOutputError>,
+    /// All [`Consumer`]s.
+    consumers: Collector<Input, ConsumeInputFault>,
+    /// All [`Producer`]s.
+    //producers: Distributor<OutputKind, Output, ProduceOutputFault>,
     /// The interface of the application with all language servers.
-    tongue: Rc<Tongue>,
-    /// The application has quit.
-    has_quit: AtomicBool,
+    tongue: Tongue,
 }
 
 impl Interface {
-    /// Creates a new interface.
+    /// Creates a new [`Interface`].
+    ///
+    /// If `initial_file` is [`Some`], the file at the given path shall be opened.
     #[throws(CreateInterfaceError)]
-    pub(crate) fn new(initial_file: Option<String>) -> Self {
-        let user_interface = InternalTerminal(Terminal::new()?);
-        let mut consumers = Collector::new();
-        let mut producers = Distributor::new();
-        let (file_command_producer, file_consumer) = create_file_system()?;
-        let tongue = Rc::new(Tongue::new(file_command_producer.root_dir()));
+    //pub(crate) fn new(initial_file: Option<String>) -> Self {
+    //    //let (presenter, listener) = ui::init()?;
+    //    let mut consumers: Collector<Input, ConsumeInputFault> = Collector::new();
+    //    //let mut producers: Distributor<Output, ProduceOutputFault> = Distributor::new();
+    //    //let (file_command_producer, file_consumer) = create_file_system()?;
+    //    let (transmitter, receiver, tongue) = docuglot::create_tongue(file_command_producer.root_dir());
+    //    //let (quit_trigger, quit_hammer) = sync::create_lock();
 
-        if let Some(file) = initial_file {
-            file_command_producer.produce(FileCommand::Read { path: file })?
-        }
+    //    //if let Some(file) = initial_file {
+    //    //    file_command_producer.produce(FileCommand::Read { path: file })?
+    //    //}
 
-        consumers.push(InternalUserActionConsumer(UserActionConsumer));
-        consumers.push(InternalLspConsumer(Rc::clone(&tongue)));
-        consumers.push(InternalFileConsumer(file_consumer));
+    //    //consumers.push(listener);
+    //    //consumers.push(receiver);
+    //    //consumers.push(file_consumer);
+    //    //consumers.push(quit_hammer);
 
-        producers.push(InternalLspProducer(Rc::clone(&tongue)));
-        producers.push(user_interface);
-        producers.push(InternalFileProducer(file_command_producer));
+    //    //producers.push(transmitter);
+    //    //producers.push(presenter);
+    //    //producers.push(file_command_producer);
+    //    //producers.push(quit_trigger);
 
-        let interface = Self {
-            consumers,
-            producers,
-            tongue,
-            has_quit: AtomicBool::new(false),
-        };
-
-        interface
-    }
-}
-
-impl Consumer for Interface {
-    type Good = Input;
-    type Failure = ConsumeFailure<ConsumeInputIssue>;
-
-    #[throws(Self::Failure)]
-    fn consume(&self) -> Self::Good {
-        match self.consumers.consume() {
-            Ok(input) => {
-                log::trace!("INPUT: {:?}", input);
-                input
-            }
-            Err(market::ConsumeFailure::Fault(failure)) => {
-                throw!(market::ConsumeFailure::Fault(ConsumeInputIssue::Error(
-                    failure
-                )))
-            }
-            Err(market::ConsumeFailure::EmptyStock) => {
-                if self.has_quit.load(Ordering::Relaxed) {
-                    throw!(market::ConsumeFailure::Fault(ConsumeInputIssue::Quit));
-                } else {
-                    throw!(market::ConsumeFailure::EmptyStock);
-                }
-            }
-        }
-    }
-}
-
-impl Producer for Interface {
-    type Good = Output;
-    type Failure = ProduceFailure<ProduceOutputError>;
-
-    #[throws(Self::Failure)]
-    fn produce(&self, output: Self::Good) {
-        log::trace!("OUTPUT: {}", output);
-        self.producers.produce(output.clone())?;
-
-        // TODO: Instead of has_quit, use market::Trigger stored in producers.
-        match output {
-            Output::OpenFile { .. }
-            | Output::UpdateView { .. }
-            | Output::EditDoc { .. }
-            | Output::UpdateHeader
-            | Output::Question { .. }
-            | Output::CloseDoc { .. }
-            | Output::Command { .. } => {}
-            Output::Quit => {
-                self.has_quit.store(true, Ordering::Relaxed);
-            }
-        }
-    }
+    //    Self {
+    //        consumers,
+    //        //producers,
+    //        tongue,
+    //    }
+    //}
 }
 
 /// An error occurred while converting a directory path to a URL.
@@ -361,12 +225,17 @@ pub(crate) enum Input {
     User(UserAction),
     /// A message from the language server.
     Lsp(Reception),
+    Glitch(ReadFileGlitch),
+    Quit,
 }
 
-impl From<File> for Input {
+impl From<Result<File, ReadFileGlitch>> for Input {
     #[inline]
-    fn from(value: File) -> Self {
-        Self::File(value)
+    fn from(result: Result<File, ReadFileGlitch>) -> Self {
+        match result {
+            Ok(file) => Self::File(file),
+            Err(glitch) => Self::Glitch(glitch),
+        }
     }
 }
 
@@ -384,12 +253,19 @@ impl From<UserAction> for Input {
     }
 }
 
+impl From<()> for Input {
+    #[inline]
+    fn from(_: ()) -> Self {
+        Self::Quit
+    }
+}
+
 /// An output.
-#[derive(Clone, Debug, ParseDisplay)]
+#[derive(Clone, Debug, parse_display::Display)]
 pub(crate) enum Output {
     /// Retrieves the URL and text of a file.
     #[display("Get file `{path}`")]
-    OpenFile {
+    ReadFile {
         /// The relative path of the file.
         path: String,
     },
@@ -399,13 +275,10 @@ pub(crate) enum Output {
         /// The document.
         doc: TextDocumentIdentifier,
     },
-    #[display("Edit doc `{doc:?}`: {edit:?}")]
-    /// Edits a document.
-    EditDoc {
-        /// The file that is edited.
-        doc: Document,
-        /// The edit to be performed.
-        edit: DocEdit,
+    /// Opens a document.
+    #[display("Open doc `{doc:?}`")]
+    OpenDoc {
+        doc: TextDocumentItem,
     },
     /// Updates the area of the document that is shown.
     #[display("Update view to:\n{rows:?}")]
@@ -431,59 +304,82 @@ pub(crate) enum Output {
     /// Quit the application.
     #[display("Quit")]
     Quit,
+    #[display("GetDocSymbol")]
+    GetDocSymbol{
+        doc: TextDocumentIdentifier,
+    },
+    #[display("Shutdown")]
+    Shutdown,
 }
 
 impl TryFrom<Output> for FileCommand {
-    type Error = TryIntoFileCommandError;
+    type Error = Output;
 
     #[inline]
     #[throws(Self::Error)]
     fn try_from(value: Output) -> Self {
         match value {
-            Output::OpenFile { path } => Self::Read { path },
+            Output::ReadFile { path } => Self::Read { path },
             Output::Command { .. }
-            | Output::EditDoc { .. }
+            | Output::OpenDoc { .. }
             | Output::UpdateHeader
             | Output::UpdateView { .. }
             | Output::Question { .. }
             | Output::CloseDoc { .. }
-            | Output::Quit => throw!(TryIntoFileCommandError::InvalidOutput),
+            | Output::GetDocSymbol { .. }
+            | Output::Shutdown
+            | Output::Quit => throw!(value),
         }
     }
 }
 
-impl TryFrom<Output> for Vec<Transmission> {
-    type Error = TryIntoProtocolError;
+impl From<FileCommand> for Output {
+    fn from(file_cmd: FileCommand) -> Self {
+        match file_cmd {
+            FileCommand::Read{path} => Output::ReadFile{path},
+        }
+    }
+}
+
+impl TryFrom<Output> for Transmission {
+    type Error = Output;
 
     #[inline]
     #[throws(Self::Error)]
     fn try_from(value: Output) -> Self {
         match value {
-            Output::CloseDoc { doc } => vec![Transmission::close_doc(doc)],
-            Output::EditDoc { doc, edit } => match edit {
-                DocEdit::Open { .. } => vec![Transmission::OpenDoc { doc: doc.into() }],
-                DocEdit::Update => throw!(TryIntoProtocolError::InvalidOutput),
-            },
-            Output::OpenFile { .. }
+            Output::CloseDoc { doc } => Transmission::close_doc(doc),
+            Output::OpenDoc { doc } => Transmission::OpenDoc { doc },
+            Output::GetDocSymbol { doc } => Transmission::GetDocumentSymbol { doc },
+            Output::Shutdown => Transmission::Shutdown,
+            Output::ReadFile { .. }
             | Output::Command { .. }
             | Output::UpdateHeader
             | Output::UpdateView { .. }
             | Output::Question { .. }
-            | Output::Quit => throw!(TryIntoProtocolError::InvalidOutput),
+            | Output::Quit => throw!(value),
+        }
+    }
+}
+
+impl From<Transmission> for Output {
+    fn from(transmission: Transmission) -> Self {
+        match transmission {
+            Transmission::OpenDoc{doc} => Output::OpenDoc{doc},
+            Transmission::CloseDoc{doc} => Output::CloseDoc{doc},
+            Transmission::GetDocumentSymbol{doc} => Output::GetDocSymbol {doc},
+            Transmission::Shutdown => Output::Shutdown,
         }
     }
 }
 
 impl TryFrom<Output> for DisplayCmd {
-    type Error = TryIntoDisplayCmdError;
+    type Error = Output;
 
     #[inline]
     #[throws(Self::Error)]
     fn try_from(value: Output) -> Self {
         match value {
-            Output::EditDoc { doc, edit } => match edit {
-                DocEdit::Open { .. } | DocEdit::Update => Self::Rows { rows: doc.rows()? },
-            },
             Output::UpdateView { rows } => Self::Rows { rows },
             Output::Question { request } => Self::Rows {
                 rows: vec![RowText::new(vec![StyledText::new(
@@ -515,50 +411,40 @@ impl TryFrom<Output> for DisplayCmd {
                     header: print::get_prompt(context),
                 }
             }
-            Output::CloseDoc { .. } | Output::OpenFile { .. } | Output::Quit => {
-                throw!(TryIntoDisplayCmdError::InvalidOutput)
+            Output::OpenDoc { .. } | Output::GetDocSymbol{..} | Output::Shutdown | Output::CloseDoc { .. } | Output::ReadFile { .. } | Output::Quit => {
+                throw!(value)
             }
         }
     }
 }
 
-/// An error converting [`Output`] into a [`Protocol`].
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TryIntoFileCommandError {
-    /// Invalid `Output`.
-    #[error("")]
-    InvalidOutput,
+impl From<DisplayCmd> for Output {
+    fn from(display_cmd: DisplayCmd) -> Self {
+        match display_cmd {
+            DisplayCmd::Rows{rows} => Self::UpdateView{rows},
+            DisplayCmd::Command{command} => Self::Command{command},
+            DisplayCmd::Header{..} => Self::UpdateHeader,
+        }
+    }
 }
 
-/// An error converting [`Output`] into a [`DisplayCmd`].
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TryIntoDisplayCmdError {
-    /// Invalid `Output`.
-    #[error("")]
-    InvalidOutput,
-    /// Conversion attempt failed due to [`ScopeFromRangeError`].
-    #[error(transparent)]
-    App(#[from] ScopeFromRangeError),
+impl TryFrom<Output> for () {
+    type Error = Output;
+
+    #[throws(Self::Error)]
+    fn try_from(output: Output) -> Self {
+        if let Output::Quit = output {
+            ()
+        } else {
+            throw!(output)
+        }
+    }
 }
 
-/// An error converting [`Output`] into a [`Protocol`].
-#[derive(Clone, Copy, Debug, thiserror::Error)]
-pub(crate) enum TryIntoProtocolError {
-    /// Invalid [`Output`].
-    #[error("")]
-    InvalidOutput,
-}
-
-/// Edits a document.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum DocEdit {
-    /// Opens a document.
-    Open {
-        /// The version of the document.
-        version: i32,
-    },
-    /// Updates the display of the document.
-    Update,
+impl From<()> for Output {
+    fn from(_: ()) -> Self {
+        Self::Quit
+    }
 }
 
 /// The changes to be made to a document.

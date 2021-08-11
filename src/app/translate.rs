@@ -126,6 +126,10 @@ impl Interpreter {
 
                 output = mode_interpreter.decode(user_input);
             }
+            Input::Glitch(glitch) => {
+                log::warn!("Received glitch: {}", glitch);
+            }
+            Input::Quit => {}
         }
 
         if let Some(mode) = output.new_mode {
@@ -145,7 +149,7 @@ impl Default for Interpreter {
         /// The [`ModeInterpreter`] for [`Mode::Collect`].
         static COLLECT_INTERPRETER: CollectInterpreter = CollectInterpreter::new();
 
-        // Required to establish value type in enum_map.
+        // Establish value type in enum_map.
         let view_interpreter: &dyn ModeInterpreter = &VIEW_INTERPRETER;
 
         Self {

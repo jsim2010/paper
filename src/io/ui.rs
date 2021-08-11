@@ -4,77 +4,139 @@
 //! - A header is displayed on a single row at the top of the display. The header displays general information about the current state of the system.
 //! - A command bar is display on the row under the header. The command bar displays the current command being built by the user.
 //! - A page is displayed in the remaining space of the display. The page displays the text of the currently viewed document.
-mod error;
-
-pub(crate) use error::{CreateTerminalError, DisplayCmdFailure, UserActionFailure};
-
 use {
     core::{
-        cell::{RefCell, RefMut},
         convert::TryFrom,
+        fmt::{self, Display, Formatter},
         ops::Deref,
         time::Duration,
     },
     crossterm::{
         cursor::{Hide, MoveTo},
         event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-        execute, queue,
+        execute, queue, ErrorKind,
         style::{Color, Print, ResetColor, SetBackgroundColor},
         terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     },
-    error::{DestroyError, InitError, PollFailure, ReachedEnd, ReadFailure, WriteFailure},
     fehler::{throw, throws},
-    market::{Consumer, ProduceFailure, Producer},
+    market::{Agent, Consumer, Fault, EmptyStock, Failure, Flaws, Flawless, Producer, Recall},
     parse_display::Display as ParseDisplay,
-    std::io::{self, Stdout},
 };
 
-/// A instantaneous duration of time.
-static NO_DURATION: Duration = Duration::from_secs(0);
+/// An error initializing a [`Terminal`].
+#[derive(Debug, thiserror::Error)]
+#[error("create terminal interface: {0}")]
+pub struct InitTerminalError(#[from] ErrorKind);
+
+/// A failure producing terminal output.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub enum DisplayCmdFault {
+    /// A failure printing text.
+    Print(#[from] PrintFault),
+    /// A failure incrementing a row.
+    End(#[from] ReachedEnd),
+}
+
+impl Flaws for DisplayCmdFault {
+    type Insufficiency = Flawless;
+    type Defect = Self;
+}
+
+/// A [`Fault`] while writing to stdout.
+#[derive(Debug, thiserror::Error)]
+#[error("writing: {0}")]
+pub struct PrintFault(#[from] ErrorKind);
+
+/// A failure consuming a [`UserAction`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub enum ConsumeActionFault {
+    /// A failure polling for a [`UserAction`].
+    Poll(#[from] PollFault),
+    /// A failure reading a [`UserAction`].
+    Read(#[from] ReadFault),
+}
+
+/// An error polling for a [`UserAction`].
+#[derive(Debug, thiserror::Error)]
+#[error("Failed to poll for user action: {0}")]
+pub struct PollFault(#[from] ErrorKind);
+
+/// An error reading a [`UserAction`].
+#[derive(Debug, thiserror::Error)]
+#[error("Failed to read user action: {0}")]
+pub struct ReadFault(#[from] ErrorKind);
+
+/// When the [`RowId`] has reached its end.
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[error("")]
+pub struct ReachedEnd;
+
+/// Initializes the user interface and returns its [`Producer`] and [`Consumer`].
+#[throws(InitTerminalError)]
+pub(crate) fn init() -> (Presenter, Listener) {
+    execute!(std::io::stdout(), EnterAlternateScreen, Hide)?;
+    (Presenter, Listener)
+}
+
+/// Writes `text` at `row`.
+#[throws(PrintFault)]
+fn print(row: Unit, styled_texts: Vec<StyledText>) {
+    let mut stdout = std::io::stdout();
+    queue!(stdout, MoveTo(0, *row),)?;
+
+    for styled_text in styled_texts {
+        queue!(
+            stdout,
+            SetBackgroundColor(styled_text.background()),
+            Print(styled_text.text),
+        )?;
+    }
+
+    execute!(stdout, ResetColor, Clear(ClearType::UntilNewLine))?;
+}
 
 /// Returns if a [`UserAction`] is available.
-#[throws(PollFailure)]
+#[throws(PollFault)]
 fn is_action_available() -> bool {
+    static NO_DURATION: Duration = Duration::from_secs(0);
+
     event::poll(NO_DURATION)?
 }
 
 /// Reads a current [`UserAction`], blocking until one is received.
-#[throws(ReadFailure)]
+#[throws(ReadFault)]
 fn read_action() -> UserAction {
     event::read().map(UserAction::from)?
 }
 
-/// Produces all [`DisplayCmd`]s via the stdout of the application.
-#[derive(Debug, Default)]
-pub(crate) struct Terminal {
-    /// The presenter.
-    presenter: Presenter,
-}
+/// Produces all [`DisplayCmd`]s via the terminal.
+#[derive(Debug)]
+pub(crate) struct Presenter;
 
-impl Terminal {
-    /// Creates and initializes a new [`Terminal`].
-    #[throws(CreateTerminalError)]
-    pub(crate) fn new() -> Self {
-        let terminal = Self::default();
-
-        terminal.presenter.init()?;
-        terminal
-    }
-}
-
-impl Drop for Terminal {
+impl Drop for Presenter {
     fn drop(&mut self) {
-        if let Err(error) = self.presenter.destroy() {
-            log::warn!("Error while destroying user interface: {}", error);
+        if let Err(error) = execute!(std::io::stdout(), LeaveAlternateScreen) {
+            log::warn!("Failed to reset user interface: {}", error);
         }
     }
 }
 
-impl Producer for Terminal {
+impl Agent for Presenter {
     type Good = DisplayCmd;
-    type Failure = ProduceFailure<DisplayCmdFailure>;
+}
 
-    #[throws(Self::Failure)]
+impl Display for Presenter {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "Presenter")
+    }
+}
+
+impl Producer for Presenter {
+    type Flaws = DisplayCmdFault;
+
+    #[throws(Recall<Self::Flaws, Self::Good>)]
     fn produce(&self, good: Self::Good) {
         match good {
             DisplayCmd::Rows { rows } => {
@@ -82,99 +144,49 @@ impl Producer for Terminal {
                 let mut row_id = Unit(2);
 
                 for row in rows {
-                    self.presenter
-                        .single_line(row_id, row.texts)
-                        .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
+                    print(row_id, row.texts)
+                        .map_err(|fault| self.recall(Fault::Defect(fault.into()), good))?;
 
                     row_id = row_id
                         .forward_checked(1)
-                        .ok_or_else(|| ProduceFailure::Fault(ReachedEnd.into()))?;
+                        .ok_or_else(|| self.recall(Fault::Defect(ReachedEnd.into()), good))?;
                 }
             }
             DisplayCmd::Command { command } => {
-                self.presenter
-                    .single_line(Unit(1), vec![StyledText::new(command, Style::Default)])
-                    .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
+                print(Unit(1), vec![StyledText::new(command, Style::Default)])
+                    .map_err(|fault| self.recall(Fault::Defect(fault.into()), good))?;
             }
             DisplayCmd::Header { header } => {
-                self.presenter
-                    .single_line(Unit(0), vec![StyledText::new(header, Style::Default)])
-                    .map_err(|failure| market::ProduceFailure::Fault(failure.into()))?;
+                print(Unit(0), vec![StyledText::new(header, Style::Default)])
+                    .map_err(|fault| self.recall(Fault::Defect(fault.into()), good))?;
             }
         }
     }
 }
 
 /// A Consumer of [`UserAction`]s.
-pub(crate) struct UserActionConsumer;
+pub(crate) struct Listener;
 
-impl Consumer for UserActionConsumer {
+impl Agent for Listener {
     type Good = UserAction;
-    type Failure = market::ConsumeFailure<UserActionFailure>;
+}
 
-    #[throws(Self::Failure)]
+impl Consumer for Listener {
+    type Flaws = EmptyStock;
+
+    #[throws(Failure<Self::Flaws>)]
     fn consume(&self) -> Self::Good {
-        if is_action_available().map_err(|error| market::ConsumeFailure::Fault(error.into()))? {
-            read_action().map_err(|error| market::ConsumeFailure::Fault(error.into()))?
-        } else {
-            throw!(market::ConsumeFailure::EmptyStock);
-        }
+        //if is_action_available().map_err(|fault| ConsumeFailure::Fault(fault.into()))? {
+        //    read_action().map_err(|fault| ConsumeFailure::Fault(fault.into()))?
+        //} else {
+            throw!(EmptyStock::default())
+        //}
     }
 }
 
-/// Manages the display to the user.
-#[derive(Debug)]
-struct Presenter {
-    /// The stdout of the application.
-    out: RefCell<Stdout>,
-}
-
-impl Presenter {
-    /// Returns a mutable reference to the [`Stdout`] of the application.
-    fn out_mut(&self) -> RefMut<'_, Stdout> {
-        self.out.borrow_mut()
-    }
-
-    /// Initializes the interface, saving the current display and hiding the cursor.
-    #[throws(InitError)]
-    fn init(&self) {
-        // Required to store out due to macro calling out_mut() multiple times.
-        let mut out = self.out_mut();
-        execute!(out, EnterAlternateScreen, Hide)?;
-    }
-
-    /// Closes out the interface display, returning to the display prior to initialization.
-    #[throws(DestroyError)]
-    fn destroy(&self) {
-        // Required to store out due to macro calling out_mut() multiple times.
-        let mut out = self.out_mut();
-        execute!(out, LeaveAlternateScreen)?;
-    }
-
-    /// Writes `text` at `row`.
-    #[throws(WriteFailure)]
-    fn single_line(&self, row: Unit, styled_texts: Vec<StyledText>) {
-        // Required to store out due to macro calling out_mut() multiple times.
-        let mut out = self.out_mut();
-        queue!(out, MoveTo(0, *row),)?;
-
-        for styled_text in styled_texts {
-            queue!(
-                out,
-                SetBackgroundColor(styled_text.background()),
-                Print(styled_text.text),
-            )?;
-        }
-
-        execute!(out, ResetColor, Clear(ClearType::UntilNewLine))?;
-    }
-}
-
-impl Default for Presenter {
-    fn default() -> Self {
-        Self {
-            out: RefCell::new(io::stdout()),
-        }
+impl Display for Listener {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "Listener")
     }
 }
 

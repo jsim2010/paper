@@ -6,10 +6,6 @@
 //! 3) Paper shall utilize already implemented tools and commands wherever possible; specifically paper shall support the [Language Server Protocol].
 //!
 //! [Language Server Protocol]: https://microsoft.github.io/language-server-protocol/
-#![allow(
-    clippy::unreachable, // unreachable added by enum_map::Enum.
-)]
-
 mod app;
 mod io;
 mod logging;
@@ -24,17 +20,53 @@ use {
     core::option::Option,
     fehler::{throw, throws},
     io::{
-        ConsumeInputError, ConsumeInputIssue, CreateInterfaceError, Interface, ProduceOutputError,
+        Input, ConsumeInputFault, CreateInterfaceError, Interface, ProduceOutputFault,
     },
-    log::{error, info},
     logging::InitLoggerError,
-    market::{Consumer, Producer},
+    market::{Consumer, Producer, Recall},
+    markets::convert::SpecificationDefect,
     structopt::StructOpt,
 };
 
-/// Arguments for [`Paper`] initialization.
+/// An error from which `paper` is unable to recover.
+#[derive(Debug, thiserror::Error)]
+pub enum Failure {
+    /// An error creating `paper`.
+    #[error(transparent)]
+    Create(#[from] CreateError),
+    /// An error running `paper`.
+    #[error(transparent)]
+    Run(#[from] RunError),
+}
+
+/// An error creating a [`Paper`].
 ///
-/// [`Paper`]: ../struct.Paper.html
+/// [`Paper`]: struct.Paper.html
+#[derive(Debug, thiserror::Error)]
+pub enum CreateError {
+    /// An error initializing the application logger.
+    #[error(transparent)]
+    Logger(#[from] InitLoggerError),
+    /// An error creating the [`Interface`].
+    #[error("Failed to {0}")]
+    Interface(#[from] CreateInterfaceError),
+}
+
+/// An error running `paper`.
+#[derive(Debug, thiserror::Error)]
+pub enum RunError {
+    /// An error consuming an input.
+    #[error("Failed to consume input: {0}")]
+    Consume(#[from] ConsumeInputFault),
+    /// An error producing an output.
+    #[error("Failed to produce output: {0}")]
+    Produce(#[from] SpecificationDefect<ProduceOutputFault>),
+    /// An error occurred processing an input.
+    #[error("Failed to process input: {0}")]
+    Process(#[from] ScopeFromRangeError),
+}
+
+/// Arguments for [`Paper`] initialization.
 #[derive(Clone, Debug, Default, StructOpt)]
 pub struct Arguments {
     /// The file to be viewed.
@@ -47,11 +79,9 @@ pub struct Arguments {
 
 /// An instance of the `paper` application.
 ///
-/// Once [`Paper`] has started running, it shall continue until it has been terminated. **Termination** occurs when the application is ordered to quit or an unrecoverable error is thrown.
-///
 /// When [`Paper`] is dropped, it shall kill all spawned processes and return the user interface to its previous state.
 ///
-/// # Examples
+/// # Example(s)
 ///
 /// ```no_run
 /// use paper::{Arguments, Failure, Paper};
@@ -70,11 +100,15 @@ pub struct Paper {
 }
 
 impl Paper {
-    /// Creates a new instance of `paper`.
+    /// Creates a new [`Paper`].
+    ///
+    /// # Errors
+    ///
+    /// Shall throw [`CreateError`] if any unrecoverable error is caught.
     #[inline]
     #[throws(CreateError)]
     pub fn new(arguments: Arguments) -> Self {
-        // Logger is created first so all other parts can use it.
+        // Logger initialization is done first so all other code can use it.
         logging::init(arguments.log_config)?;
 
         Self {
@@ -85,22 +119,18 @@ impl Paper {
 
     /// Runs the application.
     ///
-    /// This function shall run until `paper` has been **terminated**.
+    /// This function shall run until `paper` has been terminated. Termination occurs when the application is ordered to quit or a [`Failure`] is thrown.
     ///
     /// # Errors
     ///
     /// If any unrecoverable error is thrown, a [`RunError`] shall be thrown.
-    ///
-    /// [`RunError`]: enum.RunError.html
     #[inline]
     #[throws(RunError)]
     pub fn run(&mut self) {
         if let Err(error) = self.execute() {
-            error!("{}", error);
+            log::error!("{}", error);
             throw!(error);
         }
-
-        info!("Application quitting");
     }
 
     /// Loops through execution until `paper` has been **terminated**.
@@ -108,61 +138,16 @@ impl Paper {
     /// # Errors
     ///
     /// If any unrecoverable error is thrown, a [`RunError`] shall be thrown.
-    ///
-    /// [`RunError`]: enum.RunError.html
     #[throws(RunError)]
     fn execute(&mut self) {
         loop {
-            match self.io.demand() {
-                Ok(input) => self.io.force_all(self.processor.process(input)?)?,
-                Err(issue) => {
-                    if let ConsumeInputIssue::Error(error) = issue {
-                        throw!(error);
-                    }
-
+            match self.io.demand()? {
+                Input::Quit => {
+                    log::info!("Application quitting");
                     break;
                 }
+                input => self.io.force_all(self.processor.process(input)?).map_err(Recall::into_error)?,
             }
         }
     }
-}
-
-/// An error from which `paper` is unable to recover.
-#[derive(Debug, thiserror::Error)]
-pub enum Failure {
-    /// An error creating `paper`.
-    #[error(transparent)]
-    Create(#[from] CreateError),
-    /// An error running `paper`.
-    #[error(transparent)]
-    Run(#[from] RunError),
-}
-
-/// An error creating a [`Paper`].
-///
-/// [`Paper`]: struct.Paper.html
-#[derive(Debug, thiserror::Error)]
-pub enum CreateError {
-    /// An error creating the application logger.
-    #[error("Failed to initialize logger: {0}")]
-    Logger(#[from] InitLoggerError),
-    /// An error creating the [`Interface`].
-    ///
-    /// [`Interface`]: io/struct.Interface.html
-    #[error("Failed to create application: {0}")]
-    Interface(#[from] CreateInterfaceError),
-}
-
-/// An error running `paper`.
-#[derive(Debug, thiserror::Error)]
-pub enum RunError {
-    /// An error consuming an input.
-    #[error("Failed to consume input: {0}")]
-    Consume(#[from] ConsumeInputError),
-    /// An error producing an output.
-    #[error("Failed to produce output: {0}")]
-    Produce(#[from] ProduceOutputError),
-    /// An error occurred processing an input.
-    #[error("Failed to process input: {0}")]
-    Process(#[from] ScopeFromRangeError),
 }

@@ -12,6 +12,7 @@ fn main() {
     }
 }
 
+// This function is used to easily convert all returned errors into Failures.
 /// Executes the application functionality.
 #[throws(Failure)]
 fn exec() {
