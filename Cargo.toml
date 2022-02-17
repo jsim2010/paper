@@ -12,7 +12,7 @@ edition = "2018"
 
 [dependencies]
 chrono = "0.4.19"
-clap = "2.33.0"
+clap = "3.1.0"
 crossterm = "0.20.0"
 docuglot = "0.7.0"
 enum-map = "0.6.2"
