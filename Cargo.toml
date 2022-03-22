@@ -18,7 +18,7 @@ docuglot = "0.7.0"
 enum-map = "0.6.2"
 fehler = "1.0.0"
 log = { version = "0.4.8", features = ["serde"] }
-lsp-types = "0.88.0"
+lsp-types = "0.92.1"
 market = "0.26.0"
 parse-display = "0.5.0"
 starship = "0.51.0"
