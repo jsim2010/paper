@@ -15,7 +15,7 @@ chrono = "0.4.19"
 clap = "2.33.0"
 crossterm = "0.20.0"
 docuglot = "0.7.0"
-enum-map = "0.6.2"
+enum-map = "2.1.0"
 fehler = "1.0.0"
 log = { version = "0.4.8", features = ["serde"] }
 lsp-types = "0.88.0"
